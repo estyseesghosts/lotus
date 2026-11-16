@@ -60,7 +60,8 @@ class Peer:
             assert reply["request_id"] == self.sequence, reply
             self.epoch = reply["epoch"]
             self.state = reply["state"]
-            assert reply["status"] == expected, reply
+            self.status = reply["status"]
+            assert expected is None or reply["status"] == expected, reply
             return reply["data"]
 
     def debug(self, operation, **params):
