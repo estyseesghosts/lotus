@@ -12,7 +12,7 @@ import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument("output", type=Path)
-parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem"],default="debugger")
+parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence"],default="debugger")
 parser.add_argument("--gcc", help="devkitARM arm-none-eabi-gcc executable (uses matching objcopy)")
 args = parser.parse_args()
 out = args.output.resolve()
@@ -28,6 +28,9 @@ command = [compiler, "-mcpu=mpcore", "-marm", "-mfloat-abi=soft", "-O1", "-g", "
            "-ffreestanding", "-fno-builtin", "-fno-omit-frame-pointer", "-fno-unwind-tables",
            "-fno-asynchronous-unwind-tables", "-nostdlib", "-Wl,--build-id=none",
            "-Wl,-T,"+str(fixtures / "debugger/link.ld"), str(source / "fixture.c"), "-o", str(elf)]
+if args.fixture == "divergence":  # VFP probes; other fixtures keep their soft-float builds
+    command[command.index("-mfloat-abi=soft")] = "-mfloat-abi=softfp"
+    command.insert(1, "-mfpu=vfpv2")
 if not args.gcc:
     command[1:1] = ["--target=armv6k-none-eabi", "-fuse-ld=lld"]
 subprocess.run(command, check=True)
