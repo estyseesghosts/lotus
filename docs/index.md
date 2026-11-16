@@ -1,6 +1,9 @@
 # Lotus — documentation index
 
-Start here. Terms are defined once in the [glossary](glossary.md); documents
+Start here. **New agent?** Read `AGENTS.md`, this page,
+[33 — Wave 3 retrospective and handoff](33-wave-3-retrospective.md) (current
+state, open items) and [27 — build and run](27-build-and-run.md) (build,
+acceptance, portable ZIP). Terms are defined once in the [glossary](glossary.md); documents
 link to it instead of redefining them. Each topic below points at exactly one
 canonical document — when writing or updating docs, link rather than duplicate.
 
@@ -35,10 +38,11 @@ patches and baselines: [20](20-native-baseline.md).
 
 ## What is CITnLO
 
-CITnLO (CITra n LOtus) is the **backend name for the `experimental` branch**,
-the future home of tracing/debugger/accuracy work; AZAHAR is the `integration`
-backend name. Today both branches share one pin, so the two builds are
-identical and carry no accuracy experiments. See
+CITnLO (CITra n LOtus) is the **backend name for the `experimental` branch**:
+debugger controls, tracing, rewind/reverse execution, GPU capture and movies
+(Wave 3). AZAHAR is the `integration` backend name, with minimal hooks and
+frontend adapters. The branches have separate pins; neither carries accuracy
+experiments yet. See
 [glossary → CITnLO](glossary.md), [03](03-azahar-branches.md),
 [20](20-native-baseline.md).
 
@@ -75,7 +79,9 @@ identical and carry no accuracy experiments. See
   [15](15-implementation-tickets.md); delivered so far:
   [25 — wave status](25-wave-status.md).
 - **Wave 3 — comprehensive agentic debugger** — decisions, Azahar parity
-  matrix and milestones 3.0–3.4: [29](29-wave-3-plan.md).
+  matrix and milestones 3.0–3.4: [29](29-wave-3-plan.md); implemented,
+  evidence in [31](31-wave-3-progress.md), handoff in
+  [33](33-wave-3-retrospective.md).
 - **Accuracy research path** — phases A–E, from cataloging Azahar's inherited
   assumptions to an independent PICA200 model and real firmware:
   [11](11-accuracy-research.md).
@@ -107,11 +113,11 @@ Opt-in native tests: [21, reproduction](21-native-control.md).
 | Debugging | [07](07-debugger-core.md) CPU/kernel · [08](08-gpu-and-trace.md) GPU · [09](09-mcp-and-scenarios.md) MCP |
 | Research | [11](11-accuracy-research.md) accuracy · [12](12-hardware-validation.md) hardware · [14](14-sources-and-evidence.md) sources |
 | Build & process | [13](13-build-test-release.md) build/CI · [17](17-scaffold-and-pins.md) pins |
-| Implementation records | [18](18-control-pipes.md) pipes · [19](19-screen-spike.md) screen spike · [21](21-native-control.md) native control · [22](22-scenario-runner.md) scenarios · [23](23-local-mcp.md) MCP · [24](24-desktop.md) desktop · [25](25-wave-status.md) wave status · [26](26-portable-release.md) portable release · [27](27-build-and-run.md) build and run · [28](28-delivery-retrospective.md) retrospective · [30](30-sessions-and-interface.md) sessions and interface � [31](31-wave-3-progress.md) Wave 3 evidence � [32](32-debugger-command-parity.md) debugger command parity |
+| Implementation records | [18](18-control-pipes.md) pipes · [19](19-screen-spike.md) screen spike · [21](21-native-control.md) native control · [22](22-scenario-runner.md) scenarios · [23](23-local-mcp.md) MCP · [24](24-desktop.md) desktop · [25](25-wave-status.md) wave status · [26](26-portable-release.md) portable release · [27](27-build-and-run.md) build and run · [28](28-delivery-retrospective.md) retrospective · [30](30-sessions-and-interface.md) sessions and interface · [31](31-wave-3-progress.md) Wave 3 evidence · [32](32-debugger-command-parity.md) debugger command parity · [33](33-wave-3-retrospective.md) Wave 3 retrospective |
 
 ## Documentation rules
 
-- Numbers `01`–`30` are stable identifiers; never renumber, never duplicate
+- Numbers `01`–`33` are stable identifiers; never renumber, never duplicate
   another document's content — link to it or to the glossary.
 - New documents get the next number and a row in the map above, plus any new
   terms in the glossary.

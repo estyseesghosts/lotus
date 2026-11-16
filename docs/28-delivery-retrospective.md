@@ -63,5 +63,6 @@ not line by line). Evidence for results: [25](25-wave-status.md),
 
 Visible GPUI rendering and input, actual two-DPI behavior, audible audio, title
 save formats beyond the drawbench CSV, accelerated renderers, other platforms,
-and the launch-path pixel sensitivity. Debugger and accuracy work (Waves 3–4) is
-not started; see [15](15-implementation-tickets.md).
+and the launch-path pixel sensitivity. Update: Wave 3 (debugger) is implemented,
+with visible rendering/input checked by screenshot; see
+[33](33-wave-3-retrospective.md). Wave 4 (accuracy) is not started.

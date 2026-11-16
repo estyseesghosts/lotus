@@ -23,9 +23,9 @@ identifier `azahar_native_software`. Canonical: [03](03-azahar-branches.md),
 
 **CITnLO** (CITra n LOtus)
 Backend name for a worker built from the `experimental` branch: tracing,
-debugger controls and accuracy experiments live here. Both branches currently
-share one pin, so AZAHAR and CITnLO builds are identical today; no accuracy
-experiments exist yet. Canonical: [03](03-azahar-branches.md),
+debugger controls, rewind, GPU capture and movies live here, and accuracy
+experiments will. Pinned separately from AZAHAR; no accuracy experiments
+exist yet. Canonical: [03](03-azahar-branches.md),
 [17](17-scaffold-and-pins.md), [20](20-native-baseline.md).
 
 ## Branches and sources

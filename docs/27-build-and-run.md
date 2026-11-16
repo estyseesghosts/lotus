@@ -158,3 +158,45 @@ days, so a reuse run must be recent.
 | Tests "pass" with nothing run | native tests are opt-in; use `scripts/test-native.ps1` |
 | Release job skipped after green `package` | fixed in `7f9dc3e`; `release` needs `always()` when build jobs are skipped |
 | Linker warning about duplicate manifest/resource | GPUI's, known and harmless on GNU |
+
+## 9. Local developer loop (Wave 3 workstation layout)
+
+The owner's workstation keeps sibling checkouts next to `lotus/`:
+`../azahar-integration` and `../azahar-experimental` (native development trees,
+committed on their branches, then pinned) and `../azahar-stock` (control).
+`vendor/azahar` is the integration submodule; pin moves update
+`config/pins.toml` and the submodule pointer in one commit. Here the tools live
+in `build/toolchains/winlibs/mingw64/bin` (GCC/CMake/Ninja),
+`build/windows-sdk/c/bin/10.0.28000.0/x64/fxc.exe` (FXC) and
+`build/toolchains/bin` (Arm GNU 15.2 GCC/GDB); a fresh clone uses §2 instead.
+
+```bash
+export PATH="$PWD/build/toolchains/winlibs/mingw64/bin:$PATH"
+# Fast incremental native rebuild while iterating:
+cmake build/azahar-experimental-native          # re-run after native commits: CTR_SOURCE_SHA is set at configure time
+cmake --build build/azahar-experimental-native --target ctr-worker --parallel 8
+# Before recording evidence or packaging (checks pin, cleanliness; writes lotus-build-manifest.json):
+powershell -File scripts/build-azahar.ps1 -Branch experimental -AzaharRoot ../azahar-experimental -BuildDirectory build/azahar-experimental-native -Parallel 8
+```
+
+A running `ctr-worker.exe` cannot be relinked on Windows. Settings bindings are
+generated: `python tools/generate-settings.py` (see its docstring for apply
+classes). Owned fixtures need clang (or `--gcc` devkitARM):
+`python tools/build-debug-fixture.py build/fixtures/<name> --fixture <name>`
+(debugger, audio, microphone, dsp, peripherals, filesystem, divergence).
+
+Acceptance (outputs go to fresh directories under ignored `runs/`):
+
+| Check | Command |
+| --- | --- |
+| Native debugger/reverse/filesystem | `python tools/{debugger,reverse,filesystem}_acceptance.py <worker> <fixture.3dsx> <out>` |
+| GDB | `python tools/gdb_acceptance.py <arm-none-eabi-gdb> target/debug/ctr-cli.exe <worker> <debugger.3dsx> <out>` |
+| Settings | `python tools/settings_acceptance.py <worker> <debugger.3dsx> <gpu.3dsx> <out> [--classes-only]` |
+| Overhead / Vulkan | `tools/overhead_acceptance.py`, `tools/vulkan_acceptance.py` (see `--help`) |
+| MCP | `python tests/test_mcp_<name>.py <abs lotus-mcp.exe> <abs host.json> <asset handles…> <abs out>` |
+| Scenario movies | `python tests/test_scenario_movie.py target/debug/ctr-cli.exe <experimental worker> <3dsx> <out>` |
+
+MCP host configs are JSON (`storage_root`, `allow_control`, `assets`, `worker`;
+[23](23-local-mcp.md)); give each run a fresh `storage_root`. Python on
+Windows needs absolute paths for the server and config. Results and
+retrospective: [31](31-wave-3-progress.md), [33](33-wave-3-retrospective.md).

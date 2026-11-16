@@ -55,3 +55,10 @@ Corresponding source: the tag's LOTUS tree, pinned fork commits and recursive
 submodules, plus Cargo.lock's exact Rust sources. The source ZIP excludes Git
 metadata; use `git clone --branch v0.0.1 --recurse-submodules
 https://github.com/estyseesghosts/lotus.git` for the Git-based build scripts.
+
+Wave 3 packaging (2026-11-16, local, **verified compiled** and package-tested):
+the same commands ([27](27-build-and-run.md) §6) built a ZIP from the Wave 3
+pins — runtime manifests record integration `5a3c702f` and experimental
+`6361ddc3` — and `tests/test_portable.py` passed (relocation, hashes, DLL
+closure, launchers, CLI/MCP/native startup). Not published: a release needs a
+version bump past the existing v0.0.1 tag and the owner's go-ahead.
