@@ -2584,11 +2584,13 @@ dependencies = [
  "lotus-protocol",
  "lotus-session",
  "lotus-trace",
+ "raw-window-handle",
  "rmcp",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
+ "windows",
 ]
 
 [[package]]
