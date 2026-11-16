@@ -17,6 +17,7 @@ name = "lotus-desktop"
 path = "src/main.rs"
 
 [dependencies]
+image = { version = "=0.25.10", default-features = false }
 lotus-accuracy = { workspace = true }
 lotus-debugger = { workspace = true }
 lotus-hardware = { workspace = true }
@@ -28,3 +29,8 @@ gpui_platform = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+
+[[bin]]
+name = "lotus-screen-spike"
+path = "src/screen_spike.rs"
+

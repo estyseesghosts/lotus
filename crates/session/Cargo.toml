@@ -19,5 +19,3 @@ tracing = { workspace = true }
 [[bin]]
 name = "lotus-mock-worker"
 path = "src/mock_worker.rs"
-
-

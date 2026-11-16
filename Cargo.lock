@@ -2569,6 +2569,7 @@ version = "0.1.0"
 dependencies = [
  "gpui",
  "gpui_platform",
+ "image",
  "lotus-accuracy",
  "lotus-debugger",
  "lotus-hardware",
