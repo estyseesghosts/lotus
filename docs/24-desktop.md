@@ -10,7 +10,9 @@ as its own task, so a slow worker never stalls another session. Complete input
 states coalesce separately (8 ms flush), so key/touch releases never depend on
 command-queue space. Only the selected session is previewed; the latest screen
 pair replaces the previous one, and replaced images are dropped from GPUI's
-sprite atlas. There is no frame history. With `--mcp` the same runtime serves
+sprite atlas. Previews come from the worker's shared-memory ring and fall back to
+`capture` on workers without it ([21](21-native-control.md#ownership-and-budgets)).
+There is no frame history. With `--mcp` the same runtime serves
 MCP on stdio over the same supervisor.
 
 Launch: `lotus-desktop [--mcp] host.json` ([23](23-local-mcp.md) host config).

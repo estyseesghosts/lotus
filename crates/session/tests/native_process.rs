@@ -92,6 +92,66 @@ async fn native_lifecycle_frames_input_and_safe_reads() {
     std::fs::remove_dir_all(root).expect("all instance files released");
 }
 
+/// Issue #6: live previews come from each worker's shared-memory ring, match an explicit
+/// capture whenever the guest is paused, never carry an old epoch, and stay separate between
+/// concurrent workers and across a worker restart.
+#[tokio::test]
+#[ignore = "requires explicitly supplied native executable and homebrew fixture"]
+async fn shared_previews_match_capture_per_worker_and_epoch() {
+    let (executable, fixture, root) = config();
+    let other_root = root.with_extension("other");
+    let mut a = NativeSession::spawn(&executable, &root).await.expect("a");
+    let mut b = NativeSession::spawn(&executable, &other_root)
+        .await
+        .expect("b");
+    for session in [&mut a, &mut b] {
+        session.load(&fixture).await.expect("load");
+    }
+    a.advance(30).await.expect("a runs");
+    b.advance(12).await.expect("b runs");
+    let pixels = |frames: &[lotus_session::native_session::Frame]| {
+        frames.iter().map(|f| f.bgra.clone()).collect::<Vec<_>>()
+    };
+    let (preview_a, frame_a) = a.preview().await.expect("a preview");
+    let (preview_b, frame_b) = b.preview().await.expect("b preview");
+    assert_eq!(frame_a, Some(30), "paused preview is the current frame");
+    assert_eq!(frame_b, Some(12));
+    assert!(
+        preview_a.iter().all(|f| f.lease.path.is_empty()),
+        "shared memory, not files"
+    );
+    assert_eq!(pixels(&preview_a), pixels(&a.capture().await.unwrap()));
+    assert_eq!(pixels(&preview_b), pixels(&b.capture().await.unwrap()));
+    a.run().await.expect("run");
+    for _ in 0..20 {
+        let (frames, shown) = a.preview().await.expect("running preview");
+        assert_eq!(frames.len(), 2);
+        assert!(frames.iter().all(|f| f.lease.epoch == a.epoch()));
+        assert!(shown.is_some());
+    }
+    a.pause().await.expect("pause");
+    let old_epoch = a.epoch();
+    a.reset().await.expect("reset");
+    a.advance(2).await.expect("run after reset");
+    let (after_reset, _) = a.preview().await.expect("preview after reset");
+    assert!(a.epoch() != old_epoch);
+    assert!(after_reset.iter().all(|f| f.lease.epoch == a.epoch()));
+    assert_eq!(pixels(&after_reset), pixels(&a.capture().await.unwrap()));
+    a.stop().await.expect("stop a");
+    let mut restarted = NativeSession::spawn(&executable, &root)
+        .await
+        .expect("restart");
+    restarted.load(&fixture).await.expect("reload");
+    restarted.advance(5).await.expect("run");
+    let (fresh, shown) = restarted.preview().await.expect("restarted preview");
+    assert_eq!(shown, Some(5));
+    assert_eq!(pixels(&fresh), pixels(&restarted.capture().await.unwrap()));
+    restarted.stop().await.expect("stop restarted");
+    b.stop().await.expect("stop b");
+    std::fs::remove_dir_all(root).expect("release a");
+    std::fs::remove_dir_all(other_root).expect("release b");
+}
+
 #[tokio::test]
 #[ignore = "requires explicitly supplied native executable and homebrew fixture"]
 async fn four_native_workers_survive_forced_sibling_failure() {

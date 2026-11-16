@@ -1014,7 +1014,7 @@ impl Supervisor {
         if paused && *lock(&handle.previewed) == Some(key) {
             return None;
         }
-        let captured = native.capture().await.ok()?;
+        let (captured, _) = native.preview().await.ok()?;
         *lock(&handle.previewed) = paused.then_some(key);
         Some(captured)
     }

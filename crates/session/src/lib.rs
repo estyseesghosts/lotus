@@ -8,6 +8,7 @@
 mod assets;
 pub mod card_store;
 pub mod native_session;
+pub mod preview_ring;
 #[cfg(windows)]
 mod process_job;
 mod process_memory;

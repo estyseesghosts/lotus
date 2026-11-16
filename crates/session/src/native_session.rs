@@ -16,6 +16,7 @@ use crate::{SessionState, WorkerSpec};
 #[serde(deny_unknown_fields)]
 pub struct FrameLease {
     pub screen: String,
+    /// Ring file under the session root; empty for shared-memory previews.
     pub path: String,
     pub epoch: u64,
     pub sequence: u64,
@@ -61,6 +62,10 @@ pub struct NativeSession {
     executable: PathBuf,
     /// Every setting applied through [`Self::apply_profile`], replayed on a replacement.
     applied: std::collections::BTreeMap<String, lotus_protocol::debug::SettingValue>,
+    /// Worker serves `preview` from shared memory (`preview: shared_memory_v1` in hello).
+    shared_preview: bool,
+    /// The mapped ring, reopened whenever the worker reports a different section.
+    preview_ring: Option<crate::preview_ring::Mapping>,
 }
 
 impl NativeSession {
@@ -97,6 +102,8 @@ impl NativeSession {
             renderer_fallback: None,
             executable: executable.to_path_buf(),
             applied: std::collections::BTreeMap::new(),
+            shared_preview: reply.data["preview"] == "shared_memory_v1",
+            preview_ring: None,
         };
         if reply.data["debug_api"] == true {
             session.refresh_profile().await?;
@@ -342,6 +349,67 @@ impl NativeSession {
                 Ok(Frame { lease, bgra })
             })
             .collect()
+    }
+
+    /// Screens for live display. Uses the worker's shared-memory ring when offered (no disk
+    /// writes; on Vulkan possibly the previous request's frame, see `preview_ring`), else an
+    /// explicit capture. Also returns the presented frame the pixels belong to, when known.
+    /// Frames from an earlier epoch are refused.
+    pub async fn preview(&mut self) -> io::Result<(Vec<Frame>, Option<u64>)> {
+        if !self.shared_preview {
+            return Ok((self.capture().await?, None));
+        }
+        let data = self.operation(Method::Preview, Value::Null).await?;
+        let reply: crate::preview_ring::PreviewReply =
+            serde_json::from_value(data).map_err(io::Error::other)?;
+        if reply.frames.len() != 2 {
+            return Err(io::Error::other("preview must contain exactly two screens"));
+        }
+        if self
+            .preview_ring
+            .as_ref()
+            .is_none_or(|ring| ring.name != reply.name || ring.size() != reply.bytes)
+        {
+            self.preview_ring = None;
+            self.preview_ring = Some(crate::preview_ring::Mapping::open(
+                &reply.name,
+                reply.bytes,
+            )?);
+        }
+        let ring = self.preview_ring.as_ref().expect("opened above");
+        let epoch = self.epoch();
+        let mut frames = Vec::with_capacity(2);
+        for lease in reply.frames {
+            crate::preview_ring::validate(&lease, ring.size())?;
+            if lease.epoch != epoch {
+                return Err(io::Error::other("preview from an earlier epoch"));
+            }
+            if ring.bytes(lease.offset, crate::preview_ring::HEADER)
+                != crate::preview_ring::header(&lease)
+            {
+                return Err(io::Error::other("stale or malformed preview slot"));
+            }
+            let bgra = ring
+                .bytes(lease.offset + crate::preview_ring::HEADER, lease.bytes)
+                .to_vec();
+            frames.push(Frame {
+                lease: FrameLease {
+                    screen: lease.screen,
+                    path: String::new(),
+                    epoch: lease.epoch,
+                    sequence: lease.sequence,
+                    slot: lease.slot,
+                    width: lease.width,
+                    height: lease.height,
+                    stride: lease.stride,
+                    format: lease.format,
+                    orientation: lease.orientation,
+                    bytes: lease.bytes,
+                },
+                bgra,
+            });
+        }
+        Ok((frames, Some(reply.frame)))
     }
 
     pub async fn stop(&mut self) -> io::Result<()> {

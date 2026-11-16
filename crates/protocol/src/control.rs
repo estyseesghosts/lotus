@@ -21,6 +21,8 @@ pub enum Method {
     Pause,
     Reset,
     Capture,
+    /// Live preview into the worker's shared-memory ring (`preview` in the hello reply).
+    Preview,
     Input,
     ReadMemory,
     Registers,

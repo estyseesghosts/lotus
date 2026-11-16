@@ -26,6 +26,7 @@ commands. IDs increase and are never retried after a transport failure.
 | pause | none | outer RunLoop returned; no nested teardown |
 | reset | none | same content reloaded, paused, epoch incremented |
 | capture | none | two native screen leases copied from latest software output |
+| preview | none | two leases into the worker's shared-memory ring (CITnLO and AZAHAR on Windows); `unsupported` elsewhere |
 | input | owner live/scenario, buttons, x/y, touch | complete input state installed |
 | registers | core 0–3, also checked against active core count | 16 registers/CPSR at safe point |
 | read_memory | address u32, length 1–4096 | mapped current-process bytes at safe point |
@@ -48,6 +49,25 @@ fields, bounds allocation, checks the header and returns owned pixels before
 another capture. There is no wait for UI acknowledgement. Old slot sequences,
 load/reset epochs and stopped/crashed sessions invalidate leases. Total pixel slot
 storage is bounded to 2,073,600 bytes plus six headers.
+
+Live previews skip the files (issue #6). On Windows `hello` reports
+`preview: "shared_memory_v1"` and the worker owns a pagefile-backed section
+`Local\lotus-ctr-<pid>-<nonce>` of three slots, each holding both screens with
+the same 32-byte header (`src/ctr_worker/frames.h` `PreviewRing`). `preview`
+writes one slot and returns its name, size, one lease per screen with a byte
+offset, and `frame`/`current_frame`/`current_epoch`. The host maps the section
+read-only (`crates/session/src/preview_ring.rs`), validates the lease against
+native geometry and the mapping size, checks the header and copies the pixels
+before its next request to that worker. The session command lock serializes
+both, so a slot is never read while being written. A lease from an older epoch
+is refused. Under Vulkan the worker records the copy, submits without waiting,
+and returns the previous request's slot when it is ready, so a preview can be
+one request behind (`frame` < `current_frame`, at most 3 frames in
+`tools/preview_acceptance.py`). Software previews are never behind. `capture`
+is unchanged and stays synchronous, for tests and artifacts. Paused previews
+match `capture` byte for byte on both workers (`tools/preview_acceptance.py`,
+verified emulator). Disk writes stay below 4 KiB per preview, which is the pipe
+reply, and the capture files are untouched.
 
 Input factories expose one complete state to HID. Scenario ownership excludes
 live input until reload/reset. Sending all-zero state releases keys/touch after
