@@ -92,11 +92,13 @@ if __name__ == "__main__":
     parser.add_argument("debug_rom", type=Path, help="owned debugger fixture")
     parser.add_argument("gpu_rom", type=Path, help="homebrew GPU ROM (user asset)")
     parser.add_argument("output", type=Path)
+    parser.add_argument("--classes-only", action="store_true",
+                        help="integration (AZAHAR) workers lack the PICA draw stops")
     args = parser.parse_args()
     out = args.output.resolve()
     report = {"classes": classes(args.worker.resolve(), args.debug_rom.resolve(), out / "classes")}
     print(json.dumps(report["classes"]), flush=True)
-    for new in (False, True):
+    for new in () if args.classes_only else (False, True):
         for vulkan in (False, True):
             label = f"{'new' if new else 'old'}-{'vulkan' if vulkan else 'software'}"
             runs = {case: draws(args.worker.resolve(), args.gpu_rom.resolve(), out / label / case, new, s, vulkan)
