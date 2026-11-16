@@ -50,9 +50,46 @@ These are emulator output bytes, not hardware witnesses. Stock uses upstream
 compatibility applets. Source-layout metadata: 240 columns by 400/320 rows,
 transposed by upstream into contiguous native display rows (400/320 by 240).
 
-Current shared native pin: `020136d270a5ed3ae67987644432028f979a2204`.
+Current shared native pin: `05773bbb5380bc5094fcd8eacf189fdc5d6360bb`.
 Additional patches: T05 frontend `e089d9825`, T06 native frames `616b21889`,
 T07 input/muted audio `f7e593c8a`, T08 safe-point control `31a7c1188`,
-backend naming `020136d27`. All belong to integration; no accuracy changes exist.
-AZAHAR is compiled/tested; the independent CITnLO build is in progress.
+backend naming `020136d27`, load-epoch invalidation `05773bbb5`.
+All belong to integration; no accuracy changes exist.
+AZAHAR and CITnLO are independently compiled and emulator-tested.
 See [21](21-native-control.md) for interfaces, tests and limitations.
+
+## Final differential and storage checks
+
+**Verified emulator**, final pin above, Release flags from the matrix. The fork
+also builds with `ENABLE_CTR_WORKER=OFF`: its oracle driver booted 60 frames and
+matched stock exactly. Using the same ordinary absolute `t03.3dsx` path in both
+drivers produced RGBA SHA-256:
+
+- Top: `5c4a4f1128dbdbf3c5879fbc119cc1de706b3a8d414f6c3d822d05ae96853134`
+- Bottom: `c1e3d414bf7f28fe565a47b763ad41c77f5bbb5f7f960e459b5e23dc36b32743`
+
+The native worker's `--boot` output matches these bytes after BGRA/RGBA channel
+conversion. The earlier relative-path stock run above gave different pixels;
+stock itself reproduces this launch-path sensitivity. Its cause is unresolved.
+Use identical absolute fixture paths for differential runs; do not interpret
+path-dependent fixture output as an established accuracy regression.
+
+A second external fixture, `coffeepot/ctr/benchmarks/drawbench/drawbench.3dsx`,
+SHA-256 `e881bb724620c5adab64d5947932022c86755ab05dd57513eb00795e199e13ef`,
+booted 60 frames in stock and two simultaneous native workers. Both workers
+matched stock RGBA hashes:
+
+- Top: `f4bf5eedd807f45307d7eabbc8ab8558ac4d3c1e34fcc684dbd0e9ce58301b87`
+- Bottom: `d0600b9d5c84922f0e79720b009428f4ca56185221d04aa714c6a297d80296cc`
+
+Each guest wrote its own 713-byte `sdmc/coffeepot/s001/drawbench.csv` under its
+private root. This verifies simultaneous guest SD writes, not all title-save
+formats or any hardware timing conclusion. Primary path ownership is in
+`src/ctr_worker/frontend.h`, `src/common/file_util.cpp` and
+`src/core/hle/service/fs/archive.cpp` at the native pin.
+
+Reproduce with identical absolute fixture paths and fresh absolute output roots:
+`lotus-stock-oracle.exe <fixture> <stock-root>`,
+`ctr-worker.exe --boot <fixture> <native-root>`, then
+`python tests/compare_stock_native.py <stock-root> <native-root>`.
+Raw captures and guest CSVs remain local in ignored build directories.

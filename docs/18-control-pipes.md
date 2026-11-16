@@ -3,6 +3,8 @@
 Status: **verified compiled** on Windows GNU; process acceptance tests executed.
 No Azahar emulation is advertised by this spike. Source baseline:
 `11eceda5e0e682a1f44e396bf954a1b9137097ca`; no native files changed.
+This records the original T03 spike. The implemented native extension and current
+containment behavior are in [21](21-native-control.md).
 
 ## Decision
 
@@ -16,7 +18,7 @@ Each message is a four-byte little-endian unsigned byte count followed by UTF-8
 JSON. The count must be in 1..=65536 before allocation. Schema:
 `specs/control-v1.schema.json`; executable types: `protocol::control`.
 The existing fixed C ABI structs are unchanged. The larger protocol draft is
-still proposed; no native worker compatibility is claimed.
+still proposed; the delivered native subset is documented in [21](21-native-control.md).
 
 The connection starts with hello, session identity and epoch 1; status and stop
 follow. Replies echo identity, request number and epoch. Unknown fields/methods,
@@ -43,9 +45,9 @@ Identifiers are not authentication secrets.
 
 ## Limits and rollback
 
-Linux/macOS are untested. This is T03 process infrastructure, not T09: drop
-kills the direct child; descendant job containment, storage locks, native
-capabilities and emulation commands remain to be implemented. The old scaffold
+Linux/macOS are untested. The original T03 spike killed only the direct child;
+T09 has since added Windows descendant jobs, storage locks, native capabilities
+and emulation commands ([21](21-native-control.md)). The old scaffold
 WorkerProcess remains untouched. No guest output/performance claim applies;
 only host process/control behavior is exercised. Remove the CLI mock command
 and new modules to roll back without changing native behavior.

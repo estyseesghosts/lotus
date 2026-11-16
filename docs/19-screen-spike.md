@@ -31,5 +31,6 @@ At ten minutes (19:50:06–20:00:06 local, 2026-11-15), working set was
 CPU time was 332.8 host seconds. Live touch interaction and actual two-DPI
 presentation remain acceptance gaps. Existing .rsrc manifest linker warning remains visible.
 
-Rollback: remove the separate executable and geometry module; the normal desktop
-entrypoint is unchanged. Linux/macOS remain untested.
+Visual and actual two-DPI interaction checks are deferred at the user's request
+to continue without Computer Use. Rollback: disable the separate spike executable;
+its geometry module is now also used by the native desktop. Linux/macOS remain untested.

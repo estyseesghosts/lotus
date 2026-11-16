@@ -29,7 +29,9 @@ size/hash. No shell, arbitrary filesystem, network listener or Azahar UDP RPC.
 **Verified emulator**: the opt-in `native_parity` test compares MCP screen bytes
 with the shared native API at frame 60, and checks read-only permission, asset,
 session and resource restrictions. Windows GNU AZAHAR at native pin
-`020136d270a5ed3ae67987644432028f979a2204`; no hardware verification.
+`05773bbb5380bc5094fcd8eacf189fdc5d6360bb`; the same acceptance passed on CITnLO.
+`tests/test_mcp_native.py` additionally exercises actual stdio initialization,
+tool calls, resource listing/reading and shutdown. No hardware verification.
 
 Source: `mcp::{server,tool_arguments}`, `session::{supervisor,native_session}`.
 MCP framing/types follow pinned `rmcp 3.10.0` source in Cargo.lock. Windows path

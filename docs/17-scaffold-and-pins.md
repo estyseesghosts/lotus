@@ -1,147 +1,71 @@
-# 17 — Scaffold, pinned dependencies and how to build it
+# Build and dependency pins
 
-**Status:** scaffolded and verified on the development host. **Date:** 2026-11-15. **Host:** Windows
-(x86_64), GNU toolchain.
+LOTUS uses native process workers: **AZAHAR** (`integration`) and **CITnLO**
+(`experimental`). The future replacement backend is **LOTUS**. The two Azahar
+branches currently share integration code; no accuracy experiments exist yet.
 
-This document describes the repository skeleton that now exists, the exact revisions everything is
-pinned to, how to reproduce the environment, and what is *not* built yet.
+Immutable revisions live in [config/pins.toml](../config/pins.toml); Cargo.lock
+pins Rust dependencies and vendor/azahar pins native source. Upstream control:
+`11eceda5e0e682a1f44e396bf954a1b9137097ca`. GPUI/Zed:
+`6b720973027999bae402df23d469026f4cced988`. Rust:
+`1.98.1-x86_64-pc-windows-gnu`.
 
-## 1. Pinned revisions
+## Build
 
-All pins live in [`config/pins.toml`](../config/pins.toml) and are checked by
-[`scripts/verify-pins.ps1`](../scripts/verify-pins.ps1).
-
-| Dependency | Source | Revision |
-| --- | --- | --- |
-| Azahar (upstream) | `https://github.com/azahar-emu/azahar.git` | `11eceda5e0e682a1f44e396bf954a1b9137097ca` |
-| Azahar fork | `https://github.com/estyseesghosts/azahar.git` | branch `integration` and branch `experimental`, both currently at the upstream commit above |
-| GPUI | `https://github.com/zed-industries/zed.git` (`crates/gpui`) | `6b720973027999bae402df23d469026f4cced988` (`gpui` 0.2.2) |
-| Rust | rustup toolchain | `1.98.1-x86_64-pc-windows-gnu` |
-
-Notes:
-
-- The Azahar fork exists so that the two long lived branches described in
-  [03 — Two-branch Azahar strategy](03-azahar-branches.md) can live in one place. Both branches start
-  from the same upstream commit; the `experimental` branch has not diverged yet.
-- GPUI is consumed as a git dependency with an exact `rev`. It is **not** the crates.io release: the
-  crates.io `gpui` 0.2.2 does not carry the same tree, and the pinned commit is the only revision the
-  project builds and tests against.
-- The pinned GPUI commit requires Rust 1.98.1, which is the version Zed itself pins at that commit.
-  The toolchain is therefore pinned to the same version.
-
-## 2. Repository layout
-
-```
-lotus/
-├── Cargo.toml            # workspace, shared dependency versions
-├── Cargo.lock            # committed: exact versions of every crate
-├── rust-toolchain.toml   # pinned toolchain, explicit host triple
-├── config/pins.toml      # pinned source revisions
-├── crates/
-│   ├── protocol/         # versioned worker protocol, FFI structs, capabilities
-│   ├── session/          # worker process lifecycle, per session storage isolation
-│   ├── trace/            # bounded structured event capture
-│   ├── debugger/         # breakpoints, memory requests, register snapshots
-│   ├── runner/           # scenario schema, validation, execution limits
-│   ├── hardware/         # subsystem, timing domain and evidence vocabulary
-│   ├── accuracy/         # frame and state differential comparison
-│   ├── mcp/              # MCP server (adapter to the session supervisor)
-│   ├── cli/              # `ctr-cli`, headless entry point
-│   └── desktop/          # GPUI application shell
-├── workers/
-│   ├── azahar/           # C++ worker: ABI header, stub entry point, CMake
-│   └── native/           # future Rust emulation backend (not started)
-├── vendor/azahar/        # pinned Azahar checkout, git submodule
-├── tools/hardware-tests/ # devkitPro 3DS ground truth programs (not started)
-├── tests/                # smoke, integration, differential, fixtures, scenarios
-├── scripts/              # bootstrap, pin verification, native build, smoke
-├── specs/                # proposed protocol and scenario shapes
-└── docs/                 # this dossier
-```
-
-## 3. What is verified right now
-
-| Item | Label |
-| --- | --- |
-| `cargo build --workspace` | **verified compiled** |
-| `cargo test --workspace` (51 tests) | **verified compiled** |
-| `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets` | **verified clean** |
-| `ctr-cli version`, `ctr-cli pins`, `ctr-cli scenario validate` | **verified compiled** |
-| Vendored Azahar checkout with all of its submodules | **verified compiled** (source present, not built) |
-| GPUI desktop shell | **verified compiled** and **launched**: the process starts, opens a window and stays running; the window contents were not inspected |
-| MCP server | **verified compiled**: `initialize`, `tools/list` and `tools/call` answered over stdio |
-| Native worker | **verified compiled**: the entry point is a protocol stub, no Azahar core is linked |
-| Azahar core build on this host | **not built**: see section 5 |
-
-The Rust workspace builds against the pinned GPUI commit and links with the GNU toolchain. The
-protocol ABI is defined once, in Rust, and mirrored in `workers/azahar/include/lotus_protocol.h`; both
-sides assert the same struct sizes (`FrameHeader` 48 bytes, `WorkerHello` 64 bytes, `EventHeader` 40
-bytes), so the ABI cannot drift silently.
-
-## 4. Reproducing the environment
+This Windows host uses GCC/MinGW-w64 16.2, CMake 4.4.3 and Ninja. MSVC and other
+host platforms are untested. GPUI links against Windows D3D import libraries.
+Its existing `.rsrc merge failure: multiple non-default manifests` warning remains
+visible; visual acceptance is deferred at the user's request.
 
 ```powershell
-# Toolchain, vendored sources, Cargo dependencies, pin verification.
-scripts\bootstrap.ps1
-
-# Fast checks.
-scripts\smoke.ps1
+scripts/bootstrap.ps1
+scripts/smoke.ps1
+scripts/build-azahar.ps1 -Branch integration
+scripts/build-azahar.ps1 -Branch experimental
+scripts/build-azahar.ps1 -Branch stock -Oracle -BuildDirectory build/azahar-stock
 ```
 
-`bootstrap.ps1` is idempotent. It installs the pinned toolchain with rustup, updates the Azahar
-submodule and its own submodules, runs `cargo fetch` and then `verify-pins.ps1`.
+Native builds require sibling worktrees `azahar-stock`, `azahar-integration`,
+`azahar-experimental`, or an explicit `-AzaharRoot`. Each must be clean at its
+manifest pin, with recursive submodules initialized. Existing worktrees were
+created from the supplied parent azahar clone; see [20](20-native-baseline.md).
+The script rejects moving/dirty inputs and a cache belonging to another tree.
+Each flavor has its own cache and `lotus-build-manifest.json` with SHA/flags/host.
+It builds native `ctr-worker` directly. `workers/azahar` is a retired scaffold
+stub and is not the runtime target. Local native commits must be published or
+transferred with their Git objects before a different machine can fetch the pins.
 
-`verify-pins.ps1` fails when the vendored checkout, the recorded submodule pointer, the GPUI entry in
-`Cargo.lock` and the active toolchain drift away from `config/pins.toml`.
+The initial native matrix is Release, software renderer, Qt/SDL/Libretro off,
+host audio devices off, GDB compiled but disabled, LTO off. See script for every
+flag. There are no runtime dependency downloads and no bundled Nintendo assets.
 
-## 5. Toolchain situation on this host
+## Run
 
-This machine has **no MSVC installation**: no Visual Studio, no Windows SDK and no `link.exe` from
-MSVC. `rustup` therefore resolves `channel = "1.98.1"` to the MSVC host by default, which cannot link
-anything here.
+Create an ignored local host configuration as shown in [23](23-local-mcp.md).
+The desktop and MCP consume the same configuration and native session API:
 
-The project therefore pins the toolchain with an explicit host triple,
-`1.98.1-x86_64-pc-windows-gnu`, and links with the MinGW-w64 toolchain that is installed. The
-import libraries GPUI needs on Windows (`d3d11`, `dxgi`, `dwrite`, `d3dcompiler`) are present in that
-toolchain, so the GPUI shell links and runs.
+```powershell
+cargo run -p lotus-desktop --bin lotus-desktop -- build/local-host.json
+cargo run -p lotus-mcp --bin lotus-mcp -- build/local-host.json
+cargo run -p lotus-cli --bin ctr-cli -- scenario run specs/native-smoke.yaml build/azahar-integration-native/bin/Release/ctr-worker.exe build/runs 3
+```
 
-Consequences to keep in mind:
+Both applications default to an empty host without configuration. Explicit
+approved asset handles avoid arbitrary-path MCP access. The desktop can create
+four sessions, select/dock screens, run/pause/reset/stop and route keyboard/touch.
+No real audio device is opened; the native DSP sink drains a bounded muted ring.
 
-- The MSVC toolchains that rustup lists are installed but cannot link. Do not "fix" a build failure by
-  switching to them without installing the MSVC build tools.
-- A future switch to MSVC means changing `channel` in `rust-toolchain.toml`, reinstalling the
-  toolchain and re-running `cargo build` from a clean `target` directory.
-- Linking `lotus-desktop` prints one linker warning: `.rsrc merge failure: multiple non-default
-  manifests`. It comes from GPUI's own `windows-manifest` feature on Windows and does not affect the
-  binary. It is left visible rather than silenced.
+## Verification and source map
 
-## 6. What is deliberately not built yet
+`cargo test --workspace`, rustfmt and Clippy cover the Rust workspace. Asset
+tests are explicitly opt-in using `LOTUS_NATIVE_WORKER` and `LOTUS_FIXTURE`:
 
-- **The Azahar core.** Building Azahar on Windows needs its own toolchain (MSYS2/MinGW-w64 or MSVC),
-  CMake, Ninja and the Vulkan SDK for the accelerated backend. `scripts/build-azahar.ps1` configures
-  the worker against `vendor/azahar` with one build directory per branch, but the native core itself
-  has not been compiled on this host.
-- **The worker frontend.** `workers/azahar/src/worker_main.cpp` prints a handshake and exits. It
-  deliberately contains no emulation code, no GPUI, no MCP and no agent concepts.
-- **The GPUI application.** `crates/desktop` is a window shell with an instance list and two screen
-  placeholders. The screens are not yet fed by a worker.
+```powershell
+scripts/test-native.ps1 -Worker build/azahar-integration-native/bin/Release/ctr-worker.exe -Fixture ../t03.3dsx
+```
 
-## 7. Rules that follow from this scaffold
-
-1. A pin is moved in `config/pins.toml`, in `Cargo.lock` and in the submodule pointer **in the same
-   commit**, with a note about why.
-2. The `integration` and `experimental` Azahar branches never share a CMake build directory.
-3. The worker stays free of GPUI, MCP and agent concepts.
-4. Every number in a report declares its time domain: host milliseconds, virtual guest ticks or
-   estimated hardware cycles.
-5. Anything that is not compiled, run on hardware or inspected in source is labelled **proposed**.
-
-## 8. Next tickets
-
-| Ticket | Where |
-| --- | --- |
-| Build the Azahar core on this host and record the exact CMake flags | `docs/13-build-test-release.md` |
-| Replace the worker stub with a minimal `EmuWindow` frontend | `docs/04-azahar-native-worker.md`, `docs/16-azahar-patch-blueprint.md` |
-| Implement the shared memory frame ring and the event stream | `docs/06-ipc-and-session-contract.md` |
-| Feed the GPUI screens from the frame ring | `docs/05-gpui-desktop.md` |
-| First CLI scenario run against a real worker | `docs/15-implementation-tickets.md` |
+Current checks and acceptance gaps: [25](25-wave-status.md). Interfaces and
+primary source paths: [18](18-control-pipes.md), [21](21-native-control.md),
+[22](22-scenario-runner.md), [23](23-local-mcp.md), [24](24-desktop.md).
+The original FFI structs remain scaffold types; the implemented IPC is bounded
+JSON control plus file-ring BGRA frames. Neither implies hardware accuracy.

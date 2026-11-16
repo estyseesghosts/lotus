@@ -1,6 +1,6 @@
 # 15 — Dependency-ordered implementation tickets
 
-Use one small PR per ticket unless two changes are tightly inseparable. `INT` = `integration` Azahar branch, `EXP` = `experimental` branch, `RUST` = product repo. Every PR links its regression test and source SHA. **No code below has been implemented as part of this dossier.**
+Use one small PR per ticket unless two changes are tightly inseparable. `INT` = `integration` (AZAHAR), `EXP` = `experimental` (CITnLO), `RUST` = LOTUS. Every PR links its regression test and source SHA. Current implementation and remaining acceptance checks are recorded in [25 — Wave status](25-wave-status.md); tickets below retain their original requirements.
 
 ## Wave 0 — pin sources and reduce integration risk
 
