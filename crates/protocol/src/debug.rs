@@ -217,6 +217,10 @@ pub enum DebugCommand {
         /// always force a checkpoint.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         interval_frames: Option<u32>,
+        /// zstd level of stored checkpoints (-7..=19, worker default 3). Every level restores
+        /// the same state; lower levels trade memory for checkpoint time.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compression_level: Option<i8>,
     },
     RewindStatus,
     ReverseStep {
@@ -506,6 +510,10 @@ impl DebugCommand {
                 interval_frames: Some(interval),
                 ..
             } if !(1..=60).contains(interval) => Err("rewind interval 1..60 frames"),
+            Self::RewindConfigure {
+                compression_level: Some(level),
+                ..
+            } if !(-7..=19).contains(level) => Err("rewind compression_level -7..19"),
             Self::ReverseStep { core } if *core > 3 => Err("invalid core"),
             Self::Fork { count, overrides } if !(1..=3).contains(count) || overrides.len() > 32 => {
                 Err("fork requires 1..3 siblings and at most 32 overrides")
@@ -778,5 +786,16 @@ mod tests {
         }
         .validate()
         .is_ok());
+        let rewind = |level| DebugCommand::RewindConfigure {
+            enabled: true,
+            capacity: 32,
+            budget_mib: 128,
+            interval_frames: None,
+            compression_level: level,
+        };
+        assert!(rewind(Some(20)).validate().is_err());
+        assert!(rewind(Some(-8)).validate().is_err());
+        assert!(rewind(Some(-7)).validate().is_ok());
+        assert!(rewind(None).validate().is_ok());
     }
 }

@@ -1700,6 +1700,16 @@
           "minimum": 0,
           "type": "integer"
         },
+        "compression_level": {
+          "description": "zstd level of stored checkpoints (-7..=19, worker default 3). Every level restores\nthe same state; lower levels trade memory for checkpoint time.",
+          "format": "int8",
+          "maximum": 127,
+          "minimum": -128,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "enabled": {
           "type": "boolean"
         },

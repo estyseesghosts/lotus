@@ -2095,6 +2095,7 @@ impl LotusWindow {
                         capacity: 64,
                         budget_mib: 128,
                         interval_frames: None,
+                        compression_level: None,
                     },
                     false,
                 ),

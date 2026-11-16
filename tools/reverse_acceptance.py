@@ -23,17 +23,20 @@ def forward(peer, reason):
     return result["stop"]
 
 
-def run(worker, rom, root, new, interval=1):
+def run(worker, rom, root, new, interval=1, level=None):
     syms = symbols(rom.with_suffix(".elf"))
     peer = Peer(worker, root)
-    evidence = dict(new_3ds=new, interval_frames=interval, checks={})
+    evidence = dict(new_3ds=new, interval_frames=interval, compression_level=level, checks={})
     try:
         peer.call("hello")
         peer.debug("settings_set", name="is_new_3ds", value=new)
         peer.call("load", {"path": str(rom)})
         extra = dict(interval_frames=interval) if interval != 1 else {}
+        if level is not None:
+            extra["compression_level"] = level
         configured = peer.debug("rewind_configure", enabled=True, capacity=32, budget_mib=128, **extra)
         assert configured.get("interval_frames", 1) == interval, configured
+        assert level is None or configured.get("compression_level") == level, configured
 
         # Write watchpoint: values v, v+1, v+2 observed after each access.
         bp = peer.debug("breakpoint_set", address=syms["watched"], kind="write", length=4)
@@ -111,8 +114,9 @@ if __name__ == "__main__":
     parser.add_argument("rom", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--interval-frames", type=int, default=1, help="rewind checkpoint interval (1..60)")
+    parser.add_argument("--compression-level", type=int, help="rewind checkpoint zstd level (-7..19)")
     args = parser.parse_args()
     for new in (False, True):
         result = run(args.worker.resolve(), args.rom.resolve(), args.output.resolve() / ("new" if new else "old"), new,
-                     args.interval_frames)
+                     args.interval_frames, args.compression_level)
         print(json.dumps({"new_3ds": new, "checks": list(result["checks"])}), flush=True)
