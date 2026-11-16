@@ -20,7 +20,7 @@ commands. IDs increase and are never retried after a transport failure.
 | Method | Parameters | Completion |
 | --- | --- | --- |
 | hello/status | none | state, source SHA, presented frames, input/audio statistics |
-| load | path, local `.3dsx` | loaded and paused, or typed error |
+| load | path, local `.3dsx` | loaded and paused, epoch incremented, or typed error |
 | run | frames 1–600 | started; automatically pauses at budget or 20 host seconds |
 | run_until | frames 1–600 | paused after advancing, or explicit error/deadline |
 | pause | none | outer RunLoop returned; no nested teardown |
@@ -46,7 +46,7 @@ width u32, height u32; then native BGRA8 pixels in top-left row order. Metadata
 also includes byte length, stride, slot and orientation. Rust validates all
 fields, bounds allocation, checks the header and returns owned pixels before
 another capture. There is no wait for UI acknowledgement. Old slot sequences,
-reset epochs and stopped/crashed sessions invalidate leases. Total pixel slot
+load/reset epochs and stopped/crashed sessions invalidate leases. Total pixel slot
 storage is bounded to 2,073,600 bytes plus six headers.
 
 Input factories expose one complete state to HID. Scenario ownership excludes
@@ -75,11 +75,13 @@ $env:LOTUS_FIXTURE = (Resolve-Path ../t03.3dsx).Path
 cargo test -p lotus-session --test native_process -- --ignored --nocapture
 ```
 
-**Verified emulator**, Windows GNU Release: both native tests passed (17.21 host
-seconds total) with the supplied fixture: lifecycle/reset/relaunch, ring overwrite
-and reset invalidation, scripted input exclusion, safe reads while running,
-bounded invalid reads, four simultaneous native workers, forced sibling failure.
-This proves private runtime files, not save-game correctness for every title.
+**Verified emulator**, Windows GNU Release at native pin `05773bbb5`: all three
+native tests passed (20.36 host seconds) with the supplied fixture:
+lifecycle/reset/reload/relaunch, ring overwrite and epoch invalidation, scripted
+input exclusion, safe reads while running, bounded invalid reads, four simultaneous
+workers, forced sibling failure, fifth-worker rejection and scoped artifacts
+retained after stop. Guest SD-write isolation is recorded in [20](20-native-baseline.md);
+save-game correctness for every title remains untested.
 No firmware was needed by this fixture; the supplied DSP dump remains external.
 Hardware verification: none. Other platforms/accelerated renderers: untested.
 

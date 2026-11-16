@@ -3,6 +3,7 @@ use std::path::PathBuf;
 
 use lotus_protocol::envelope::SessionUuid;
 use lotus_session::native_session::{InputState, NativeSession};
+use lotus_session::supervisor::{HostConfig, Supervisor};
 
 fn config() -> (PathBuf, PathBuf, PathBuf) {
     let executable =
@@ -74,6 +75,12 @@ async fn native_lifecycle_frames_input_and_safe_reads() {
         "reset invalidates leases"
     );
     session.advance(2).await.expect("run after reset");
+    let before_load = session.capture().await.expect("frame before reload");
+    session.load(&fixture).await.expect("reload content");
+    assert!(
+        session.read_lease(&before_load[0].lease).is_err(),
+        "load invalidates previous content leases"
+    );
     session.stop().await.expect("clean shutdown");
     let mut second = NativeSession::spawn(&executable, &root)
         .await
@@ -120,4 +127,48 @@ async fn four_native_workers_survive_forced_sibling_failure() {
         assert!(child_root.join("worker.stderr.log").exists());
     }
     std::fs::remove_dir_all(root).expect("job handles and locks released after crash");
+}
+
+#[tokio::test]
+#[ignore = "requires explicitly supplied native executable and homebrew fixture"]
+async fn supervisor_bounds_workers_and_retains_scoped_artifacts() {
+    let (worker, fixture, root) = config();
+    let mut host = Supervisor::new(HostConfig {
+        worker,
+        storage_root: root.clone(),
+        assets: std::collections::BTreeMap::from([("fixture".into(), fixture)]),
+        allow_control: true,
+    })
+    .expect("native host");
+    assert!(host.create("../unapproved.3dsx").await.is_err());
+    let mut sessions = Vec::new();
+    for _ in 0..4 {
+        sessions.push(host.create("fixture").await.expect("within worker budget"));
+    }
+    assert!(
+        host.create("fixture").await.is_err(),
+        "fifth worker must be rejected before launch"
+    );
+    host.session(&sessions[0])
+        .expect("owned session")
+        .advance(2)
+        .await
+        .expect("native frames");
+    let capture = host
+        .capture(&sessions[0])
+        .await
+        .expect("immutable artifacts");
+    for id in sessions {
+        host.stop(&id).await.expect("stop owned worker");
+    }
+    assert!(host.read_artifact("file:///C:/Windows/win.ini").is_err());
+    for artifact in capture {
+        assert_eq!(
+            host.read_artifact(&artifact.uri)
+                .expect("artifact survives worker stop")
+                .len(),
+            artifact.bytes
+        );
+    }
+    std::fs::remove_dir_all(root).expect("host releases all worker roots");
 }

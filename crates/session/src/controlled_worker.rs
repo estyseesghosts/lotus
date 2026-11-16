@@ -198,7 +198,11 @@ impl ControlledWorker {
             || reply.request_id != request.request_id
             || reply.session != self.session
             || reply.epoch
-                != self.epoch + u64::from(method == Method::Reset && reply.status == Status::Ok)
+                != self.epoch
+                    + u64::from(
+                        matches!(method, Method::Load | Method::Reset)
+                            && reply.status == Status::Ok,
+                    )
             || !matches!(
                 reply.state.as_str(),
                 "idle" | "running" | "paused" | "stopped"

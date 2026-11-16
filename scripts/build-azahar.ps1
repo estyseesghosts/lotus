@@ -33,6 +33,7 @@ if (Test-Path -LiteralPath $cache) {
 }
 $worker = if ($Branch -eq 'stock') { 'OFF' } else { 'ON' }
 $flags = @('-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$Profile", "-DENABLE_CTR_WORKER=$worker",
+    '-DCMAKE_PROJECT_citra_INCLUDE=',
     '-DENABLE_QT=OFF', '-DENABLE_LIBRETRO=OFF', '-DENABLE_SDL2=OFF',
     '-DENABLE_WEB_SERVICE=OFF', '-DENABLE_SCRIPTING=OFF', '-DENABLE_ROOM=OFF',
     '-DENABLE_ROOM_STANDALONE=OFF', '-DENABLE_OPENAL=OFF', '-DENABLE_CUBEB=OFF',
