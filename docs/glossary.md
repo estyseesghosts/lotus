@@ -1,7 +1,7 @@
 # Glossary
 
 Single source of truth for project terms. Other documents link here instead of
-redefining them. Numbered documents (`01`–`25`) keep their numbers as stable
+redefining them. Numbered documents (`01`–`30`) keep their numbers as stable
 identifiers regardless of directory; prose references like "document 18" remain
 valid.
 
@@ -46,6 +46,44 @@ control/oracle, not a maintained branch. [03](03-azahar-branches.md),
 moving or dirty inputs. [17](17-scaffold-and-pins.md)
 
 ## Runtime concepts
+
+**Profile** — the settings a session is created with (console model, CPU
+backend, renderer, DSP mode, system/CFG values, determinism options); its
+hash is recorded in every manifest and report. Old 3DS is the default.
+[29](29-wave-3-plan.md), T24 in [15](15-implementation-tickets.md)
+
+**Apply class** — when a setting may change: `boot`, `restart`, `live`,
+`renderer` or `cfg-savedata`. Each class is justified by the source line
+that consumes the setting. [29](29-wave-3-plan.md)
+
+**Debug lease** — exclusive right to control execution (pause, step,
+continue) of one session, arbitrated between desktop, MCP and GDB clients;
+the debugger counterpart of the input lease. T25 in
+[15](15-implementation-tickets.md)
+
+**RSP server** — the Rust GDB remote serial protocol server (`crates/gdb`),
+loopback-only, one opt-in port per session. Replaces Azahar's stub
+(ADR-008). T26 in [15](15-implementation-tickets.md)
+
+**Primary session** — a session that mounts a card: guest SD/NAND reads and
+writes are real and persist. One per card at a time.
+[30](30-sessions-and-interface.md)
+
+**Secondary session** — a disposable session in a private scratch root, empty
+or a point-in-time copy of one card; its guest data is deleted when it ends.
+Shown nested under that card. [30](30-sessions-and-interface.md)
+
+**Card** — the persistent guest storage of a primary session,
+`<storage>/cards/<name>/` holding Azahar's `sdmc/`, `nand/` and `sysdata/`.
+Not a *profile* (settings). [30](30-sessions-and-interface.md)
+
+**Pump** — the shared supervisor loop that refreshes gauges and re-issues
+bounded runs for sessions that are playing, skipping busy sessions.
+[30](30-sessions-and-interface.md)
+
+**Headless / windowed** — the two ways to drive LOTUS: `lotus-mcp`, or
+`lotus-desktop` (optionally `--mcp`) with the same tools over the same
+sessions. [30](30-sessions-and-interface.md)
 
 **Worker** (`ctr-worker`) — one OS process per emulated console; a headless
 native C++ frontend over Azahar's `Core::System`, no Qt/SDL/Libretro.

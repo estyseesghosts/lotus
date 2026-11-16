@@ -5,11 +5,14 @@
 //! their state. It never links against `Core::System` and it never lets a
 //! worker failure take down the application or a sibling instance.
 
+pub mod card_store;
 pub mod native_session;
 #[cfg(windows)]
 mod process_job;
+mod process_memory;
 pub mod storage;
 pub mod supervisor;
+pub mod telemetry;
 pub mod worker;
 
 pub use storage::StorageLayout;

@@ -54,6 +54,9 @@ identical and carry no accuracy experiments. See
   [06](06-ipc-and-session-contract.md), [18](18-control-pipes.md).
 - **GPUI desktop** — screens, input, sessions: [05](05-gpui-desktop.md),
   [24](24-desktop.md).
+- **Driving LOTUS** — headless or windowed, one shared supervisor and MCP
+  surface; primary sessions on persistent cards, disposable secondaries,
+  sidebar and gauges: [30](30-sessions-and-interface.md).
 - **Multi-instance and storage** — one process per console, private roots:
   [10](10-multi-instance-and-storage.md).
 - **Debugging** — CPU/kernel/memory: [07](07-debugger-core.md); GPU capture
@@ -68,16 +71,19 @@ identical and carry no accuracy experiments. See
 
 - **Milestones M0–M6** — exit gates from reproducible sources to the first
   hardware-verified accuracy gain: [13](13-build-test-release.md).
-- **Tickets T00–T23 in four waves** — dependency-ordered plan with status:
+- **Tickets T00–T47 in four waves** — dependency-ordered plan with status:
   [15](15-implementation-tickets.md); delivered so far:
   [25 — wave status](25-wave-status.md).
+- **Wave 3 — comprehensive agentic debugger** — decisions, Azahar parity
+  matrix and milestones 3.0–3.4: [29](29-wave-3-plan.md).
 - **Accuracy research path** — phases A–E, from cataloging Azahar's inherited
   assumptions to an independent PICA200 model and real firmware:
   [11](11-accuracy-research.md).
 - **Hardware validation** — physical Old 3DS microbenchmarks and evidence
   standards: [12](12-hardware-validation.md).
-- Remaining acceptance gaps (visible GPUI rendering, two-DPI interaction,
-  audio playback, other platforms): [25](25-wave-status.md).
+- Remaining acceptance gaps (two-DPI interaction, audio playback, other
+  platforms): [25](25-wave-status.md); visible rendering and input were checked
+  by screenshot in [24](24-desktop.md).
 
 ## Building on Windows
 
@@ -95,17 +101,17 @@ Opt-in native tests: [21, reproduction](21-native-control.md).
 | Group | Documents |
 | --- | --- |
 | Start | [index](index.md) · [glossary](glossary.md) |
-| Product | [01](01-product-contract.md) contract · [15](15-implementation-tickets.md) tickets |
+| Product | [01](01-product-contract.md) contract · [15](15-implementation-tickets.md) tickets · [29](29-wave-3-plan.md) Wave 3 plan |
 | Architecture | [02](02-system-architecture.md) system · [04](04-azahar-native-worker.md) worker · [05](05-gpui-desktop.md) GPUI · [06](06-ipc-and-session-contract.md) IPC · [10](10-multi-instance-and-storage.md) instances |
 | Backend | [03](03-azahar-branches.md) branches · [16](16-azahar-patch-blueprint.md) patches · [20](20-native-baseline.md) baseline |
 | Debugging | [07](07-debugger-core.md) CPU/kernel · [08](08-gpu-and-trace.md) GPU · [09](09-mcp-and-scenarios.md) MCP |
 | Research | [11](11-accuracy-research.md) accuracy · [12](12-hardware-validation.md) hardware · [14](14-sources-and-evidence.md) sources |
 | Build & process | [13](13-build-test-release.md) build/CI · [17](17-scaffold-and-pins.md) pins |
-| Implementation records | [18](18-control-pipes.md) pipes · [19](19-screen-spike.md) screen spike · [21](21-native-control.md) native control · [22](22-scenario-runner.md) scenarios · [23](23-local-mcp.md) MCP · [24](24-desktop.md) desktop · [25](25-wave-status.md) wave status · [26](26-portable-release.md) portable release · [27](27-build-and-run.md) build and run · [28](28-delivery-retrospective.md) retrospective |
+| Implementation records | [18](18-control-pipes.md) pipes · [19](19-screen-spike.md) screen spike · [21](21-native-control.md) native control · [22](22-scenario-runner.md) scenarios · [23](23-local-mcp.md) MCP · [24](24-desktop.md) desktop · [25](25-wave-status.md) wave status · [26](26-portable-release.md) portable release · [27](27-build-and-run.md) build and run · [28](28-delivery-retrospective.md) retrospective · [30](30-sessions-and-interface.md) sessions and interface |
 
 ## Documentation rules
 
-- Numbers `01`–`28` are stable identifiers; never renumber, never duplicate
+- Numbers `01`–`30` are stable identifiers; never renumber, never duplicate
   another document's content — link to it or to the glossary.
 - New documents get the next number and a row in the map above, plus any new
   terms in the glossary.

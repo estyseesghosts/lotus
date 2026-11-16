@@ -114,6 +114,12 @@ impl ControlledWorker {
         self.child.id()
     }
 
+    /// Child working set in bytes, absent after reaping or on unsupported hosts.
+    #[must_use]
+    pub fn working_set(&self) -> Option<u64> {
+        crate::process_memory::working_set(&self.child)
+    }
+
     /// Query the worker without any GUI dependencies.
     pub async fn status(&mut self) -> io::Result<Reply> {
         self.request(Method::Status).await

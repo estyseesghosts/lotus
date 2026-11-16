@@ -54,6 +54,10 @@ cargo test --locked --release --workspace
 Always pass `--locked`. Native tests are `#[ignore]` by default; an ignored run
 is not a pass (see §5).
 
+Run headless with `lotus-mcp host.json`, windowed with `lotus-desktop host.json`,
+or windowed and agent-driven with `lotus-desktop --mcp host.json` (host config:
+[23](23-local-mcp.md); sessions: [30](30-sessions-and-interface.md)).
+
 ## 4. Native runtimes (AZAHAR and CITnLO)
 
 `build-azahar.ps1` refuses a source whose `HEAD` differs from `config/pins.toml`
@@ -87,6 +91,7 @@ screen comparison ([20](20-native-baseline.md)).
 ```powershell
 scripts/test-native.ps1 -Worker build/native-integration/bin/Release/ctr-worker.exe -Fixture C:\abs\path\t03.3dsx
 python tests/test_mcp_native.py <lotus-mcp.exe> <host-config> <asset-handle>   # see 21/23
+python tests/test_windowed_mcp.py <lotus-desktop.exe> <host-config> <asset-handle> [hold-seconds]   # see 30
 ```
 
 Use absolute fixture paths. When comparing against stock, use the *same* absolute

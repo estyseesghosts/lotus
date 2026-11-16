@@ -166,6 +166,21 @@ impl NativeSession {
         self.worker.state()
     }
 
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.worker.epoch()
+    }
+
+    #[must_use]
+    pub fn pid(&self) -> Option<u32> {
+        self.worker.pid()
+    }
+
+    #[must_use]
+    pub fn working_set(&self) -> Option<u64> {
+        self.worker.working_set()
+    }
+
     pub fn read_lease(&self, lease: &FrameLease) -> io::Result<Vec<u8>> {
         if !matches!(
             self.worker.state(),

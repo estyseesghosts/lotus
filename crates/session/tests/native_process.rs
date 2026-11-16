@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use lotus_protocol::envelope::SessionUuid;
 use lotus_session::native_session::{InputState, NativeSession};
-use lotus_session::supervisor::{HostConfig, Supervisor};
+use lotus_session::supervisor::{HostConfig, SessionKind, Supervisor};
+use lotus_session::telemetry::Actor;
 
 fn config() -> (PathBuf, PathBuf, PathBuf) {
     let executable =
@@ -131,35 +132,57 @@ async fn four_native_workers_survive_forced_sibling_failure() {
 
 #[tokio::test]
 #[ignore = "requires explicitly supplied native executable and homebrew fixture"]
-async fn supervisor_bounds_workers_and_retains_scoped_artifacts() {
+async fn supervisor_bounds_concurrent_sessions_and_retains_scoped_artifacts() {
     let (worker, fixture, root) = config();
-    let mut host = Supervisor::new(HostConfig {
-        worker,
-        storage_root: root.clone(),
-        assets: std::collections::BTreeMap::from([("fixture".into(), fixture)]),
-        allow_control: true,
-    })
-    .expect("native host");
-    assert!(host.create("../unapproved.3dsx").await.is_err());
-    let mut sessions = Vec::new();
-    for _ in 0..4 {
-        sessions.push(host.create("fixture").await.expect("within worker budget"));
-    }
-    assert!(
-        host.create("fixture").await.is_err(),
-        "fifth worker must be rejected before launch"
-    );
-    host.session(&sessions[0])
-        .expect("owned session")
-        .advance(2)
+    let mut config = HostConfig::new(worker, root.clone());
+    config.assets = std::collections::BTreeMap::from([("fixture".into(), fixture)]);
+    config.allow_control = true;
+    let host = Supervisor::new(config).expect("native host");
+    let primary = |card: &str| SessionKind::Primary { card: card.into() };
+    let secondary = |parent: Option<&str>| SessionKind::Secondary {
+        parent: parent.map(str::to_string),
+    };
+    assert!(host
+        .create(secondary(None), Some("../unapproved.3dsx"), Actor::Host)
         .await
-        .expect("native frames");
+        .is_err());
+    // Two primaries and two secondaries start concurrently against one limit.
+    let (a, b, c, d) = tokio::join!(
+        host.create(primary("one"), Some("fixture"), Actor::Host),
+        host.create(primary("two"), Some("fixture"), Actor::Host),
+        host.create(secondary(Some("one")), Some("fixture"), Actor::Host),
+        host.create(secondary(None), None, Actor::Host),
+    );
+    let sessions: Vec<String> = [a, b, c, d]
+        .into_iter()
+        .map(|created| created.expect("within session budget").id)
+        .collect();
+    assert!(
+        host.create(secondary(None), None, Actor::Host)
+            .await
+            .is_err(),
+        "fifth session must be rejected before launch"
+    );
+    // Independent locks: two sessions advance at the same time.
+    let (first, second) = tokio::join!(
+        host.advance(&sessions[0], 2, Actor::Host),
+        host.advance(&sessions[2], 2, Actor::Host),
+    );
+    first.expect("primary frames");
+    second.expect("secondary frames");
     let capture = host
         .capture(&sessions[0])
         .await
         .expect("immutable artifacts");
-    for id in sessions {
-        host.stop(&id).await.expect("stop owned worker");
+    for id in &sessions {
+        host.stop(id, Actor::Host).await.expect("stop owned worker");
+    }
+    assert!(root.join("cards/one").is_dir() && root.join("cards/two").is_dir());
+    for id in &sessions[2..] {
+        assert!(
+            !root.join("scratch").join(id).exists(),
+            "secondary discarded"
+        );
     }
     assert!(host.read_artifact("file:///C:/Windows/win.ini").is_err());
     for artifact in capture {

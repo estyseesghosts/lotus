@@ -1,7 +1,10 @@
-//! Lotus MCP server binary.
+//! Headless LOTUS: the MCP server over stdio, no window.
 //!
-//! The server speaks MCP over stdio. It is local only: no TCP listener is
-//! opened and no remote client can attach.
+//! Local only: no TCP listener is opened and no remote client can attach. When
+//! the client disconnects every session is stopped, so secondary data is
+//! discarded and primary cards are unlocked.
+
+use std::time::Duration;
 
 use lotus_mcp::LotusServer;
 use lotus_session::supervisor::HostConfig;
@@ -15,7 +18,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         LotusServer::new()
     };
+    let host = server.host().cloned();
+    let pump = host.clone().map(|host| {
+        tokio::spawn(async move {
+            loop {
+                host.pump().await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        })
+    });
     let service = server.serve(rmcp::transport::stdio()).await?;
-    service.waiting().await?;
+    let result = service.waiting().await;
+    if let Some(pump) = pump {
+        pump.abort();
+    }
+    if let Some(host) = host {
+        host.close().await;
+    }
+    result?;
     Ok(())
 }

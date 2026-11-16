@@ -22,6 +22,10 @@ and all build flags are in config/pins.toml/build manifests; upstream control is
 | T12 | Four workers running the same fixture with private roots; one killed during run, siblings continue; four-slot policy and bounded artifacts |
 | T13 | Scoped MCP tools/resources, explicit host control permission, native-byte parity and stdio end-to-end checks ([23](23-local-mcp.md)) |
 
+Update 2026-11-16: visible rendering and mouse/keyboard input have since been
+checked by screenshot ([24](24-desktop.md), [30](30-sessions-and-interface.md));
+two-DPI interaction is still open.
+
 All requested implementation is present. Two visual acceptance checks remain
 unverified because the user instructed continuation without Computer Use:
 visible GPUI rendering/input and actual two-DPI interaction. Do not treat

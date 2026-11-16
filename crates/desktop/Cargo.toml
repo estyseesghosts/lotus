@@ -21,11 +21,13 @@ image = { version = "=0.25.10", default-features = false }
 lotus-accuracy = { workspace = true }
 lotus-debugger = { workspace = true }
 lotus-hardware = { workspace = true }
+lotus-mcp = { workspace = true }
 lotus-protocol = { workspace = true }
 lotus-session = { workspace = true }
 lotus-trace = { workspace = true }
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
+rmcp = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }

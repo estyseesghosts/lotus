@@ -1,6 +1,9 @@
 # Local MCP adapter
 
-`lotus-mcp [host-config.json]` serves stdio only. Without configuration it can
+`lotus-mcp [host-config.json]` serves stdio only (headless). `lotus-desktop
+--mcp host-config.json` serves the same tools from the window over the same
+sessions; session kinds, cards and the full tool list are in
+[30](30-sessions-and-interface.md). Without configuration it can
 report status but cannot spawn workers or read files. Host configuration fixes
 the executable, root, approved asset handles and control permission:
 
@@ -9,18 +12,24 @@ the executable, root, approved asset handles and control permission:
   "worker": "C:/path/to/ctr-worker.exe",
   "storage_root": "C:/path/to/private-runs",
   "assets": {"demo": "C:/path/to/demo.3dsx"},
-  "allow_control": true
+  "allow_control": true,
+  "asset_directories": {"builds": "C:/path/to/build-output"},
+  "max_sessions": 4
 }
 ```
+
+The last two fields are optional (defaults: none, 4; limit 16).
 
 Configuration is trusted local startup input, never a tool parameter. Each
 server process owns its sessions and artifact catalog. Client tools cannot
 select executables, roots or arbitrary content paths. Controls require
 `allow_control`; status/memory/capture operate only on owned sessions.
-Four workers and 128 screen artifacts (at most 49,152,000 bytes) bound resources.
+`max_sessions` workers and 128 screen artifacts (at most 49,152,000 bytes)
+bound resources. On client disconnect every session is stopped.
 
-Tools: status/list, create/load an approved asset, run_until, pause/reset/stop,
-input, session status, bounded mapped-memory reads, and capture. Scenario
+Tools: status/list (sessions, cards), create (primary/secondary), load an
+approved asset, run/run_until, pause/reset/stop, input, session status with
+gauges, registers, bounded mapped-memory reads, capture and focus. Scenario
 validation accepts only a handle registered by the embedding host; the standalone
 server currently registers none. Captures return `lotus://artifact/...` links.
 `resources/list` and `resources/read` expose only catalogued captures; read checks

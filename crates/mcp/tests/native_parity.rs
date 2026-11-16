@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use lotus_mcp::tool_arguments::{
-    AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, SessionArgs,
+    AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, KindArg, SessionArgs,
 };
 use lotus_mcp::LotusServer;
 use lotus_protocol::envelope::SessionUuid;
@@ -10,26 +10,29 @@ use lotus_session::native_session::NativeSession;
 use lotus_session::supervisor::HostConfig;
 use rmcp::handler::server::wrapper::Parameters;
 
+fn create(asset: &str) -> CreateArgs {
+    CreateArgs {
+        kind: KindArg::Secondary,
+        card: None,
+        asset: Some(asset.into()),
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires external native worker and homebrew fixture"]
 async fn mcp_matches_native_api_and_scopes_assets_sessions_resources() {
     let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").expect("native executable"));
     let fixture = PathBuf::from(std::env::var_os("LOTUS_FIXTURE").expect("homebrew fixture"));
     let root = std::env::temp_dir().join(format!("lotus-mcp-{}", SessionUuid::generate()));
-    let config = HostConfig {
-        worker: worker.clone(),
-        storage_root: root.join("mcp"),
-        assets: BTreeMap::from([("fixture".into(), fixture.clone())]),
-        allow_control: true,
-    };
+    let mut config = HostConfig::new(worker.clone(), root.join("mcp"));
+    config.assets = BTreeMap::from([("fixture".into(), fixture.clone())]);
+    config.allow_control = true;
     let mut read_only = config.clone();
     read_only.allow_control = false;
     let denied = LotusServer::configured(read_only, BTreeMap::new()).expect("read-only server");
     assert_eq!(
         denied
-            .lotus_create_session(Parameters(CreateArgs {
-                asset: "fixture".into()
-            }))
+            .lotus_create_session(Parameters(create("fixture")))
             .await
             .is_error,
         Some(true)
@@ -37,17 +40,13 @@ async fn mcp_matches_native_api_and_scopes_assets_sessions_resources() {
     let server = LotusServer::configured(config, BTreeMap::new()).expect("configured server");
     assert_eq!(
         server
-            .lotus_create_session(Parameters(CreateArgs {
-                asset: fixture.display().to_string()
-            }))
+            .lotus_create_session(Parameters(create(&fixture.display().to_string())))
             .await
             .is_error,
         Some(true)
     );
     let created = server
-        .lotus_create_session(Parameters(CreateArgs {
-            asset: "fixture".into(),
-        }))
+        .lotus_create_session(Parameters(create("fixture")))
         .await;
     assert_ne!(
         created.is_error,
