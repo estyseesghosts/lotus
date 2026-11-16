@@ -1439,6 +1439,7 @@ impl LotusWindow {
                         enabled: true,
                         capacity: 64,
                         budget_mib: 128,
+                        interval_frames: None,
                     },
                 ),
                 ("Reverse stop", D::ReverseContinue),

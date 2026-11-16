@@ -212,6 +212,11 @@ pub enum DebugCommand {
         enabled: bool,
         capacity: u32,
         budget_mib: u32,
+        /// Frames between continuous-run checkpoints (1..=60, default 1). Larger values cut
+        /// savestate cost; reverse replay then re-executes longer windows. Input changes
+        /// always force a checkpoint.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interval_frames: Option<u32>,
     },
     RewindStatus,
     ReverseStep {
@@ -497,6 +502,10 @@ impl DebugCommand {
             } if !(1..=128).contains(capacity) || !(16..=256).contains(budget_mib) => {
                 Err("rewind capacity 1..128, memory budget 16..256 MiB")
             }
+            Self::RewindConfigure {
+                interval_frames: Some(interval),
+                ..
+            } if !(1..=60).contains(interval) => Err("rewind interval 1..60 frames"),
             Self::ReverseStep { core } if *core > 3 => Err("invalid core"),
             Self::Fork { count, overrides } if !(1..=3).contains(count) || overrides.len() > 32 => {
                 Err("fork requires 1..3 siblings and at most 32 overrides")

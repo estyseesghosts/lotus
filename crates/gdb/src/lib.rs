@@ -394,6 +394,7 @@ impl Connection {
                         enabled: true,
                         capacity: 64,
                         budget_mib: 128,
+                        interval_frames: None,
                     })
                     .await?
                 }
@@ -402,6 +403,7 @@ impl Connection {
                         enabled: false,
                         capacity: 64,
                         budget_mib: 128,
+                        interval_frames: None,
                     })
                     .await?
                 }

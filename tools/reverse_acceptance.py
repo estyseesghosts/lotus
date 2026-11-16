@@ -23,15 +23,17 @@ def forward(peer, reason):
     return result["stop"]
 
 
-def run(worker, rom, root, new):
+def run(worker, rom, root, new, interval=1):
     syms = symbols(rom.with_suffix(".elf"))
     peer = Peer(worker, root)
-    evidence = dict(new_3ds=new, checks={})
+    evidence = dict(new_3ds=new, interval_frames=interval, checks={})
     try:
         peer.call("hello")
         peer.debug("settings_set", name="is_new_3ds", value=new)
         peer.call("load", {"path": str(rom)})
-        peer.debug("rewind_configure", enabled=True, capacity=32, budget_mib=128)
+        extra = dict(interval_frames=interval) if interval != 1 else {}
+        configured = peer.debug("rewind_configure", enabled=True, capacity=32, budget_mib=128, **extra)
+        assert configured.get("interval_frames", 1) == interval, configured
 
         # Write watchpoint: values v, v+1, v+2 observed after each access.
         bp = peer.debug("breakpoint_set", address=syms["watched"], kind="write", length=4)
@@ -69,6 +71,28 @@ def run(worker, rom, root, new):
         evidence["checks"]["breakpoint"] = dict(counters=counters, landed=back)
         peer.debug("breakpoint_remove", id=bp["id"])
 
+        # Breakpoint armed mid-window: the newest frame checkpoint predates the breakpoint set
+        # (up to interval_frames - 1 frames earlier). Executions before arming are not hits, so
+        # reverse must land on recorded hits only. An input change while stopped on the
+        # breakpoint forces a checkpoint at that PC, which must not count an extra hit on replay.
+        for _ in range(5):  # short requests: every-frame checkpoints are slow under host load
+            forward_frames = peer.call("run_until", {"frames": 5})
+            assert forward_frames["stop"]["reason"] == "frame", forward_frames
+        bp = peer.debug("breakpoint_set", address=syms["lotus_tick_body"], kind="execute", length=4)
+        counters = []
+        for i in range(6):
+            stop = forward(peer, "breakpoint")
+            counters.append(u32(peer, syms["counter"]))
+            if i == 3:
+                peer.call("input", {"owner": "live", "buttons": 0, "x": 0, "y": 0})
+        landed = []
+        for _ in range(5):
+            peer.debug("reverse_continue")
+            landed.append(u32(peer, syms["counter"]))
+        assert landed == counters[-2::-1], (counters, landed)
+        evidence["checks"]["armed_mid_window"] = dict(counters=counters, landed=landed)
+        peer.debug("breakpoint_remove", id=bp["id"])
+
         # No breakpoints: reverse continue is refused and keeps the present.
         before = u32(peer, syms["counter"])
         evidence["checks"]["no_breakpoint_refused"] = peer.call(
@@ -86,7 +110,9 @@ if __name__ == "__main__":
     parser.add_argument("worker", type=Path)
     parser.add_argument("rom", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--interval-frames", type=int, default=1, help="rewind checkpoint interval (1..60)")
     args = parser.parse_args()
     for new in (False, True):
-        result = run(args.worker.resolve(), args.rom.resolve(), args.output.resolve() / ("new" if new else "old"), new)
+        result = run(args.worker.resolve(), args.rom.resolve(), args.output.resolve() / ("new" if new else "old"), new,
+                     args.interval_frames)
         print(json.dumps({"new_3ds": new, "checks": list(result["checks"])}), flush=True)

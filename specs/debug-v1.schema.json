@@ -1703,6 +1703,15 @@
         "enabled": {
           "type": "boolean"
         },
+        "interval_frames": {
+          "description": "Frames between continuous-run checkpoints (1..=60, default 1). Larger values cut\nsavestate cost; reverse replay then re-executes longer windows. Input changes\nalways force a checkpoint.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "operation": {
           "const": "rewind_configure",
           "type": "string"
