@@ -1,6 +1,13 @@
 """Generate typed native scalar settings bindings from the pinned source.
 Run with the native source root. Output stays in that source worktree.
-Sources are consumer references, not claims that every setting can apply live.
+Sources are consumer references. Apply classes (audited against the pin):
+  live      read per request/tick, or re-applied by System::ApplySettings
+            (core.cpp:881-936), which the worker calls after every live set;
+  renderer  read only by video_core or frontend layout code, fixed when the
+            session's renderer is created;
+  inert     no consumer in core/video_core/audio_core (Qt/frontend only);
+  boot      read during system or service initialization.
+Only `live` settings may change on a running session.
 """
 from pathlib import Path
 import re
@@ -13,7 +20,27 @@ values = header[header.index("struct Values {"):header.index("extern Values valu
 pattern = r"(?:Switchable)?Setting<([^;]+?)>\s+(\w+)\s*\{"
 fields = [(m.group(1), m.group(2)) for m in re.finditer(pattern, values)]
 live = {"cpu_clock_percentage", "volume", "frame_limit", "turbo_limit",
-        "simulate_headphones_plugged", "factor_3d"}
+        "simulate_headphones_plugged", "factor_3d",
+        # Read inside service handlers or periodic callbacks.
+        "steps_per_hour",                  # ptm.cpp:85 GetStepHistory
+        "battery_state_source", "battery_level", "battery_charging",  # ptm.cpp:321, mcu_hwc.cpp:75
+        "enable_realtime_audio",           # csnd_snd.cpp:173 tick
+        "simulate_3ds_gpu_timings",        # gsp_gpu.cpp:675 per interrupt
+        "delay_game_render_thread_us",     # gsp_gpu.cpp:860 per command
+        # Re-applied by System::ApplySettings.
+        "output_type", "output_device", "enable_audio_stretching",
+        "plugin_loader_enabled", "allow_plugin_loader",
+        "audio_muted"}                     # settings.cpp:193 Volume(), dsp_interface.cpp:191
+
+
+def apply_class(name, sources, default="boot"):
+    if name in live:
+        return "live"
+    if not sources:
+        return "inert"
+    if all(s.startswith(("src/video_core/", "src/core/frontend/")) for s in sources):
+        return "renderer"
+    return default
 consumers = {}
 for directory in ("core", "video_core", "audio_core"):
     for p in sorted((root / "src" / directory).rglob("*.cpp")):
@@ -102,7 +129,7 @@ inline std::vector<SettingBinding> SettingsBindings() {
 """
 lines = [prefix]
 for typ, name in fields:
-    apply = "live" if name in live else "boot"
+    apply = apply_class(name, consumers.get(name, []))
     sources = consumers.get(name, ["src/common/settings.h"])
     source = ";".join(sources[:6])
     lines.append(f'    result.push_back(BindSetting("{name}", Settings::values.{name}, "{apply}", {json.dumps(source)}));\n')
@@ -117,6 +144,7 @@ raw_fields = {
     "input_profiles": "boot", "touch_from_button_maps": "boot",
 }
 for name, apply in raw_fields.items():
+    apply = apply_class(name, consumers.get(name, []), apply)
     source = ";".join(consumers.get(name, ["src/common/settings.h"])[:6])
     lines.append(f'    result.push_back(BindRaw("{name}", Settings::values.{name}, "{apply}", {json.dumps(source)}));\n')
 # Attach legal enum values to every typed enum, including enum arrays.
