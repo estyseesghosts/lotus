@@ -9,6 +9,7 @@ use lotus_session::worker::WorkerFlavor;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
+pub mod execution;
 
 /// Maximum frames a scenario may request.
 pub const MAX_SCENARIO_FRAMES: u64 = 100_000;
@@ -89,6 +90,10 @@ pub struct InputEvent {
     pub button: String,
     /// `down`, `up` or `press`.
     pub action: String,
+    #[serde(default)]
+    pub x: Option<u16>,
+    #[serde(default)]
+    pub y: Option<u16>,
 }
 
 /// Input ownership and schedule.

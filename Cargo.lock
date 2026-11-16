@@ -2578,6 +2578,7 @@ dependencies = [
  "lotus-trace",
  "serde",
  "serde_json",
+ "tokio",
  "tracing",
 ]
 
@@ -2592,6 +2593,7 @@ dependencies = [
 name = "lotus-mcp"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "lotus-debugger",
  "lotus-protocol",
  "lotus-runner",
@@ -2620,11 +2622,15 @@ name = "lotus-runner"
 version = "0.1.0"
 dependencies = [
  "lotus-hardware",
+ "lotus-protocol",
  "lotus-session",
  "lotus-trace",
  "serde",
+ "serde_json",
  "serde_yaml",
+ "sha2 0.10.9",
  "thiserror",
+ "tokio",
 ]
 
 [[package]]
@@ -2634,6 +2640,7 @@ dependencies = [
  "lotus-protocol",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "tokio",
  "tracing",

@@ -52,6 +52,8 @@ Usage:
   ctr-cli pins                 Print the pinned Azahar and GPUI revisions
   ctr-cli scenario validate <path>
                                 Validate a scenario file against the execution limits
+  ctr-cli scenario run <path> <worker> <artifact-root> [repeat-count]
+                                Execute bounded native runs (default: 3)
 ";
 
 fn main() -> Result<()> {
@@ -90,6 +92,28 @@ fn main() -> Result<()> {
         "scenario" => {
             let sub = args.get(1).map(String::as_str).unwrap_or("help");
             match sub {
+                "run" => {
+                    let path = PathBuf::from(
+                        args.get(2)
+                            .context("scenario run requires path, worker and artifact root")?,
+                    );
+                    let worker = PathBuf::from(args.get(3).context("missing worker executable")?)
+                        .canonicalize()?;
+                    let output = PathBuf::from(args.get(4).context("missing artifact root")?);
+                    let count = args
+                        .get(5)
+                        .map(|value| value.parse::<u8>())
+                        .transpose()?
+                        .unwrap_or(3);
+                    let scenario = Scenario::load(&path)?;
+                    let directory = path.parent().unwrap_or(std::path::Path::new("."));
+                    let reports = tokio::runtime::Runtime::new()?.block_on(
+                        lotus_runner::execution::repeat(
+                            &scenario, directory, &worker, &output, count,
+                        ),
+                    )?;
+                    println!("{}", serde_json::to_string_pretty(&reports)?);
+                }
                 "validate" => {
                     let path = args
                         .get(2)

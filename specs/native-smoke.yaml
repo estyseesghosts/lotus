@@ -1,0 +1,33 @@
+# Executable subset. Supply an external fixture at this path, or copy this YAML
+# beside your fixture and edit path_handle/SHA. Assets must remain outside Git.
+version: 1
+name: native-homebrew-smoke
+content:
+  kind: homebrew_3dsx
+  path_handle: ../../t03.3dsx
+profile:
+  model: old3ds
+  renderer: software
+  worker_flavor: integration
+  deterministic_initial_ticks: 0
+  audio_output: discard
+storage:
+  mode: isolated_copy
+input:
+  owner: scenario
+  schedule:
+    - { at_frame: 30, button: A, action: press }
+    - { at_frame: 40, button: touch, action: down, x: 160, y: 120 }
+    - { at_frame: 42, button: touch, action: up, x: 160, y: 120 }
+stop:
+  max_frames: 60
+  wall_timeout_seconds: 45
+captures:
+  - when: { frame: 60 }
+    include: [top_raw_frame, bottom_raw_frame]
+    max_bytes: 691200
+assertions:
+  - { type: no_worker_crash }
+  - { type: frame_count, minimum: 60 }
+outputs:
+  retain: [manifest, image_hashes, screenshots]
