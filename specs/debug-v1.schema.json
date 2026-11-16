@@ -8,6 +8,7 @@
         "local_friend_code_seed",
         "movable",
         "mic_wav",
+        "camera_bmp",
         "nfc",
         "cia",
         "rom"

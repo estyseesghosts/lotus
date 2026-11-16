@@ -10,6 +10,7 @@ pub fn mount(root: &Path, source: &Path, kind: AssetKind) -> io::Result<()> {
         AssetKind::LocalFriendCodeSeed => ("nand/rw/sys/LocalFriendCodeSeed_B", 4096),
         AssetKind::Movable => ("nand/private/movable.sed", 4096),
         AssetKind::MicWav => ("media/mic.wav", 64 << 20),
+        AssetKind::CameraBmp => ("media/camera.bmp", 16 << 20),
         AssetKind::Nfc => ("media/nfc.bin", 128 << 10),
         AssetKind::Cia => ("media/content.cia", 256 << 20),
         AssetKind::Rom => ("media/content.rom", 32 << 20),

@@ -718,7 +718,9 @@ impl Supervisor {
             check_lease(&handle, client)?;
             if !matches!(
                 kind,
-                lotus_protocol::debug::AssetKind::MicWav | lotus_protocol::debug::AssetKind::Nfc
+                lotus_protocol::debug::AssetKind::MicWav
+                    | lotus_protocol::debug::AssetKind::CameraBmp
+                    | lotus_protocol::debug::AssetKind::Nfc
             ) && native.state() != SessionState::Idle
             {
                 return Err(io::Error::other(

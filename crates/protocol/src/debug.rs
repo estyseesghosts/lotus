@@ -337,6 +337,7 @@ pub enum AssetKind {
     LocalFriendCodeSeed,
     Movable,
     MicWav,
+    CameraBmp,
     Nfc,
     Cia,
     Rom,
