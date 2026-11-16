@@ -51,6 +51,16 @@ pub struct NativeSession {
     root: PathBuf,
     profile_hash: String,
     identity: Value,
+    /// Set by [`Self::prefer_vulkan`]: a typed Vulkan failure at load falls back to software.
+    vulkan_fallback_armed: bool,
+    /// Worker accepts `settings_set` (`debug_api` in its hello reply).
+    settings_api: bool,
+    /// Why this session runs on software after Vulkan was preferred.
+    renderer_fallback: Option<String>,
+    /// Worker executable, kept to replace the process on a Vulkan fallback.
+    executable: PathBuf,
+    /// Every setting applied through [`Self::apply_profile`], replayed on a replacement.
+    applied: std::collections::BTreeMap<String, lotus_protocol::debug::SettingValue>,
 }
 
 impl NativeSession {
@@ -82,6 +92,11 @@ impl NativeSession {
             profile_hash: String::new(),
             identity: serde_json::json!({"source":reply.data["source"], "backend":reply.data["backend_name"],
             "worker_sha256":file_hash(executable)?}),
+            vulkan_fallback_armed: false,
+            settings_api: reply.data["debug_api"] == true,
+            renderer_fallback: None,
+            executable: executable.to_path_buf(),
+            applied: std::collections::BTreeMap::new(),
         };
         if reply.data["debug_api"] == true {
             session.refresh_profile().await?;
@@ -124,7 +139,8 @@ impl NativeSession {
     }
     pub fn metadata(&self) -> Value {
         serde_json::json!({"identity":self.identity,"profile_hash":self.profile_hash,"epoch":self.epoch(),
-            "renderer":self.identity["renderer"],"paused":self.state()!=SessionState::Running,
+            "renderer":self.identity["renderer"],"renderer_fallback":self.renderer_fallback,
+            "paused":self.state()!=SessionState::Running,
             "safe_point":true,"rasterizer_cache_flush":false})
     }
     pub fn decorate(&self, result: &mut Value) {
@@ -153,10 +169,30 @@ impl NativeSession {
                 serde_json::to_value(command).map_err(io::Error::other)?,
             )
             .await?;
+            self.applied.insert(name.clone(), value.clone());
         }
         if !profile.is_empty() {
             self.refresh_profile().await?;
         }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn has_settings(&self) -> bool {
+        self.settings_api
+    }
+
+    /// Select Vulkan (`Settings::GraphicsAPI::Vulkan` = 2) for an interactive session whose
+    /// profile names no renderer. If the worker then refuses a load as `unsupported` (typed
+    /// Vulkan instance/device failure, see tools/vulkan_acceptance.py), [`Self::load`]
+    /// switches to software and records the reason instead of failing the session.
+    pub async fn prefer_vulkan(&mut self) -> io::Result<()> {
+        self.apply_profile(&std::collections::BTreeMap::from([(
+            "graphics_api".to_string(),
+            lotus_protocol::debug::SettingValue::Integer(2),
+        )]))
+        .await?;
+        self.vulkan_fallback_armed = true;
         Ok(())
     }
 
@@ -205,11 +241,36 @@ impl NativeSession {
     }
 
     pub async fn load(&mut self, path: &Path) -> io::Result<Value> {
-        self.operation(
-            Method::Load,
-            serde_json::json!({"path": native_path(path)?}),
-        )
-        .await
+        let params = serde_json::json!({"path": native_path(path)?});
+        if !self.vulkan_fallback_armed {
+            return self.operation(Method::Load, params).await;
+        }
+        let reply = self.worker.command(Method::Load, params.clone()).await?;
+        if reply.status != Status::Unsupported {
+            return self.finish(Method::Load, reply);
+        }
+        // Only reached with graphics_api = Vulkan chosen by prefer_vulkan, never an explicit one.
+        let reason = reply.data["reason"]
+            .as_str()
+            .unwrap_or("Vulkan renderer unavailable")
+            .to_string();
+        // A second load in the same worker after a failed Vulkan load trips a kernel assertion
+        // (core/hle/kernel/kernel.cpp, KernelSystem::SetCPUs; verified emulator), so replace
+        // the process: same root, same applied settings, software renderer.
+        let mut profile = self.applied.clone();
+        profile.insert(
+            "graphics_api".to_string(),
+            lotus_protocol::debug::SettingValue::Integer(0),
+        );
+        self.stop().await?;
+        let mut replacement = Self::spawn(&self.executable, &self.root).await?;
+        replacement.renderer_fallback = Some(reason);
+        if let Err(error) = replacement.apply_profile(&profile).await {
+            let _ = replacement.stop().await;
+            return Err(error);
+        }
+        *self = replacement;
+        self.operation(Method::Load, params).await
     }
 
     /// Advance 1–600 presented frames, with a native 20s and supervisor 30s deadline.
@@ -347,9 +408,14 @@ impl NativeSession {
     }
 
     async fn operation(&mut self, method: Method, params: Value) -> io::Result<Value> {
+        let reply = self.worker.command(method, params).await?;
+        self.finish(method, reply)
+    }
+
+    fn finish(&mut self, method: Method, reply: Reply) -> io::Result<Value> {
         let Reply {
             status, mut data, ..
-        } = self.worker.command(method, params).await?;
+        } = reply;
         if status != Status::Ok {
             return Err(io::Error::other(format!("{method:?}: {status:?}: {data}")));
         }

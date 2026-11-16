@@ -55,6 +55,16 @@ pub struct HostConfig {
     pub profile: BTreeMap<String, lotus_protocol::debug::SettingValue>,
     #[serde(default)]
     pub workers: BTreeMap<String, PathBuf>,
+    /// New sessions whose `profile` names no `graphics_api` use Vulkan, falling back to
+    /// software (reason in telemetry) when the worker refuses Vulkan setup. Default true for
+    /// every frontend; `false` keeps the worker default (software). Pin a renderer with
+    /// `profile.graphics_api` (0 software, 2 Vulkan) for reference or determinism runs.
+    #[serde(default = "default_prefer_vulkan")]
+    pub prefer_vulkan: bool,
+}
+
+fn default_prefer_vulkan() -> bool {
+    true
 }
 
 fn default_max_sessions() -> usize {
@@ -73,6 +83,7 @@ impl HostConfig {
             max_sessions: DEFAULT_MAX_SESSIONS,
             profile: BTreeMap::new(),
             workers: BTreeMap::new(),
+            prefer_vulkan: true,
         }
     }
 }
@@ -366,6 +377,16 @@ impl Supervisor {
             if let Err(error) = native.apply_profile(profile).await {
                 let _ = native.stop().await;
                 return Err(error);
+            }
+            if seed.is_none()
+                && self.config.prefer_vulkan
+                && native.has_settings()
+                && !profile.contains_key("graphics_api")
+            {
+                if let Err(error) = native.prefer_vulkan().await {
+                    let _ = native.stop().await;
+                    return Err(error);
+                }
             }
             if let Some(content) = &content {
                 if let Err(error) = native.load(content).await {

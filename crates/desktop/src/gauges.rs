@@ -60,6 +60,26 @@ pub fn gauge_strip(telemetry: &Telemetry) -> impl IntoElement {
                 ))),
         )
         .child(
+            card("RENDERER")
+                .child(figure(
+                    if telemetry.renderer.is_empty() {
+                        "—".to_string()
+                    } else {
+                        telemetry.renderer.clone()
+                    },
+                    if telemetry.renderer_fallback.is_empty() {
+                        theme::text()
+                    } else {
+                        theme::warning()
+                    },
+                ))
+                .child(detail(if telemetry.renderer_fallback.is_empty() {
+                    telemetry.backend_name.clone()
+                } else {
+                    format!("fallback: {}", telemetry.renderer_fallback)
+                })),
+        )
+        .child(
             card("WORKER")
                 .child(figure(
                     telemetry

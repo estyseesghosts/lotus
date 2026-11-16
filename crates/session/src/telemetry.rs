@@ -52,6 +52,10 @@ pub struct Telemetry {
     pub touch_down: bool,
     pub last_error: String,
     pub backend_name: String,
+    /// Effective renderer: `software`, `opengl`, `vulkan`, or empty before the profile is read.
+    pub renderer: String,
+    /// Why a session that preferred Vulkan runs on software; empty otherwise.
+    pub renderer_fallback: String,
     pub pid: Option<u32>,
     /// Worker private working set, when the host reports it.
     pub memory_bytes: Option<u64>,
@@ -83,6 +87,8 @@ impl Telemetry {
             touch_down: false,
             last_error: String::new(),
             backend_name: String::new(),
+            renderer: String::new(),
+            renderer_fallback: String::new(),
             pid: None,
             memory_bytes: None,
             uptime_ms: 0,
@@ -111,6 +117,18 @@ impl Telemetry {
         if let Some(name) = status["backend_name"].as_str() {
             self.backend_name = name.to_string();
         }
+        // Settings::GraphicsAPI (common/settings.h): Software 0, OpenGL 1, Vulkan 2.
+        self.renderer = match status["renderer"].as_i64() {
+            Some(0) => "software",
+            Some(1) => "opengl",
+            Some(2) => "vulkan",
+            _ => "",
+        }
+        .to_string();
+        self.renderer_fallback = status["renderer_fallback"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         self.uptime_ms = u64::try_from(now.duration_since(self.started).as_millis()).unwrap_or(0);
         self.frames = frames;
         match self.window {
