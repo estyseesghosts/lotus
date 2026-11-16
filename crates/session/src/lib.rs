@@ -9,6 +9,7 @@ pub mod native_session;
 #[cfg(windows)]
 mod process_job;
 pub mod storage;
+pub mod supervisor;
 pub mod worker;
 
 pub use storage::StorageLayout;

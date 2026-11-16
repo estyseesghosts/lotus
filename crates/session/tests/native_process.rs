@@ -104,6 +104,7 @@ async fn four_native_workers_survive_forced_sibling_failure() {
             session.advance(30).await.expect("parallel emulation");
             let frames = session.capture().await.expect("private frame artifacts");
             if index == 0 {
+                session.run().await.expect("run during failure injection");
                 session.abort().await;
                 assert!(session.read_lease(&frames[0].lease).is_err());
                 assert!(session.status().await.is_err());

@@ -53,24 +53,33 @@ pub struct NativeSession {
 
 impl NativeSession {
     pub async fn spawn(executable: &Path, root: &Path) -> io::Result<Self> {
+        fs::create_dir_all(root)?;
+        let root = native_path(root)?;
         let mut worker =
-            ControlledWorker::spawn(&WorkerSpec::new(executable, root), Duration::from_secs(30))
+            ControlledWorker::spawn(&WorkerSpec::new(executable, &root), Duration::from_secs(30))
                 .await?;
         let reply = worker.status().await?;
         if reply.backend != "azahar_native_software" {
             worker.stop().await?;
             return Err(io::Error::other("worker lacks native software capability"));
         }
-        Ok(Self {
-            worker,
-            root: root.to_path_buf(),
-        })
+        fs::write(
+            root.join("native-manifest.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "protocol": lotus_protocol::protocol_id(), "backend": reply.backend,
+                "source": reply.data["source"], "backend_name": reply.data["backend_name"],
+                "session": reply.session, "pid": worker.pid(), "epoch": reply.epoch,
+                "profile": "old3ds/software/hle/dsp-muted/ticks-0/time-2000-01-01",
+            }))
+            .map_err(io::Error::other)?,
+        )?;
+        Ok(Self { worker, root })
     }
 
     pub async fn load(&mut self, path: &Path) -> io::Result<Value> {
         self.operation(
             Method::Load,
-            serde_json::json!({"path": path.canonicalize()?}),
+            serde_json::json!({"path": native_path(path)?}),
         )
         .await
     }
@@ -152,6 +161,11 @@ impl NativeSession {
         &self.root
     }
 
+    #[must_use]
+    pub fn state(&self) -> SessionState {
+        self.worker.state()
+    }
+
     pub fn read_lease(&self, lease: &FrameLease) -> io::Result<Vec<u8>> {
         if !matches!(
             self.worker.state(),
@@ -212,4 +226,22 @@ fn read_frame(root: &Path, lease: &FrameLease) -> io::Result<Vec<u8>> {
         return Err(io::Error::other("stale or malformed frame slot"));
     }
     Ok(data[32..].to_vec())
+}
+
+// MinGW std::filesystem rejects Rust's verbatim canonical path syntax.
+fn native_path(path: &Path) -> io::Result<PathBuf> {
+    let absolute = path.canonicalize()?;
+    #[cfg(windows)]
+    {
+        let text = absolute
+            .to_str()
+            .ok_or_else(|| io::Error::other("native path must be UTF-8"))?;
+        if let Some(unc) = text.strip_prefix(r"\\?\UNC\") {
+            return Ok(PathBuf::from(format!(r"\\{unc}")));
+        }
+        if let Some(disk) = text.strip_prefix(r"\\?\") {
+            return Ok(PathBuf::from(disk));
+        }
+    }
+    Ok(absolute)
 }
