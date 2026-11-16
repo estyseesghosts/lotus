@@ -86,3 +86,41 @@ async fn running_child_crash_transitions_to_crashed() {
     );
     std::fs::remove_dir_all(spec.storage_root).expect("reaped child releases log");
 }
+
+#[cfg(windows)]
+#[tokio::test]
+async fn abort_terminates_descendants_and_releases_root_lock() {
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::System::Threading;
+    let spec = spec("spawn_descendant");
+    let mut worker = ControlledWorker::spawn(&spec, Duration::from_secs(3))
+        .await
+        .expect("contained parent");
+    assert!(ControlledWorker::spawn(&spec, Duration::from_secs(3))
+        .await
+        .is_err());
+    let pid: u32 = std::fs::read_to_string(spec.storage_root.join("descendant.pid"))
+        .expect("descendant PID")
+        .parse()
+        .expect("PID number");
+    // SAFETY: OpenProcess returns an owned handle; waiting observes only this test child.
+    let descendant = unsafe {
+        let raw = Threading::OpenProcess(Threading::PROCESS_SYNCHRONIZE, 0, pid);
+        assert!(!raw.is_null());
+        OwnedHandle::from_raw_handle(raw)
+    };
+    worker.abort().await;
+    // SAFETY: the owned process handle stays live for the wait.
+    assert_eq!(
+        unsafe { Threading::WaitForSingleObject(descendant.as_raw_handle(), 3000) },
+        0
+    );
+    let mut replacement = ControlledWorker::spawn(
+        &WorkerSpec::new(&spec.executable, &spec.storage_root),
+        Duration::from_secs(3),
+    )
+    .await
+    .expect("lock released after abort");
+    replacement.stop().await.expect("replacement exits");
+    std::fs::remove_dir_all(spec.storage_root).expect("files released");
+}

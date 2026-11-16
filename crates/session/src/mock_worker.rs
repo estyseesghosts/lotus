@@ -5,6 +5,25 @@ use lotus_protocol::control::{self, Method, Reply, Request, Status};
 
 fn main() -> io::Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
+    if mode == "descendant" {
+        std::thread::sleep(std::time::Duration::from_secs(60));
+        return Ok(());
+    }
+    if mode == "spawn_descendant" {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.arg("descendant");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.creation_flags(0x0800_0000);
+        }
+        let descendant = command.spawn()?;
+        let root = std::env::var_os("LOTUS_STORAGE_ROOT").expect("supervisor supplies root");
+        std::fs::write(
+            std::path::Path::new(&root).join("descendant.pid"),
+            descendant.id().to_string(),
+        )?;
+    }
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let mut identity: Option<String> = None;
@@ -31,6 +50,11 @@ fn main() -> io::Result<()> {
             Status::NotReady
         } else if request.epoch != 1 {
             Status::StaleEpoch
+        } else if !matches!(
+            request.method,
+            Method::Hello | Method::Status | Method::Stop
+        ) {
+            Status::Unsupported
         } else {
             if request.method == Method::Hello {
                 identity = Some(request.session.clone());
@@ -47,6 +71,7 @@ fn main() -> io::Result<()> {
             status,
             state: if stopped { "stopped" } else { "idle" }.into(),
             backend: "mock".into(),
+            data: serde_json::Value::Null,
         };
         control::write(&mut output, &reply)?;
         if stopped {

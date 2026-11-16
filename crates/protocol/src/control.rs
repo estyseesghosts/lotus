@@ -14,6 +14,15 @@ pub enum Method {
     Hello,
     Status,
     Stop,
+    Load,
+    Run,
+    RunUntil,
+    Pause,
+    Reset,
+    Capture,
+    Input,
+    ReadMemory,
+    Registers,
 }
 
 /// Completion status; OK always means completed, never merely queued.
@@ -38,6 +47,8 @@ pub struct Request {
     pub session: String,
     pub epoch: u64,
     pub method: Method,
+    #[serde(default)]
+    pub params: serde_json::Value,
 }
 
 /// Response envelope. Mock identity is explicit and has no emulator capabilities.
@@ -52,6 +63,8 @@ pub struct Reply {
     pub status: Status,
     pub state: String,
     pub backend: String,
+    #[serde(default)]
+    pub data: serde_json::Value,
 }
 
 /// Encode a JSON control message behind a little-endian u32 byte count.

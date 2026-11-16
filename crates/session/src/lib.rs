@@ -5,6 +5,9 @@
 //! their state. It never links against `Core::System` and it never lets a
 //! worker failure take down the application or a sibling instance.
 
+pub mod native_session;
+#[cfg(windows)]
+mod process_job;
 pub mod storage;
 pub mod worker;
 

@@ -26,6 +26,9 @@ pub struct ControlledWorker {
     epoch: u64,
     state: SessionState,
     timeout: Duration,
+    root_lock: Option<File>,
+    #[cfg(windows)]
+    job: Option<crate::process_job::ProcessJob>,
 }
 
 impl ControlledWorker {
@@ -38,6 +41,13 @@ impl ControlledWorker {
             ));
         }
         fs::create_dir_all(&spec.storage_root)?;
+        let root_lock = File::options()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(spec.storage_root.join("worker.lock"))?;
+        root_lock.try_lock().map_err(io::Error::other)?;
         let stderr = File::create(spec.storage_root.join("worker.stderr.log"))?;
         let mut command = Command::new(&spec.executable);
         command
@@ -49,8 +59,18 @@ impl ControlledWorker {
             .stderr(stderr)
             .kill_on_drop(true);
         #[cfg(windows)]
-        command.creation_flags(0x0800_0000);
+        command.creation_flags(0x0800_0004);
         let mut child = command.spawn()?;
+        #[cfg(windows)]
+        let job = match crate::process_job::ProcessJob::attach_and_resume(
+            child.id().expect("new child has PID"),
+        ) {
+            Ok(job) => job,
+            Err(error) => {
+                let _ = child.kill().await;
+                return Err(error);
+            }
+        };
         let input = child
             .stdin
             .take()
@@ -68,6 +88,9 @@ impl ControlledWorker {
             epoch: 1,
             state: SessionState::Created,
             timeout,
+            root_lock: Some(root_lock),
+            #[cfg(windows)]
+            job: Some(job),
         };
         worker.request(Method::Hello).await?;
         worker.state = SessionState::Idle;
@@ -78,6 +101,11 @@ impl ControlledWorker {
     #[must_use]
     pub fn state(&self) -> SessionState {
         self.state
+    }
+
+    #[must_use]
+    pub fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// Child OS identifier, absent after reaping.
@@ -97,6 +125,7 @@ impl ControlledWorker {
         match tokio::time::timeout(self.timeout, self.child.wait()).await {
             Ok(Ok(status)) if status.success() => {
                 self.state = SessionState::Stopped;
+                self.release_resources();
                 Ok(())
             }
             _ => {
@@ -110,9 +139,27 @@ impl ControlledWorker {
         self.state = SessionState::Crashed;
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
+        self.release_resources();
     }
 
-    async fn request(&mut self, method: Method) -> io::Result<Reply> {
+    /// Terminate this worker and its contained descendants; retain logs.
+    pub async fn abort(&mut self) {
+        self.fail().await;
+    }
+
+    fn release_resources(&mut self) {
+        #[cfg(windows)]
+        {
+            self.job.take();
+        }
+        self.root_lock.take();
+    }
+
+    pub async fn command(
+        &mut self,
+        method: Method,
+        params: serde_json::Value,
+    ) -> io::Result<Reply> {
         if matches!(self.state, SessionState::Stopped | SessionState::Crashed) {
             return Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
@@ -126,6 +173,7 @@ impl ControlledWorker {
             session: self.session.clone(),
             epoch: self.epoch,
             method,
+            params,
         };
         self.next_request = self
             .next_request
@@ -149,16 +197,36 @@ impl ControlledWorker {
         if !lotus_protocol::is_compatible(reply.version_major, reply.version_minor)
             || reply.request_id != request.request_id
             || reply.session != self.session
-            || reply.epoch != self.epoch
-            || reply.status != Status::Ok
-            || (method == Method::Stop && reply.state != "stopped")
-            || (method != Method::Stop && reply.state != "idle")
+            || reply.epoch
+                != self.epoch + u64::from(method == Method::Reset && reply.status == Status::Ok)
+            || !matches!(
+                reply.state.as_str(),
+                "idle" | "running" | "paused" | "stopped"
+            )
         {
             self.fail().await;
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid worker reply identity, epoch, status or state",
             ));
+        }
+        self.epoch = reply.epoch;
+        self.state = match reply.state.as_str() {
+            "running" => SessionState::Running,
+            "paused" => SessionState::Paused,
+            "stopped" => SessionState::Stopped,
+            _ => SessionState::Idle,
+        };
+        Ok(reply)
+    }
+
+    async fn request(&mut self, method: Method) -> io::Result<Reply> {
+        let reply = self.command(method, serde_json::Value::Null).await?;
+        if reply.status != Status::Ok {
+            return Err(io::Error::other(format!(
+                "worker rejected {method:?}: {:?}",
+                reply.status
+            )));
         }
         Ok(reply)
     }
@@ -171,5 +239,12 @@ impl ControlledWorker {
         let mut payload = vec![0; length as usize];
         self.output.read_exact(&mut payload).await?;
         serde_json::from_slice(&payload).map_err(io::Error::other)
+    }
+}
+
+impl Drop for ControlledWorker {
+    fn drop(&mut self) {
+        let _ = self.child.start_kill();
+        self.release_resources();
     }
 }
