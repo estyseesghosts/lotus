@@ -107,7 +107,7 @@ Opt-in native tests: [21, reproduction](21-native-control.md).
 | Debugging | [07](07-debugger-core.md) CPU/kernel · [08](08-gpu-and-trace.md) GPU · [09](09-mcp-and-scenarios.md) MCP |
 | Research | [11](11-accuracy-research.md) accuracy · [12](12-hardware-validation.md) hardware · [14](14-sources-and-evidence.md) sources |
 | Build & process | [13](13-build-test-release.md) build/CI · [17](17-scaffold-and-pins.md) pins |
-| Implementation records | [18](18-control-pipes.md) pipes · [19](19-screen-spike.md) screen spike · [21](21-native-control.md) native control · [22](22-scenario-runner.md) scenarios · [23](23-local-mcp.md) MCP · [24](24-desktop.md) desktop · [25](25-wave-status.md) wave status · [26](26-portable-release.md) portable release · [27](27-build-and-run.md) build and run · [28](28-delivery-retrospective.md) retrospective · [30](30-sessions-and-interface.md) sessions and interface |
+| Implementation records | [18](18-control-pipes.md) pipes · [19](19-screen-spike.md) screen spike · [21](21-native-control.md) native control · [22](22-scenario-runner.md) scenarios · [23](23-local-mcp.md) MCP · [24](24-desktop.md) desktop · [25](25-wave-status.md) wave status · [26](26-portable-release.md) portable release · [27](27-build-and-run.md) build and run · [28](28-delivery-retrospective.md) retrospective · [30](30-sessions-and-interface.md) sessions and interface � [31](31-wave-3-progress.md) Wave 3 evidence � [32](32-debugger-command-parity.md) debugger command parity |
 
 ## Documentation rules
 

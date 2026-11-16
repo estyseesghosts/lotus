@@ -23,6 +23,7 @@ class Peer:
         self.epoch = 1
         self.sequence = 0
         self.notifications = []
+        self.notifications_lost = 0
         self.output = queue.Queue(32)
         self.reader = threading.Thread(target=self.read, daemon=True)
         self.reader.start()
@@ -51,6 +52,9 @@ class Peer:
                 raise reply
             assert reply["session"] == self.session
             if reply.get("notification"):
+                if len(self.notifications) == 1024:
+                    del self.notifications[0]
+                    self.notifications_lost += 1
                 self.notifications.append(reply)
                 continue
             assert reply["request_id"] == self.sequence, reply

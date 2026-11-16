@@ -1,8 +1,8 @@
 # 31 — Wave 3 implementation evidence
 
 Implementation checkpoint, 2026-11-16. Native source is committed as integration
-`5d32df0a4b68f466df1a232b517927129b045554` and experimental
-`f91c94ec5fb495acba171f194894bba6f00f6750`. Earlier development reports used
+`47f22e9a60069679e85eef30ce25c679aa499a8d` and experimental
+`2d8cbb82ba65a8ef92438a4ff7a7829998fcb5e8`. Earlier development reports used
 the original embedded SHA; retained executable SHA256 values distinguish them.
 Pinned rebuilds are being verified. Wave 3 remains incomplete.
 
@@ -51,9 +51,46 @@ Further **verified emulator** evidence:
   pass. Generated command parity is enforced by protocol and MCP schema tests.
 
 Open work: complete settings consumer/apply-class audit, LLE DSP and injected
-mic guest readback, camera and other peripheral readback, content/movie/matrix
+mic guest readback, camera and other peripheral readback, content tools and wider scenario/matrix
 acceptance, continuous-history reverse execution, remaining GDB behavior,
-CiTrace record/replay, GPU resource lineage, desktop inspectors and timeline,
+GPU resource lineage, desktop inspectors and timeline,
 scenario integration, pinned regression builds and instrumentation overhead.
 No hardware accuracy claim is made. ARM GNU GDB coverage does not yet satisfy
 acceptance specifically against the devkitARM-distributed build.
+
+
+CiTrace **verified emulator**: `citrace-acceptance-08` covers Old/New 3DS on
+software/Vulkan, two recorded frames, two byte-identical replays, modified-file
+rejection, blocked CPU resume in GPU replay view, then successful checkpoint
+restore and forward execution. The recorder is capped at 262144 elements and
+48 MiB of unique data, with a 64 MiB reader limit and explicit loss counts.
+Recording is expensive and opt-in: two frames measured 1.01/0.74 seconds on
+Old software/Vulkan and 1.65/1.30 seconds on New software/Vulkan, versus
+0.36/0.03 and 0.32/0.03 seconds without recording in that local run. These
+host timings are not guest cycles or a controlled general benchmark.
+
+Replay requires the paired session checkpoint because CiTrace v1 omits initial
+LUT and geometry state. It currently replays the latest recording on that card;
+standalone import of arbitrary legacy traces is not implemented. GPU replay
+holds CPU execution; restore a named state or reset before executing CPU code.
+The native commits also bind states/movies to ROM SHA256, preventing collisions
+between different homebrew ROMs whose title IDs are all zero.
+
+`wave3-clippy-05.log`: workspace/all-targets Clippy passes with warnings denied.
+`wave3-workspace-tests-01.log`: workspace tests pass; native tests marked ignored
+remain unverified by that command. Pinned native and MCP checks are separate.
+
+
+`mcp-replay-02` (**verified emulator**, development executable SHA in retained
+manifests): Old/New movie recording plus three identical replays at frames
+20/40/60, rejected live playback input, 2x captures, and two identical fresh-root
+matrix profiles with three repeats each. Matrix checkpoints compare screen hashes
+and CPU registers. It currently drives frame checkpoints without scenario input
+scripts; scenario/movie integration and deliberately divergent profiles remain open.
+
+
+Pinned builds for both native branches pass (`wave3-pinned-*-build-02.log`).
+`state-identity-01` checks both models: reject a state from a different owned
+3DSX ROM without changing registers, restore the original ROM/state, reject a
+modified archive without changing registers. `mcp-debugger-04` repeats the
+complete owned CPU/kernel/lease/lifecycle suite against the updated pin.

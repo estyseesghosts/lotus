@@ -113,7 +113,7 @@ impl Supervisor {
                     native.load(&self.resolve_asset(&asset)?).await?;
                     let mut at=0;let mut snapshots=Vec::new();
                     for checkpoint in checkpoints {
-                        let status=native.advance(checkpoint-at).await?;at=*checkpoint;
+                        let status=native.advance(checkpoint-at).await?; at = *checkpoint;
                         if status["frames"]!=*checkpoint { return Err(io::Error::other("matrix stopped before its aligned checkpoint")); }
                         let screens=native.capture().await?.into_iter().map(|frame|serde_json::json!({
                             "screen":frame.lease.screen,"width":frame.lease.width,"height":frame.lease.height,

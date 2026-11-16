@@ -24,7 +24,17 @@ impl Server {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
         let address = listener.local_addr()?;
         let task = tokio::spawn(async move {
-            while let Ok((socket, _)) = listener.accept().await {
+            loop {
+                if host.summary(&session).is_err() {
+                    break;
+                }
+                let accepted = tokio::select! {
+                    accepted = listener.accept() => accepted,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => continue,
+                };
+                let Ok((socket, _)) = accepted else {
+                    break;
+                };
                 let owner = format!("gdb:{}", SessionUuid::generate());
                 if host
                     .debug_as(
@@ -52,7 +62,17 @@ impl Server {
                     last_stop: "S05".into(),
                     cleaned: false,
                 };
-                let _ = connection.serve().await;
+                let watcher_host = host.clone();
+                let watcher_session = session.clone();
+                tokio::select! {
+                    _ = connection.serve() => {},
+                    _ = async {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                            if watcher_host.summary(&watcher_session).is_err() { break; }
+                        }
+                    } => {},
+                }
                 connection.cleanup(false).await;
                 // Drop performs cleanup even if the server task was cancelled.
             }
@@ -300,8 +320,8 @@ impl Connection {
                 } else {
                     81 + reg - 49
                 };
-                for (i, value) in bytes.chunks_exact(4).enumerate() {
-                    let value = u32::from_le_bytes(value.try_into().map_err(|_| bad())?);
+                for (i, value) in bytes.as_chunks::<4>().0.iter().enumerate() {
+                    let value = u32::from_le_bytes(*value);
                     self.debug(match self.thread {
                         Some(thread) => D::WriteThreadRegister {
                             thread,
@@ -318,14 +338,14 @@ impl Connection {
                 }
             }
             "OK".into()
-        } else if p.starts_with('m') {
-            let (address, length) = pair(&p[1..], ',')?;
+        } else if let Some(text) = p.strip_prefix('m') {
+            let (address, length) = pair(text, ',')?;
             let r = self.debug(D::ReadMemory { address, length }).await?;
             let bytes: Vec<u8> =
                 serde_json::from_value(r["bytes"].clone()).map_err(io::Error::other)?;
             hex(&bytes)
-        } else if p.starts_with('M') {
-            let (range, bytes) = p[1..].split_once(':').ok_or_else(bad)?;
+        } else if let Some(text) = p.strip_prefix('M') {
+            let (range, bytes) = text.split_once(':').ok_or_else(bad)?;
             let (address, length) = pair(range, ',')?;
             let bytes = unhex(bytes)?;
             if length as usize != bytes.len() {
@@ -496,7 +516,16 @@ impl Connection {
         loop {
             tokio::select! {
                 event = events.recv() => {
-                    let event = event.map_err(io::Error::other)?;
+                    let event = match event {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                            let status=self.debug(D::Status).await?;
+                            if status["state"]!="paused" || !status["stop"].is_object() { continue; }
+                            let mut stop=status["stop"].clone();stop["kind"]="stopped".into();
+                            serde_json::json!({"data":stop})
+                        },
+                        Err(error) => return Err(io::Error::other(error)),
+                    };
                     if event["data"]["kind"] != "stopped" { continue; }
                     let stop = &event["data"];
                     if stop["reason"] == "frame" { continue; }
@@ -675,11 +704,13 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 fn unhex(s: &str) -> io::Result<Vec<u8>> {
-    if !s.is_ascii() || s.len() % 2 != 0 || s.len() > 8192 {
+    if !s.is_ascii() || !s.len().is_multiple_of(2) || s.len() > 8192 {
         return Err(bad());
     }
     s.as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|b| {
             u8::from_str_radix(std::str::from_utf8(b).map_err(|_| bad())?, 16).map_err(|_| bad())
         })

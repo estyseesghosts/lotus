@@ -577,6 +577,18 @@ impl Supervisor {
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
     ) -> io::Result<serde_json::Value> {
+        let handle = self.handle(id)?;
+        let mut result = self.debug_inner(id, command, client).await?;
+        handle.native.lock().await.decorate(&mut result);
+        Ok(result)
+    }
+
+    async fn debug_inner(
+        &self,
+        id: &str,
+        command: &lotus_protocol::debug::DebugCommand,
+        client: &str,
+    ) -> io::Result<serde_json::Value> {
         use lotus_protocol::debug::DebugCommand;
         command.validate().map_err(io::Error::other)?;
         if command.mutates()
@@ -888,6 +900,7 @@ impl Supervisor {
                 mime_type: match file["format"].as_str() {
                     Some("json") => "application/json",
                     Some("wav") => "audio/wav",
+                    Some("citrace") => "application/x-citrace",
                     _ => "application/octet-stream",
                 }
                 .into(),
@@ -905,10 +918,7 @@ impl Supervisor {
         self.require_control()?;
         let handle = self.handle(id)?;
         let mut focus = self.audio_focus.lock().await;
-        if focus.as_deref() == Some(id) && enabled {
-            return Ok(serde_json::json!({"focused": id}));
-        }
-        if enabled {
+        if enabled && focus.as_deref() != Some(id) {
             if let Some(previous) = focus.take() {
                 if let Ok(old) = self.handle(&previous) {
                     old.native
@@ -974,6 +984,12 @@ impl Supervisor {
         let frames = handle.native.lock().await.capture_scaled(scale).await?;
         let directory = self.config.storage_root.join("artifacts");
         fs::create_dir_all(&directory)?;
+        let mut catalog = lock(&self.artifacts);
+        let total: usize = catalog.values().map(|(a, _)| a.bytes).sum();
+        let added: usize = frames.iter().map(|frame| frame.bgra.len()).sum();
+        if catalog.len() + frames.len() > MAX_ARTIFACTS || total + added > 512 << 20 {
+            return Err(io::Error::other("capture artifact quota reached"));
+        }
         let mut artifacts = Vec::new();
         for frame in frames {
             let id = SessionUuid::generate().to_string();
@@ -988,7 +1004,7 @@ impl Supervisor {
                 sha256: format!("{:x}", Sha256::digest(&frame.bgra)),
                 mime_type: "application/octet-stream".into(),
             };
-            lock(&self.artifacts).insert(artifact.uri.clone(), (artifact.clone(), path));
+            catalog.insert(artifact.uri.clone(), (artifact.clone(), path));
             artifacts.push(artifact);
         }
         Ok(artifacts)
@@ -1232,6 +1248,28 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+fn actor_client(actor: Actor) -> &'static str {
+    match actor {
+        Actor::Host => "host",
+        Actor::Desktop => "desktop",
+        Actor::Mcp => "mcp",
+    }
+}
+
+fn check_lease(handle: &SessionHandle, client: &str) -> io::Result<()> {
+    if lock(&handle.lease)
+        .as_ref()
+        .is_some_and(|owner| owner != client)
+    {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "debug lease held by another client",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1331,27 +1369,5 @@ mod tests {
             HostConfig::new(std::env::current_exe().expect("exe"), std::env::temp_dir());
         config.max_sessions = MAX_SESSIONS_LIMIT + 1;
         assert!(Supervisor::new(config).is_err());
-    }
-}
-
-fn actor_client(actor: Actor) -> &'static str {
-    match actor {
-        Actor::Host => "host",
-        Actor::Desktop => "desktop",
-        Actor::Mcp => "mcp",
-    }
-}
-
-fn check_lease(handle: &SessionHandle, client: &str) -> io::Result<()> {
-    if lock(&handle.lease)
-        .as_ref()
-        .is_some_and(|owner| owner != client)
-    {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "debug lease held by another client",
-        ))
-    } else {
-        Ok(())
     }
 }

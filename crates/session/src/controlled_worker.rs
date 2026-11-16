@@ -96,6 +96,7 @@ impl ControlledWorker {
                     {
                         if value["session"].as_str() != Some(expected_session.as_str())
                             || value["version_major"] != 1
+                            || value["version_minor"] != 0
                             || !value["epoch"].is_u64()
                         {
                             let _ = replies
@@ -261,6 +262,7 @@ impl ControlledWorker {
                                     request.params["operation"].as_str(),
                                     Some(
                                         "load_state"
+                                            | "citrace_replay"
                                             | "reverse_step"
                                             | "reverse_continue"
                                             | "boot_home_menu"

@@ -78,6 +78,10 @@ pub enum DebugCommand {
         stop_events: Vec<u32>,
     },
     GpuDraws,
+    CitraceStart,
+    CitraceStop,
+    CitraceStatus,
+    CitraceReplay,
     GpuDraw {
         draw: u64,
     },
@@ -672,7 +676,10 @@ impl DebugCommand {
     pub fn mutates(&self) -> bool {
         matches!(
             self,
-            Self::GpuConfigure { .. }
+            Self::CitraceStart
+                | Self::CitraceStop
+                | Self::CitraceReplay
+                | Self::GpuConfigure { .. }
                 | Self::ShaderTrace { .. }
                 | Self::Surface { .. }
                 | Self::LoadSymbols { .. }

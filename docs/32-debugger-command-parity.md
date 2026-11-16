@@ -21,6 +21,10 @@ This table records reachability, not native-backend acceptance.
 | `cheat_enable` | `ctr-cli debug`: `cheat_enable` | `lotus_debug`: `cheat_enable` |
 | `cheat_remove` | `ctr-cli debug`: `cheat_remove` | `lotus_debug`: `cheat_remove` |
 | `cheats` | `ctr-cli debug`: `cheats` | `lotus_debug`: `cheats` |
+| `citrace_replay` | `ctr-cli debug`: `citrace_replay` | `lotus_debug`: `citrace_replay` |
+| `citrace_start` | `ctr-cli debug`: `citrace_start` | `lotus_debug`: `citrace_start` |
+| `citrace_status` | `ctr-cli debug`: `citrace_status` | `lotus_debug`: `citrace_status` |
+| `citrace_stop` | `ctr-cli debug`: `citrace_stop` | `lotus_debug`: `citrace_stop` |
 | `content_transform` | `ctr-cli debug`: `content_transform` | `lotus_debug`: `content_transform` |
 | `continue` | `ctr-cli debug`: `continue` | `lotus_debug`: `continue` |
 | `crash_report` | `ctr-cli debug`: `crash_report` | `lotus_debug`: `crash_report` |

@@ -18,7 +18,7 @@ fn elf(address: u32, bytes: &[u8]) -> Vec<u8> {
     let names_offset = out.len() as u32;
     let names = b"\x00.text\x00.shstrtab\x00";
     out.extend_from_slice(names);
-    while out.len() % 4 != 0 {
+    while !out.len().is_multiple_of(4) {
         out.push(0);
     }
     let table = out.len() as u32;

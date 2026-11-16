@@ -137,8 +137,8 @@ fn resource(artifact: &Artifact) -> Resource {
         .with_mime_type(&artifact.mime_type)
         .with_size(artifact.bytes as u64)
         .with_description(format!(
-            "Native BGRA8 {}x{}, SHA-256 {}",
-            artifact.width, artifact.height, artifact.sha256
+            "{} {}x{}, SHA-256 {}",
+            artifact.mime_type, artifact.width, artifact.height, artifact.sha256
         ))
 }
 
@@ -308,6 +308,7 @@ impl LotusServer {
                 ControlOperation::Reset => host.reset(id, Actor::Mcp).await,
                 ControlOperation::Stop => {
                     host.stop(id, Actor::Mcp).await?;
+                    self.gdb.lock().await.remove(id);
                     Ok(serde_json::json!({"state": "stopped"}))
                 }
             }
@@ -338,9 +339,14 @@ impl LotusServer {
     )]
     pub async fn lotus_debug(&self, Parameters(args): Parameters<DebugArgs>) -> CallToolResult {
         let result = async {
-            self.require_host()?
+            let result = self
+                .require_host()?
                 .debug(&args.session, &args.command, Actor::Mcp)
-                .await
+                .await?;
+            if matches!(args.command, lotus_protocol::debug::DebugCommand::Stop) {
+                self.gdb.lock().await.remove(&args.session);
+            }
+            Ok(result)
         }
         .await;
         tool_result(result)

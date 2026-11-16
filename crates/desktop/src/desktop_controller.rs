@@ -211,10 +211,11 @@ impl Loops {
                 update.selected.clone()
             };
             if !selected.is_empty() {
-                if audio_selected != selected && self.host.allows_control() {
-                    if self.host.focus_audio(&selected, true).await.is_ok() {
-                        audio_selected = selected.clone();
-                    }
+                if audio_selected != selected
+                    && self.host.allows_control()
+                    && self.host.focus_audio(&selected, true).await.is_ok()
+                {
+                    audio_selected = selected.clone();
                 }
                 if let Some(frames) = self.host.preview(&selected).await {
                     sequence += 1;

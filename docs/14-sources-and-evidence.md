@@ -82,8 +82,9 @@ At the native pins in `config/pins.toml` (**source inspected**):
 - Experimental `src/ctr_worker/debug_gpu.h`,
   `video_core/debug_utils/debug_utils.h`, `shader/shader_interpreter.cpp`:
   pre-draw register/resource snapshots and bounded shader observations.
-- `src/core/tracer/{citrace.h,recorder.cpp}`: upstream CiTrace file format and
-  recorder; record/replay parity remains open.
+- `src/core/tracer/{citrace.h,recorder.cpp}`, experimental
+  `src/ctr_worker/debug_citrace.h`, `video_core/gpu.cpp`: bounded CiTrace v1
+  payloads, GPU action boundaries and replay paired with a complete initial state.
 - `src/core/movie.cpp`, `savestate.cpp`, `file_sys/*`: movie semantics,
   compressed states and relocation of serialized guest storage paths.
 

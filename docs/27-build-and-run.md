@@ -79,10 +79,11 @@ foreach ($branch in 'integration','experimental') {
 }
 ```
 
-`integration` is AZAHAR, `experimental` is CITnLO. At the v0.0.1 pins both point
-to the same commit, so they differ only by `-DCTR_BACKEND_NAME`. Flags (software
-renderer, Qt/SDL/Libretro/Vulkan/OpenGL off, LTO off) are fixed in the script and
-recorded in `lotus-build-manifest.json`. First clean build: about 35–45 min on a
+`integration` is AZAHAR, `experimental` is CITnLO. Wave 3 pins now differ:
+integration carries frontend adapters; experimental adds debugger instrumentation.
+Native builds enable software/Vulkan and Cubeb, with Qt/SDL/Libretro/OpenGL,
+Azahar's GDB stub and LTO disabled. The worker's default profile still selects
+software and Old 3DS. Exact flags are recorded in `lotus-build-manifest.json`. First clean build: about 35–45 min on a
 GitHub runner. `-Branch stock -Oracle` builds the unmodified-core oracle used for
 screen comparison ([20](20-native-baseline.md)).
 
