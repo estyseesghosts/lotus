@@ -11,9 +11,14 @@ on:
         description: Publish v<workspace version> after all checks pass
         type: boolean
         default: false
+      reuse_build_run:
+        description: Optional successful binary-build run for packaging-only changes
+        type: string
+        default: ''
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: windows-${{ github.ref }}
@@ -29,6 +34,7 @@ env:
 
 jobs:
   rust:
+    if: ${{ !inputs.reuse_build_run }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -78,6 +84,7 @@ jobs:
           retention-days: 7
 
   native:
+    if: ${{ !inputs.reuse_build_run }}
     runs-on: windows-2025
     timeout-minutes: 90
     strategy:
@@ -124,6 +131,7 @@ jobs:
           retention-days: 7
 
   package:
+    if: ${{ always() && !cancelled() && (inputs.reuse_build_run || (needs.rust.result == 'success' && needs.native.result == 'success')) }}
     needs: [rust, native]
     runs-on: windows-2025
     timeout-minutes: 30
@@ -135,18 +143,32 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.14'
+      - name: Validate reused build provenance
+        if: inputs.reuse_build_run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.reuse_build_run }}
+        run: |
+          python scripts/validate-build-reuse.py $env:BUILD_RUN
+          exit $LASTEXITCODE
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: rust-applications
           path: build/rust-artifact
+          run-id: ${{ inputs.reuse_build_run || github.run_id }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-integration
           path: build/azahar-artifact
+          run-id: ${{ inputs.reuse_build_run || github.run_id }}
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: native-experimental
           path: build/citnlo-artifact
+          run-id: ${{ inputs.reuse_build_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Assemble and test portable ZIP
         run: |
           $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"

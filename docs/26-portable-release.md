@@ -41,6 +41,10 @@ runner image is maintained externally, so byte-identical rebuilds are not promis
 Manual dispatch with `publish_release=true` instead creates the version tag and
 release from the tested workflow SHA after the same checks. It never overwrites
 an existing release. Only the release job receives repository write permission.
+For packaging-only recovery, `reuse_build_run` accepts a completed main run whose
+Rust and both native build jobs passed. CI rejects changed binary inputs and
+cross-repository/PR builds, then reruns package tests against those immutable
+artifacts. Compiler flags and source pins remain recorded in the reused manifests.
 
 Local native fixture results and stock comparisons remain in
 [25](25-wave-status.md). Visible GPUI/input and actual two-DPI checks are still

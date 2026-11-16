@@ -58,9 +58,11 @@ def main():
                 str(root / "launch.ps1"), "-Backend", backend.upper() if backend == "azahar" else "CITnLO",
                 "-Fixture", str(fixture), "-ConfigureOnly")
             config = json.loads((root / "data" / backend / "host.json").read_text(encoding="utf-8"))
-            assert Path(config["worker"]) == worker
-            assert Path(config["assets"]["homebrew"]) == fixture
-            assert Path(config["storage_root"]).is_relative_to(root)
+            # Windows may expose Temp through RUNNER~1 while PowerShell expands
+            # the same directory to runneradmin. Compare filesystem identity.
+            assert Path(config["worker"]).samefile(worker)
+            assert Path(config["assets"]["homebrew"]).samefile(fixture)
+            assert Path(config["storage_root"]).resolve().is_relative_to(root.resolve())
             subprocess.run([sys.executable, str(ROOT / "tests/test_native_protocol.py"), str(worker)],
                            cwd=temporary, env=environment, check=True, timeout=60)
         with subprocess.Popen([str(root / "bin/lotus-mcp.exe")], cwd=temporary, env=environment,
