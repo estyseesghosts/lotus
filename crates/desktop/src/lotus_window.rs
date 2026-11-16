@@ -11,10 +11,10 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, AnyElement, AppContext, ClickEvent, Context, Div, FocusHandle, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, ParentElement, PathPromptOptions, Render, RenderImage, Rgba, SharedString,
-    Stateful, StatefulInteractiveElement, Styled, Window,
+    div, px, uniform_list, AnyElement, AppContext, ClickEvent, Context, Div, FocusHandle,
+    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ParentElement, PathPromptOptions, Render, RenderImage, Rgba,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, StyledImage, Window,
 };
 use image::{Frame, RgbaImage};
 use lotus_session::native_session::InputState;
@@ -24,13 +24,15 @@ use serde_json::Value;
 
 use crate::desktop_controller::{Command, DesktopController, McpLink, McpMode};
 use crate::gauges;
+use crate::inspection::{Inspection, Panel};
 use crate::screen_geometry::TouchTransform;
 use crate::session_tree::{self, TreeNode};
 use crate::theme;
+use lotus_protocol::debug::DebugCommand as D;
 
 const SIDEBAR_WIDTH: f32 = 264.0;
 const RAIL_WIDTH: f32 = 52.0;
-const INSPECTOR_WIDTH: f32 = 248.0;
+const INSPECTOR_WIDTH: f32 = 420.0;
 const TOOLBAR_HEIGHT: f32 = 52.0;
 /// Vertical space reserved for the gauge strip when fitting screens.
 const GAUGES_HEIGHT: f32 = 100.0;
@@ -110,6 +112,9 @@ pub struct LotusWindow {
     images: Vec<Arc<RenderImage>>,
     images_session: String,
     registers: Option<(String, Value)>,
+    inspection: Option<(String, Panel, Arc<Inspection>)>,
+    inspection_panel: Panel,
+    surface_image: Option<Arc<RenderImage>>,
     error: String,
     dismissed_error: String,
     mcp: McpLink,
@@ -175,6 +180,9 @@ impl LotusWindow {
             images: Vec::new(),
             images_session: String::new(),
             registers: None,
+            inspection: None,
+            inspection_panel: Panel::Cpu,
+            surface_image: None,
             error: String::new(),
             dismissed_error: String::new(),
             mcp: McpLink::Off,
@@ -194,7 +202,7 @@ impl LotusWindow {
         let Some(controller) = &self.controller else {
             return;
         };
-        let (preview, selected) = {
+        let (preview, selected, surface) = {
             let Ok(mut update) = controller.latest.lock() else {
                 return;
             };
@@ -206,14 +214,30 @@ impl LotusWindow {
             self.mcp = update.mcp;
             self.pending = update.pending;
             self.registers = update.registers.clone();
+            self.inspection = update.inspection.clone();
             if update.error != self.error {
                 self.error = update.error.clone();
             }
-            (update.preview.take(), update.selected.clone())
+            (
+                update.preview.take(),
+                update.selected.clone(),
+                update.debug_image.take(),
+            )
         };
         if selected != self.selected {
             self.release_input();
             self.selected = selected;
+            if let Some(old) = self.surface_image.take() {
+                cx.drop_image(old, None);
+            }
+        }
+        if let Some(surface) = surface.filter(|surface| surface.session == self.selected) {
+            if let Some(old) = self.surface_image.take() {
+                cx.drop_image(old, None);
+            }
+            if let Some(pixels) = RgbaImage::from_raw(surface.width, surface.height, surface.bgra) {
+                self.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(pixels)])));
+            }
         }
         if self.images_session != self.selected {
             self.replace_images(Vec::new(), cx);
@@ -1330,7 +1354,43 @@ impl LotusWindow {
         }
     }
 
-    fn render_inspector(&self) -> impl IntoElement {
+    fn choose_inspection(&mut self, panel: Panel, offset: u32) {
+        self.inspection_panel = panel;
+        if let Some(controller) = &self.controller {
+            *controller.inspection_selection.lock().unwrap() = (panel, offset);
+        }
+    }
+    fn debug_command(&mut self, command: D) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.choose_inspection(Panel::Result, 0);
+        self.send(Command::Debug {
+            session: self.selected.clone(),
+            command,
+        });
+        self.inspection_panel = Panel::Result;
+    }
+    fn open_trace(&mut self, cx: &mut Context<Self>) {
+        let paths = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open event trace (JSONL, up to 64 MiB)".into()),
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = paths.await {
+                if let Some(path) = paths.into_iter().next() {
+                    let _ = this.update(cx, |view, _| {
+                        view.choose_inspection(Panel::Result, 0);
+                        view.send(Command::OpenTrace { path });
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+    fn render_inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let mut panel = div()
             .id("inspector")
             .flex()
@@ -1340,117 +1400,211 @@ impl LotusWindow {
             .h_full()
             .bg(theme::panel())
             .border_l_1()
-            .border_color(theme::border())
-            .overflow_y_scroll()
+            .border_color(theme::border());
+        let mut tabs = div().flex().flex_wrap().gap_1().p_2();
+        for tab in Panel::ALL {
+            tabs = tabs.child(
+                button(
+                    format!("inspect-{}", tab as usize),
+                    tab.label(),
+                    if self.inspection_panel == tab {
+                        Tone::Primary
+                    } else {
+                        Tone::Plain
+                    },
+                    true,
+                )
+                .on_click(cx.listener(move |view, _, _, _| view.choose_inspection(tab, 0))),
+            );
+        }
+        panel = panel.child(tabs);
+        let mut actions = div().flex().flex_wrap().gap_1().px_2().pb_2();
+        let commands: Vec<(&'static str, D)> = match self.inspection_panel {
+            Panel::Cpu => vec![
+                ("Step", D::Step { core: 0, count: 1 }),
+                ("Over", D::StepOver { core: 0 }),
+                ("Out", D::StepOut { core: 0 }),
+                ("Back", D::ReverseStep { core: 0 }),
+            ],
+            Panel::States => vec![
+                (
+                    "Save desktop",
+                    D::SaveState {
+                        name: "desktop".into(),
+                    },
+                ),
+                (
+                    "Enable rewind",
+                    D::RewindConfigure {
+                        enabled: true,
+                        capacity: 64,
+                        budget_mib: 128,
+                    },
+                ),
+                ("Reverse stop", D::ReverseContinue),
+            ],
+            Panel::Gpu => vec![
+                (
+                    "Capture draws",
+                    D::GpuConfigure {
+                        enabled: true,
+                        stop_events: vec![],
+                    },
+                ),
+                (
+                    "Disable capture",
+                    D::GpuConfigure {
+                        enabled: false,
+                        stop_events: vec![],
+                    },
+                ),
+                ("Record CiTrace", D::CitraceStart),
+                ("Finish trace", D::CitraceStop),
+                ("Replay trace", D::CitraceReplay),
+            ],
+            Panel::Ipc | Panel::Timeline => vec![
+                ("Trace on", D::Trace { enabled: true }),
+                ("Trace off", D::Trace { enabled: false }),
+            ],
+            Panel::Audio => vec![
+                ("Focus audio", D::AudioFocus { enabled: true }),
+                ("Mute", D::AudioFocus { enabled: false }),
+                ("Record WAV", D::AudioCapture { enabled: true }),
+                ("Finish WAV", D::AudioCapture { enabled: false }),
+            ],
+            _ => vec![],
+        };
+        for (label, command) in commands {
+            actions = actions.child(
+                button(format!("debug-{label}"), label, Tone::Plain, self.control).on_click(
+                    cx.listener(move |view, _, _, _| view.debug_command(command.clone())),
+                ),
+            );
+        }
+        actions = actions.child(
+            button("open-trace", "Open JSONL", Tone::Plain, true)
+                .on_click(cx.listener(|view, _, _, cx| view.open_trace(cx))),
+        );
+        actions = actions.child(
+            button("clipboard-command", "Run clipboard JSON", Tone::Plain, true).on_click(
+                cx.listener(|view, _, _, cx| {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        let command = if text.len() <= 65536 {
+                            serde_json::from_str::<D>(&text).map_err(|e| e.to_string())
+                        } else {
+                            Err("Command exceeds 64 KiB".into())
+                        };
+                        match command {
+                            Ok(command) => match command.validate() {
+                                Ok(()) => view.debug_command(command),
+                                Err(error) => view.error = error.into(),
+                            },
+                            Err(error) => view.error = error,
+                        }
+                    }
+                }),
+            ),
+        );
+        actions = actions.child(with_tooltip(
+            button("debug-keys", "Keys", Tone::Plain, true),
+            KEYS.iter()
+                .map(|(key, action)| format!("{key}: {action}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ));
+        panel = panel.child(actions);
+        let view = self
+            .inspection
+            .as_ref()
+            .filter(|(session, tab, _)| *session == self.selected && *tab == self.inspection_panel);
+        let Some((_, _, view)) = view else {
+            return panel.child(div().p_3().child("Select a session and inspector. Results are safe-point snapshots; unsupported backend operations show their reason."));
+        };
+        panel = panel
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .h(px(TOOLBAR_HEIGHT))
-                    .px_4()
-                    .border_b_1()
-                    .border_color(theme::border())
-                    .text_sm()
-                    .font_weight(FontWeight::MEDIUM)
-                    .child("Inspector"),
+                    .px_2()
+                    .pb_2()
+                    .text_xs()
+                    .text_color(theme::text_muted())
+                    .child(view.source.clone()),
+            )
+            .child(div().px_2().text_xs().child(format!(
+                "{} rows · {} lost",
+                view.rows.len(),
+                view.lost
+            )));
+        if let Some(next) = view.next {
+            let tab = self.inspection_panel;
+            panel = panel.child(
+                button("inspect-next", "Next page", Tone::Plain, true)
+                    .on_click(cx.listener(move |view, _, _, _| view.choose_inspection(tab, next))),
             );
-        let Some(summary) = self.selected_summary() else {
-            return panel;
-        };
-        let telemetry = &summary.telemetry;
-        let mut session = inspector_section("SESSION")
-            .child(field("id", summary.info.id.clone()))
-            .child(field(
-                "backend",
-                if telemetry.backend_name.is_empty() {
-                    "—".to_string()
-                } else {
-                    telemetry.backend_name.clone()
-                },
-            ))
-            .child(field(
-                "content",
-                summary.info.asset.clone().unwrap_or_else(|| "—".into()),
-            ))
-            .child(field("buttons", format!("{:#06x}", telemetry.buttons)))
-            .child(field(
-                "touch",
-                if telemetry.touch_down { "down" } else { "up" }.to_string(),
-            ));
-        if !telemetry.last_error.is_empty() {
-            session = session.child(field("last error", telemetry.last_error.clone()));
         }
-        panel = panel.child(session);
-        let registers = self
-            .registers
-            .as_ref()
-            .filter(|(id, _)| *id == summary.info.id)
-            .map(|(_, value)| value);
-        let paused = telemetry.state == SessionState::Paused && !telemetry.playing;
-        let mut section = inspector_section("REGISTERS · CORE 0");
-        match registers.filter(|_| paused) {
-            Some(value) => {
-                let names = [
-                    "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11",
-                    "r12", "sp", "lr", "pc",
-                ];
-                let mut grid = div().flex().flex_wrap();
-                if let Some(values) = value["registers"].as_array() {
-                    for (name, register) in names.iter().zip(values) {
-                        grid = grid.child(
-                            div()
-                                .w_1_2()
-                                .flex()
-                                .gap_2()
-                                .py(px(1.0))
-                                .child(
-                                    div()
-                                        .w(px(28.0))
-                                        .text_color(theme::text_muted())
-                                        .child(*name),
-                                )
-                                .child(hex(register)),
-                        );
-                    }
-                }
-                section = section
-                    .child(grid.font_family(theme::MONO).text_xs())
-                    .child(field("cpsr", hex_string(&value["cpsr"])))
-                    .child(
-                        div()
-                            .pt_1()
-                            .text_xs()
-                            .text_color(theme::text_muted())
-                            .child(format!("captured at frame {}", telemetry.frames)),
-                    );
-            }
-            None => {
-                section = section.child(
-                    div()
-                        .text_xs()
-                        .text_color(theme::text_muted())
-                        .child("Pause or step to read registers."),
+        if self.inspection_panel == Panel::Result {
+            if let Some(image) = &self.surface_image {
+                panel = panel.child(
+                    gpui::img(image.clone())
+                        .w_full()
+                        .h(px(180.0))
+                        .object_fit(gpui::ObjectFit::Contain),
                 );
             }
         }
-        panel
-            .child(section)
-            .child(
-                inspector_section("KEYS").children(KEYS.iter().map(|(keys, action)| {
-                    div()
-                        .flex()
-                        .text_xs()
-                        .child(
+        let rows = view.rows.clone();
+        let weak = cx.entity().downgrade();
+        panel.child(
+            uniform_list("inspection-rows", rows.len(), move |range, _, _| {
+                range
+                    .map(|index| {
+                        let row = &rows[index];
+                        let weak = weak.clone();
+                        let action = row.action.clone();
+                        let tooltip = format!("{}\n{}", row.key, row.value);
+                        with_tooltip(
                             div()
-                                .flex_none()
-                                .w(px(108.0))
+                                .id(("inspection-row", index))
+                                .flex()
+                                .h(px(28.0))
+                                .px_2()
+                                .gap_2()
+                                .overflow_hidden()
                                 .font_family(theme::MONO)
-                                .text_color(theme::text_secondary())
-                                .child(*keys),
+                                .text_xs()
+                                .child(
+                                    div()
+                                        .w(px(48.0))
+                                        .flex_none()
+                                        .text_color(theme::text_muted())
+                                        .child(row.lane),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(150.0))
+                                        .flex_none()
+                                        .truncate()
+                                        .child(row.key.clone()),
+                                )
+                                .child(
+                                    div().flex_1().min_w_0().truncate().child(row.value.clone()),
+                                ),
+                            tooltip,
                         )
-                        .child(div().text_color(theme::text_muted()).child(*action))
-                })),
-            )
+                        .when_some(action, |element, command| {
+                            element
+                                .cursor_pointer()
+                                .hover(|style| style.bg(theme::surface_hover()))
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak
+                                        .update(cx, |view, _| view.debug_command(command.clone()));
+                                })
+                        })
+                    })
+                    .collect()
+            })
+            .flex_1()
+            .min_h_0(),
+        )
     }
 
     fn render_error(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -1533,7 +1687,7 @@ impl Render for LotusWindow {
             .child(self.render_sidebar(cx))
             .child(main)
             .when(self.inspector == Inspector::Open, |root| {
-                root.child(self.render_inspector())
+                root.child(self.render_inspector(cx))
             })
     }
 }
@@ -1792,47 +1946,7 @@ fn rgb_black() -> Rgba {
     theme::background()
 }
 
-fn inspector_section(title: &'static str) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap_1()
-        .px_4()
-        .py_3()
-        .border_b_1()
-        .border_color(theme::border())
-        .child(div().pb_1().child(section_label(title)))
-}
-
-fn field(name: &'static str, value: String) -> impl IntoElement {
-    div()
-        .flex()
-        .gap_2()
-        .text_xs()
-        .child(
-            div()
-                .flex_none()
-                .w(px(64.0))
-                .text_color(theme::text_muted())
-                .child(name),
-        )
-        .child(
-            div()
-                .min_w_0()
-                .truncate()
-                .font_family(theme::MONO)
-                .text_color(theme::text_secondary())
-                .child(value),
-        )
-}
-
-fn hex(value: &Value) -> impl IntoElement {
-    div()
-        .text_color(theme::text_secondary())
-        .child(hex_string(value))
-}
-
-fn hex_string(value: &Value) -> String {
+pub(crate) fn hex_string(value: &Value) -> String {
     value
         .as_u64()
         .map(|value| format!("{value:08x}"))

@@ -38,3 +38,26 @@ theme, screen_geometry}`, `session::supervisor`. Primary GPUI APIs at its pinned
 source: `elements/{img,canvas,div}.rs`, `assets.rs` (`RenderImage` BGRA),
 `app.rs` (`drop_image`, `prompt_for_paths`), `app/context.rs` (activation/focus).
 Rollback: run headless (`lotus-mcp`, `ctr-cli`); no GUI is required.
+
+
+Wave 3 inspectors (**verified compiled**, controller/model **verified emulator**):
+CPU/VFP and disassembly, threads/waits, breakpoints, memory maps, paginated
+settings, IPC/logs, frozen GPU captures and shader/texture inspection, audio,
+checkpoint selection and event lanes. Boolean settings are clickable; other
+commands can be supplied through “Run clipboard JSON”, validated against the
+same typed API as CLI/MCP. Execution controls share debug leases. Capture/trace
+buttons explicitly enable instrumentation; GPU replay requires state restore or
+reset before CPU resume.
+
+Inspector data is fetched on the background runtime only while open. Visible
+panels refresh at most twice per second; imported/result views remain fixed.
+JSONL imports parse on a blocking worker, bounded by 64 MiB input, 100000 rows
+and 32 MiB retained text. GPUI `uniform_list` renders the visible range only.
+Snapshot rows restore named states; frozen texture rows decode to bounded image
+previews. Selecting successive draws produces bounded structural state diffs.
+
+`wave3-native-inspector-01` covers both models through the controller, including
+100000-event import and closed manifests. `wave3-inspector-tests-03` and later
+checks cover the bounded view model. Visual verification of these new panels
+remains **untested**: computer-use access to the Lotus app was rejected by the
+approval system. The earlier screenshot evidence above covers the older UI.

@@ -2,7 +2,7 @@
 
 Implementation checkpoint, 2026-11-16. Native source is committed as integration
 `47f22e9a60069679e85eef30ce25c679aa499a8d` and experimental
-`2d8cbb82ba65a8ef92438a4ff7a7829998fcb5e8`. Earlier development reports used
+`e3f68aedc96338c0d58c64be7aa41afc9992a4c6`. Earlier development reports used
 the original embedded SHA; retained executable SHA256 values distinguish them.
 Pinned rebuilds are being verified. Wave 3 remains incomplete.
 
@@ -53,7 +53,7 @@ Further **verified emulator** evidence:
 Open work: complete settings consumer/apply-class audit, LLE DSP and injected
 mic guest readback, camera and other peripheral readback, content tools and wider scenario/matrix
 acceptance, continuous-history reverse execution, remaining GDB behavior,
-GPU resource lineage, desktop inspectors and timeline,
+desktop visual acceptance,
 scenario integration, pinned regression builds and instrumentation overhead.
 No hardware accuracy claim is made. ARM GNU GDB coverage does not yet satisfy
 acceptance specifically against the devkitARM-distributed build.
@@ -94,3 +94,17 @@ Pinned builds for both native branches pass (`wave3-pinned-*-build-02.log`).
 3DSX ROM without changing registers, restore the original ROM/state, reject a
 modified archive without changing registers. `mcp-debugger-04` repeats the
 complete owned CPU/kernel/lease/lifecycle suite against the updated pin.
+
+
+GPU lineage (`gpu-lineage-06`, **verified emulator**): all four Old/New ×
+software/Vulkan cases freeze actual vertex buffer spans, compare shader-trace
+outputs against actual vertex outputs, preserve unchanged texture versions and
+change both content hash/version after a CPU overwrite. Resource snapshots also
+include validated virtual aliases. Version tracking is bounded to 128 entries
+with an eviction counter; draw captures stay bounded to eight draws and 4 MiB
+of resource bytes per draw.
+
+Desktop controller/model coverage is recorded in [24](24-desktop.md). New
+inspector visuals remain unverified because computer-use access was rejected.
+`mcp-replay-03` also passes read-only movie save/advance/restore at identical
+full timeline lengths, on both models, followed by the repeated matrix checks.

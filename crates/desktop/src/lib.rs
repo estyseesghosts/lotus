@@ -6,6 +6,7 @@
 
 pub mod desktop_controller;
 pub mod gauges;
+pub mod inspection;
 pub mod lotus_window;
 pub mod screen_geometry;
 pub mod session_tree;
