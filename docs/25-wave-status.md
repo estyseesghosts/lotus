@@ -60,3 +60,7 @@ software screen layout in
 HID device polling in [hid.cpp](../vendor/azahar/src/core/hle/service/hid/hid.cpp);
 audio submission in [dsp_interface.cpp](../vendor/azahar/src/audio_core/dsp_interface.cpp).
 The dossier's broader debugger/accuracy APIs remain future targets for Waves 3–4.
+
+Wave 3 (2026-11-16): implemented against the pins in `config/pins.toml`; plan
+and milestone status in [29](29-wave-3-plan.md), evidence and open exceptions
+in [31](31-wave-3-progress.md) ("Completion checkpoint").

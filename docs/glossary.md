@@ -52,9 +52,16 @@ backend, renderer, DSP mode, system/CFG values, determinism options); its
 hash is recorded in every manifest and report. Old 3DS is the default.
 [29](29-wave-3-plan.md), T24 in [15](15-implementation-tickets.md)
 
-**Apply class** — when a setting may change: `boot`, `restart`, `live`,
-`renderer` or `cfg-savedata`. Each class is justified by the source line
-that consumes the setting. [29](29-wave-3-plan.md)
+**Apply class** — when a setting may change: `live` (read per request or
+re-applied by `System::ApplySettings`), `renderer` (read only by video_core or
+frontend layout code; fixed when the session's renderer is created), `boot`,
+`cfg-savedata` (CFG save data written before boot) or `inert` (no worker
+consumer). Only `live` settings change on a running session. Each class cites
+the consuming source lines (`tools/generate-settings.py`). [29](29-wave-3-plan.md)
+
+**Reverse continue** — run backwards to the previous breakpoint or watchpoint
+hit by replaying the rewind checkpoint that holds it with instruction stepping;
+a watchpoint lands before the access executes. [31](31-wave-3-progress.md)
 
 **Debug lease** — exclusive right to control execution (pause, step,
 continue) of one session, arbitrated between desktop, MCP and GDB clients;

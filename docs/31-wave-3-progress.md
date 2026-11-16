@@ -1,10 +1,10 @@
 # 31 — Wave 3 implementation evidence
 
-Implementation checkpoint, 2026-11-16. Native source is committed as integration
-`47f22e9a60069679e85eef30ce25c679aa499a8d` and experimental
-`e3f68aedc96338c0d58c64be7aa41afc9992a4c6`. Earlier development reports used
-the original embedded SHA; retained executable SHA256 values distinguish them.
-Pinned rebuilds are being verified. Wave 3 remains incomplete.
+Implementation checkpoint, 2026-11-16. Native source is pinned as integration
+`5a3c702f0fb0291632deecbe32d91aedb235f819` and experimental
+`6361ddc38fbe2e1396337064e825dd16bc911bbf`; earlier entries name the pin they
+ran against through retained executable SHA256 values. Wave 3 is implemented;
+open exceptions are listed under "Completion checkpoint".
 
 Verified emulator checks (local reports in ignored `runs/`):
 
@@ -41,7 +41,7 @@ Further **verified emulator** evidence:
   3DSX title-ID error and is checked against actual worker logs.
 - `mcp-workflows-04`: both models pass predicate stops, instruction checkpoint
   reversal, reverse watchpoint continuation and two-child memory isolation.
-  Forked guest filesystem writes still need acceptance coverage.
+  Forked guest filesystem writes: see `mcp-fs-fork-01` below.
 - `gpu-acceptance-01`: Old/New, software/Vulkan: actual pre-draw state,
   eight vertex inputs, bounded shader interpreter trace and texture surface.
 - `audio-audible-02`: three HLE guest DSP captures per model, 131200 PCM bytes
@@ -50,13 +50,8 @@ Further **verified emulator** evidence:
 - `wave3-rust-tests-02.log`: protocol, session, debugger, GDB and MCP unit tests
   pass. Generated command parity is enforced by protocol and MCP schema tests.
 
-Open work: complete settings consumer/apply-class audit, LLE DSP and injected
-mic guest readback, camera and other peripheral readback, content tools and wider scenario/matrix
-acceptance, continuous-history reverse execution, remaining GDB behavior,
-desktop visual acceptance,
-scenario integration, pinned regression builds and instrumentation overhead.
-No hardware accuracy claim is made. ARM GNU GDB coverage does not yet satisfy
-acceptance specifically against the devkitARM-distributed build.
+The open-work list that stood here is resolved in "Completion checkpoint" at the
+end of this document; what remains open is listed there.
 
 
 CiTrace **verified emulator**: `citrace-acceptance-08` covers Old/New 3DS on
@@ -108,3 +103,91 @@ Desktop controller/model coverage is recorded in [24](24-desktop.md). New
 inspector visuals remain unverified because computer-use access was rejected.
 `mcp-replay-03` also passes read-only movie save/advance/restore at identical
 full timeline lengths, on both models, followed by the repeated matrix checks.
+
+
+## Completion checkpoint (2026-11-16, second session)
+
+All local reports are in ignored `runs/`; tools and tests named here are
+committed. Old and New 3DS unless stated. **Verified emulator** throughout; no
+hardware accuracy claim.
+
+- **Reverse continue** (`w3c-reverse-02`, `tools/reverse_acceptance.py`):
+  continuous `run_until` with rewind; write-watchpoint values 2, 3, 4, then
+  `reverse_continue` lands before the access (old value in memory,
+  `access_completed: false`), forward re-hits it, and two further reversals
+  step back through 3 and 2. Execute breakpoints land on the previous hit
+  (counter one lower). Mechanism: stops are counted per rewind checkpoint;
+  the checkpoint holding the previous hit is replayed with instruction
+  stepping; a watchpoint is replayed a second time to its access instruction.
+  A diverging replay restores the present state and reports failure. Changing
+  breakpoints forgets hit counts; with none set the request is refused.
+  `mcp-workflows-05`, `w3c-dbg-regress-01` and `w3c-gdb-02` still pass.
+- **Settings apply classes** (T24, `w3c-settings-03`, both branches): 174
+  bindings — 19 `live`, 67 `renderer`, 44 `boot`, 29 (28 on integration)
+  `cfg-savedata`, 15 `inert`; each cites its consumer lines. Non-live classes
+  are refused on a running session with the class named; `battery_*`,
+  `steps_per_hour` and `audio_muted` apply live.
+- **GPU setting observables** (T37, same run, software and Vulkan): guest ticks
+  at successive PICA draws shift with `simulate_3ds_gpu_timings` (second draw
+  134,639,954 → 134,682,037) and `delay_game_render_thread_us` (first draw
+  134,601,484 → ~136.1–136.2 M; the delay replies through `RunAsync`, so its
+  landing point varies between runs). JIT and interpreter shader engines both
+  match the reference shader trace. `shaders_accurate_mul` is consumed only by
+  hardware shaders (`gpu.cpp:448`); no output difference is claimed.
+  Observation: on Vulkan, early draws were once 96 ticks earlier in one of four
+  identical runs before reconverging; software was exact. Vulkan checks
+  therefore require shifts above measured baseline jitter.
+- **Content confinement** (T31, `w3c-fs-01`, owned `fixtures/filesystem`): a
+  guest SDMC write lands in `<root>/sdmc`; six `..`-climbing paths return
+  `0xE0E046BE` (invalid path) and no file appears above the session root.
+- **Forked filesystem isolation** (`mcp-fs-fork-01`): parent and two forks write
+  different bytes to the same SDMC path; each root holds its own file and the
+  pre-fork file is inherited by both forks.
+- **Offscreen Vulkan** (T45, `w3c-vulkan-01`, integration): four workers in
+  parallel, 60 frames each, both screens captured (hashes equal per model).
+  `physical_device=99` and a loader with a missing ICD both return typed
+  `unsupported` replies within 0.4 s, the worker keeps answering, exits 0, and
+  a following software session works.
+- **Audio focus** (T46, `mcp-focus-01`): focus moved A → B → A across sessions
+  is exclusive at every step (now visible as `audio_focused` in status); the
+  raw DSP captures of both switched sessions equal an unfocused reference
+  (SHA256 `7c8a00e8…`). Host-device glitches are not measured.
+- **JIT-sensitive matrix** (T41/T18, `mcp-matrix-div-01`, owned
+  `fixtures/divergence`): JIT vs interpreter differ repeatably at the first
+  checkpoint in guest ticks over a fixed loop (60,361 vs 90,368), NaN sign
+  (`0x7fc00000` vs `0xffc00000`) and denormal flushing (0 vs `0x116c2`); two
+  JIT profiles agree. The matrix labels these observations; which backend
+  matches hardware is untested.
+- **Desktop inspectors** (T17, `w3c-desktop-01`, checked by screenshot):
+  CPU/disassembly, threads, breakpoints, memory, paged settings with classes,
+  IPC (bounded, loss counter shown), logs, GPU draw, audio, snapshots and
+  timeline panels render live CITnLO data. Two-DPI interaction remains
+  unverified.
+- **Instrumentation overhead** (T32, `w3c-overhead-02`, Old 3DS software,
+  `tools/overhead_acceptance.py`): host-time medians of three fresh workers
+  over 60 frames, relative to off (12.7 s): SVC/IPC trace 1.09×, PICA event
+  capture 1.25×, rewind checkpoints every frame 2.47×. Guest ticks and both
+  screen hashes are identical to the off run in every configuration. An armed
+  execute breakpoint forces instruction stepping: one frame did not finish
+  within the 20 s host deadline (≥ 82× the 0.24 s one-frame reference); this
+  is a lower bound, not a measurement. Host time on this machine only.
+- **Scenario movies and determinism profile** (T29, `w3c-movie-04`,
+  `tests/test_scenario_movie.py`, user GPU homebrew): per model, three
+  scenario recordings and three read-only playbacks with no scenario input
+  produce identical screen checkpoints at frames 35/45/60; playback consumes
+  all 60 recorded inputs. That content's screens do not change for D-pad, A or
+  touch within 60 frames (an idle run is identical), so this shows replay
+  determinism, not input sensitivity, which remains unshown for movies.
+  Profile hashes differ per fresh root because CFG console
+  IDs are generated per root; playback applies the recorded one.
+
+Pinned regression (`w3p-*`, both pins above, 2026-11-16): reverse, owned CPU
+debugger, GDB (Arm GNU GDB 16.3), settings classes on both branches (draw
+observables on experimental), content confinement, scenario movies, and MCP
+workflows/debugger/forked filesystem/audio focus/divergent matrix pass;
+`scripts/verify-pins.ps1` passes.
+
+Open exceptions: the devkitARM-specific GDB build was not run (its download was
+not approved; Arm GNU GDB passes the same session); actual two-DPI interaction
+and host audio-device glitches are unmeasured; Vulkan tick jitter is recorded
+above; no hardware accuracy claim is made.

@@ -1,11 +1,13 @@
 # 29 — Wave 3 plan: comprehensive agentic debugger
 
-Status: **implementation in progress**, 2026-11-16. Development evidence and
-remaining acceptance work are in [31](31-wave-3-progress.md). Tickets and their Deliver/Check/Avoid terms
+Status: **implemented**, 2026-11-16, with acceptance evidence and the
+remaining explicit exceptions in [31](31-wave-3-progress.md) ("Completion
+checkpoint"). Tickets and their Deliver/Check/Avoid terms
 are in [15](15-implementation-tickets.md); this document holds the goal,
-decisions, Azahar parity matrix and milestone order. No milestone is yet declared
-complete; source facts below are **source inspected** at the native pin in
-`config/pins.toml`.
+decisions, Azahar parity matrix and milestone order. Milestones 3.0, 3.2, 3.3
+and 3.4 meet their exit checks (**verified emulator**). 3.1 meets them except
+that the GDB session used Arm GNU GDB 16.3, not the devkitARM build. Source facts
+below are **source inspected** at the native pin in `config/pins.toml`.
 
 ## Goal
 

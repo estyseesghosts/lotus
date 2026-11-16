@@ -58,6 +58,10 @@ previews. Selecting successive draws produces bounded structural state diffs.
 
 `wave3-native-inspector-01` covers both models through the controller, including
 100000-event import and closed manifests. `wave3-inspector-tests-03` and later
-checks cover the bounded view model. Visual verification of these new panels
-remains **untested**: computer-use access to the Lotus app was rejected by the
-approval system. The earlier screenshot evidence above covers the older UI.
+checks cover the bounded view model. **Checked by screenshot**
+(`w3c-desktop-01`, 2026-11-16, PrintWindow captures with posted mouse
+messages, one 100%-scale display): every inspector panel renders live CITnLO
+data from a paused session — CPU registers/disassembly, threads, breakpoints,
+memory map, paged settings with apply classes, IPC with its loss counter,
+logs, GPU draw, audio regions, snapshots and timeline. Two-DPI interaction
+remains unverified.
