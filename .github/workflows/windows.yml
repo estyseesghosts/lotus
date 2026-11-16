@@ -189,7 +189,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   release:
-    if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)
+    # always(): reuse mode skips rust/native, which would otherwise skip this job transitively.
+    if: ${{ always() && !cancelled() && needs.package.result == 'success' && (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.publish_release)) }}
     needs: package
     runs-on: windows-2025
     timeout-minutes: 10
