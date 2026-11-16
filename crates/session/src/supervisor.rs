@@ -24,6 +24,7 @@ use crate::card_store::{CardStore, ScratchEnd};
 use crate::native_session::{Frame, InputState, NativeSession};
 use crate::telemetry::{Actor, Telemetry};
 use crate::SessionState;
+mod experiments;
 
 /// Sessions per host unless the configuration raises it; four is the tested load.
 pub const DEFAULT_MAX_SESSIONS: usize = 4;
@@ -49,6 +50,11 @@ pub struct HostConfig {
     pub allow_control: bool,
     #[serde(default = "default_max_sessions")]
     pub max_sessions: usize,
+    /// Validated worker settings applied before loading content.
+    #[serde(default)]
+    pub profile: BTreeMap<String, lotus_protocol::debug::SettingValue>,
+    #[serde(default)]
+    pub workers: BTreeMap<String, PathBuf>,
 }
 
 fn default_max_sessions() -> usize {
@@ -65,6 +71,8 @@ impl HostConfig {
             asset_directories: BTreeMap::new(),
             allow_control: false,
             max_sessions: DEFAULT_MAX_SESSIONS,
+            profile: BTreeMap::new(),
+            workers: BTreeMap::new(),
         }
     }
 }
@@ -117,6 +125,7 @@ pub struct Artifact {
     pub height: u32,
     pub bytes: usize,
     pub sha256: String,
+    pub mime_type: String,
 }
 
 /// A session's lock domain. Lock order: `native`, then `info` or `telemetry`.
@@ -126,6 +135,8 @@ struct SessionHandle {
     native: tokio::sync::Mutex<NativeSession>,
     telemetry: Mutex<Telemetry>,
     playing: AtomicBool,
+    lease: Mutex<Option<String>>,
+    symbols: Mutex<Option<lotus_debugger::symbols::Symbols>>,
 }
 
 impl SessionHandle {
@@ -165,6 +176,7 @@ pub struct Supervisor {
     /// Content approved interactively by the desktop user.
     local_assets: Mutex<BTreeMap<String, PathBuf>>,
     focus_request: Mutex<Option<String>>,
+    audio_focus: tokio::sync::Mutex<Option<String>>,
 }
 
 impl Supervisor {
@@ -176,6 +188,9 @@ impl Supervisor {
             ));
         }
         config.worker = config.worker.canonicalize()?;
+        for worker in config.workers.values_mut() {
+            *worker = worker.canonicalize()?;
+        }
         for path in config.assets.values_mut() {
             *path = path.canonicalize()?;
         }
@@ -198,6 +213,7 @@ impl Supervisor {
             artifacts: Mutex::default(),
             local_assets: Mutex::default(),
             focus_request: Mutex::default(),
+            audio_focus: tokio::sync::Mutex::default(),
         })
     }
 
@@ -316,6 +332,20 @@ impl Supervisor {
         asset: Option<&str>,
         actor: Actor,
     ) -> io::Result<SessionInfo> {
+        self.create_seeded(kind, asset, actor, None, None).await
+    }
+
+    async fn create_seeded(
+        &self,
+        kind: SessionKind,
+        asset: Option<&str>,
+        actor: Actor,
+        seed: Option<(
+            &Path,
+            &BTreeMap<String, lotus_protocol::debug::SettingValue>,
+        )>,
+        worker: Option<&Path>,
+    ) -> io::Result<SessionInfo> {
         self.require_control()?;
         let content = asset.map(|handle| self.resolve_asset(handle)).transpose()?;
         let id = SessionUuid::generate().to_string();
@@ -327,7 +357,16 @@ impl Supervisor {
             }
         };
         let started = async {
-            let mut native = NativeSession::spawn(&self.config.worker, &root).await?;
+            if let Some((source, _)) = seed {
+                crate::card_store::copy_checkpoint_root(source, &root)?;
+            }
+            let mut native =
+                NativeSession::spawn(worker.unwrap_or(&self.config.worker), &root).await?;
+            let profile = seed.map_or(&self.config.profile, |(_, profile)| profile);
+            if let Err(error) = native.apply_profile(profile).await {
+                let _ = native.stop().await;
+                return Err(error);
+            }
             if let Some(content) = &content {
                 if let Err(error) = native.load(content).await {
                     let _ = native.stop().await;
@@ -363,6 +402,8 @@ impl Supervisor {
             native: tokio::sync::Mutex::new(native),
             telemetry: Mutex::new(telemetry),
             playing: AtomicBool::new(false),
+            lease: Mutex::new(None),
+            symbols: Mutex::new(None),
         });
         reservation.commit(handle);
         Ok(info)
@@ -373,8 +414,9 @@ impl Supervisor {
         self.require_control()?;
         let content = self.resolve_asset(asset)?;
         let handle = self.handle(id)?;
-        handle.set_playing(false);
         let mut native = handle.native.lock().await;
+        check_lease(&handle, actor_client(actor))?;
+        handle.set_playing(false);
         pause_if_running(&mut native).await?;
         native.load(&content).await?;
         lock(&handle.info).asset = Some(asset.to_string());
@@ -390,6 +432,7 @@ impl Supervisor {
             return Err(io::Error::other("load content before running"));
         }
         let mut native = handle.native.lock().await;
+        check_lease(&handle, actor_client(actor))?;
         if native.state() == SessionState::Paused {
             native.run().await?;
         }
@@ -401,8 +444,9 @@ impl Supervisor {
     pub async fn pause(&self, id: &str, actor: Actor) -> io::Result<serde_json::Value> {
         self.require_control()?;
         let handle = self.handle(id)?;
-        handle.set_playing(false);
         let mut native = handle.native.lock().await;
+        check_lease(&handle, actor_client(actor))?;
+        handle.set_playing(false);
         handle.record(actor, "pause");
         native.pause().await
     }
@@ -416,8 +460,9 @@ impl Supervisor {
     ) -> io::Result<serde_json::Value> {
         self.require_control()?;
         let handle = self.handle(id)?;
-        handle.set_playing(false);
         let mut native = handle.native.lock().await;
+        check_lease(&handle, actor_client(actor))?;
+        handle.set_playing(false);
         pause_if_running(&mut native).await?;
         handle.record(actor, &format!("run_until {frames}"));
         native.advance(frames).await
@@ -426,8 +471,9 @@ impl Supervisor {
     pub async fn reset(&self, id: &str, actor: Actor) -> io::Result<serde_json::Value> {
         self.require_control()?;
         let handle = self.handle(id)?;
-        handle.set_playing(false);
         let mut native = handle.native.lock().await;
+        check_lease(&handle, actor_client(actor))?;
+        handle.set_playing(false);
         pause_if_running(&mut native).await?;
         handle.record(actor, "reset");
         native.reset().await
@@ -443,6 +489,7 @@ impl Supervisor {
         self.require_control()?;
         let handle = self.handle(id)?;
         let mut native = handle.native.lock().await;
+        check_lease(&handle, actor_client(actor))?;
         if actor != Actor::Desktop {
             handle.record(actor, "input");
         }
@@ -452,20 +499,21 @@ impl Supervisor {
     /// End a session. Secondary guest data is deleted; primary data persists.
     pub async fn stop(&self, id: &str, actor: Actor) -> io::Result<()> {
         self.require_control()?;
-        let handle = {
-            let mut registry = lock(&self.registry);
-            let handle = registry
-                .sessions
-                .remove(id)
-                .ok_or_else(|| io::Error::other("unknown session"))?;
-            registry.mounted.retain(|_, owner| owner != id);
-            handle
-        };
+        let handle = self.handle(id)?;
         handle.set_playing(false);
         handle.record(actor, "stop");
         let mut native = handle.native.lock().await;
         let result = if native.state().is_active() {
-            native.stop().await
+            match tokio::time::timeout(CLOSE_DEADLINE, native.stop()).await {
+                Ok(result) => result,
+                Err(_) => {
+                    native.abort().await;
+                    Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "worker stop deadline; terminated",
+                    ))
+                }
+            }
         } else {
             Ok(())
         };
@@ -475,6 +523,11 @@ impl Supervisor {
             ScratchEnd::Abnormal
         };
         drop(native);
+        {
+            let mut registry = lock(&self.registry);
+            registry.sessions.remove(id);
+            registry.mounted.retain(|_, owner| owner != id);
+        }
         if matches!(lock(&handle.info).kind, SessionKind::Secondary { .. }) {
             self.cards.discard_scratch(&handle.root, end)?;
         }
@@ -498,6 +551,386 @@ impl Supervisor {
         let status = native.status().await?;
         observe(&handle, &native, &status);
         Ok(status)
+    }
+
+    /// Typed debugger entry point shared by CLI, MCP, desktop and GDB.
+    pub async fn debug(
+        &self,
+        id: &str,
+        command: &lotus_protocol::debug::DebugCommand,
+        actor: Actor,
+    ) -> io::Result<serde_json::Value> {
+        self.debug_as(id, command, actor_client(actor)).await
+    }
+
+    pub async fn subscribe(
+        &self,
+        id: &str,
+    ) -> io::Result<tokio::sync::broadcast::Receiver<serde_json::Value>> {
+        Ok(self.handle(id)?.native.lock().await.subscribe())
+    }
+
+    /// Connection-specific identity is supplied by a trusted adapter, never by a tool argument.
+    pub async fn debug_as(
+        &self,
+        id: &str,
+        command: &lotus_protocol::debug::DebugCommand,
+        client: &str,
+    ) -> io::Result<serde_json::Value> {
+        use lotus_protocol::debug::DebugCommand;
+        command.validate().map_err(io::Error::other)?;
+        if command.mutates()
+            || matches!(
+                command,
+                DebugCommand::AudioFocus { .. } | DebugCommand::AudioCapture { .. }
+            )
+        {
+            self.require_control()?;
+        }
+        let handle = self.handle(id)?;
+        if let DebugCommand::AudioFocus { enabled } = command {
+            return self.focus_audio(id, *enabled).await;
+        }
+        if let DebugCommand::CaptureScaled { scale } = command {
+            let artifacts = self.capture_scaled(id, *scale).await?;
+            return Ok(serde_json::json!({"artifacts":artifacts,"scale":scale}));
+        }
+        if let DebugCommand::Matrix {
+            profiles,
+            frames,
+            checkpoints,
+            repeats,
+        } = command
+        {
+            return self
+                .matrix(id, profiles, *frames, checkpoints, *repeats, client)
+                .await;
+        }
+        if matches!(command, DebugCommand::Stop) {
+            let metadata = {
+                let native = handle.native.lock().await;
+                check_lease(&handle, client)?;
+                native.metadata()
+            };
+            self.stop(id, Actor::Host).await?;
+            return Ok(serde_json::json!({"state":"stopped","metadata":metadata}));
+        }
+        let mut native = handle.native.lock().await;
+        if let DebugCommand::StorageBrowse {
+            area,
+            path,
+            offset,
+            limit,
+        } = command
+        {
+            let mut result = self.browse_storage(&handle.root, *area, path, *offset, *limit)?;
+            native.decorate(&mut result);
+            return Ok(result);
+        }
+        if let DebugCommand::InstallCia { asset } | DebugCommand::ContentTransform { asset, .. } =
+            command
+        {
+            check_lease(&handle, client)?;
+            handle.set_playing(false);
+            pause_if_running(&mut native).await?;
+            let kind = if matches!(command, DebugCommand::InstallCia { .. }) {
+                lotus_protocol::debug::AssetKind::Cia
+            } else {
+                lotus_protocol::debug::AssetKind::Rom
+            };
+            crate::assets::mount(&handle.root, &self.resolve_asset(asset)?, kind)?;
+            let mut result = native.debug(command).await?;
+            self.import_debug_artifacts(&handle.root, &mut result)?;
+            return Ok(result);
+        }
+        if let DebugCommand::LeaseAcquire { owner } = command {
+            if owner != client {
+                return Err(io::Error::other("lease owner must match this connection"));
+            }
+            let mut lease = lock(&handle.lease);
+            if lease.as_ref().is_some_and(|owner| owner != client) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "debug lease held by another client",
+                ));
+            }
+            *lease = Some(client.to_string());
+            return Ok(serde_json::json!({"lease": client}));
+        }
+        if let DebugCommand::Fork { count, overrides } = command {
+            check_lease(&handle, client)?;
+            let asset = handle
+                .info()
+                .asset
+                .ok_or_else(|| io::Error::other("fork requires approved loaded content"))?;
+            if self.sessions().len() + usize::from(*count) > self.max_sessions() {
+                return Err(io::Error::other("fork exceeds host session limit"));
+            }
+            handle.set_playing(false);
+            pause_if_running(&mut native).await?;
+            let checkpoint = "lotus-fork";
+            native
+                .debug(&DebugCommand::SaveState {
+                    name: checkpoint.into(),
+                })
+                .await?;
+            let manifest: serde_json::Value =
+                serde_json::from_slice(&fs::read(handle.root.join("native-manifest.json"))?)
+                    .map_err(io::Error::other)?;
+            let profile: BTreeMap<String, lotus_protocol::debug::SettingValue> =
+                serde_json::from_value(manifest["settings"].clone()).map_err(io::Error::other)?;
+            let mut created = Vec::new();
+            let result=async {
+                for _ in 0..*count {
+                    let sibling=self.create_seeded(SessionKind::Secondary { parent:None },Some(&asset),Actor::Host,
+                        Some((&handle.root,&profile)),None).await?;
+                    created.push(sibling.clone());
+                    let sibling_handle=self.handle(&sibling.id)?;
+                    let mut target=sibling_handle.native.lock().await;
+                    target.debug(&DebugCommand::LoadState { name:checkpoint.into() }).await?;
+                    for (name,value) in overrides {
+                        target.debug(&DebugCommand::SettingsSet { name:name.clone(),value:value.clone() }).await?;
+                    }
+                }
+                Ok::<_,io::Error>(serde_json::json!({"forks":created,"source_session":id,"checkpoint":checkpoint,
+                    "profile_hash":native.profile_hash(),"paused":true,"safe_point":true,"rasterizer_cache_flush":true}))
+            }.await;
+            if result.is_err() {
+                for sibling in created {
+                    let _ = self.stop(&sibling.id, Actor::Host).await;
+                }
+            }
+            return result;
+        }
+        if let DebugCommand::AssetMount { asset, kind } = command {
+            check_lease(&handle, client)?;
+            if !matches!(
+                kind,
+                lotus_protocol::debug::AssetKind::MicWav | lotus_protocol::debug::AssetKind::Nfc
+            ) && native.state() != SessionState::Idle
+            {
+                return Err(io::Error::other(
+                    "system assets must be mounted before loading content",
+                ));
+            }
+            handle.set_playing(false);
+            pause_if_running(&mut native).await?;
+            crate::assets::mount(&handle.root, &self.resolve_asset(asset)?, *kind)?;
+            return native.debug(command).await;
+        }
+        if let DebugCommand::LeaseRelease { owner } = command {
+            let mut lease = lock(&handle.lease);
+            if owner != client || lease.as_deref() != Some(client) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "debug lease is not owned by this client",
+                ));
+            }
+            *lease = None;
+            return Ok(serde_json::json!({"released": client}));
+        }
+        if let DebugCommand::Disassemble {
+            address,
+            length,
+            thumb,
+        } = command
+        {
+            let result = native
+                .debug(&DebugCommand::ReadMemory {
+                    address: *address,
+                    length: *length,
+                })
+                .await?;
+            let bytes: Vec<u8> =
+                serde_json::from_value(result["bytes"].clone()).map_err(io::Error::other)?;
+            let text = crate::disassembly::decode(&handle.root, *address, &bytes, *thumb).await?;
+            let mut result = serde_json::json!({"address":address,"bytes":bytes,"thumb":thumb,"assembly":text,
+                "paused":result["paused"],"safe_point":true,"rasterizer_cache_flush":true,
+                "profile_hash":native.profile_hash()});
+            if let Some(symbols) = lock(&handle.symbols).as_ref() {
+                result["source"] =
+                    serde_json::to_value(symbols.locate(*address)?).map_err(io::Error::other)?;
+            }
+            return Ok(result);
+        }
+        if let DebugCommand::LoadSymbols { asset } = command {
+            check_lease(&handle, client)?;
+            let path = self.resolve_asset(asset)?;
+            if fs::metadata(&path)?.len() > 128 << 20 {
+                return Err(io::Error::other("ELF exceeds budget"));
+            }
+            let bytes = fs::read(path)?;
+            let symbols = lotus_debugger::symbols::Symbols::parse(&bytes)?;
+            let count = symbols.count();
+            *lock(&handle.symbols) = Some(symbols);
+            return Ok(
+                serde_json::json!({"symbols":count, "elf_sha256":format!("{:x}", Sha256::digest(bytes))}),
+            );
+        }
+        if let DebugCommand::Symbolize { addresses } = command {
+            let symbols = lock(&handle.symbols);
+            let symbols = symbols
+                .as_ref()
+                .ok_or_else(|| io::Error::other("load an approved ELF build artifact first"))?;
+            let locations: io::Result<Vec<_>> = addresses
+                .iter()
+                .map(|address| symbols.locate(*address))
+                .collect();
+            return Ok(serde_json::json!({"locations":locations?}));
+        }
+        if let DebugCommand::ResolveSymbol { query } = command {
+            let symbols = lock(&handle.symbols);
+            let symbols = symbols
+                .as_ref()
+                .ok_or_else(|| io::Error::other("load an approved ELF build artifact first"))?;
+            return Ok(serde_json::json!({"addresses":symbols.resolve(query)?}));
+        }
+        // The native mutex serializes lease transitions with execution mutations.
+        if command.mutates() {
+            check_lease(&handle, client)?;
+            handle.set_playing(false);
+            pause_if_running(&mut native).await?;
+            handle.record(Actor::Host, client);
+        }
+        match command {
+            DebugCommand::Status => native.status().await,
+            DebugCommand::Reset => native.reset().await,
+            DebugCommand::Load { asset } => {
+                let result = native.load(&self.resolve_asset(asset)?).await?;
+                lock(&handle.info).asset = Some(asset.clone());
+                Ok(result)
+            }
+            DebugCommand::Continue => {
+                let result = native.run().await?;
+                handle.set_playing(true);
+                Ok(result)
+            }
+            DebugCommand::Pause => native.pause().await,
+            DebugCommand::Advance { frames } => native.advance(*frames).await,
+            _ => {
+                let mut result = native.debug(command).await?;
+                self.import_debug_artifacts(&handle.root, &mut result)?;
+                if let Some(symbols) = lock(&handle.symbols).as_ref() {
+                    if let Some(frames) = result
+                        .get_mut("frames")
+                        .and_then(serde_json::Value::as_array_mut)
+                    {
+                        for frame in frames {
+                            if let Some(pc) = frame["pc"].as_u64() {
+                                frame["source"] = serde_json::to_value(symbols.locate(pc as u32)?)
+                                    .map_err(io::Error::other)?;
+                            }
+                        }
+                    }
+                }
+                Ok(result)
+            }
+        }
+    }
+
+    fn import_debug_artifacts(
+        &self,
+        root: &Path,
+        result: &mut serde_json::Value,
+    ) -> io::Result<()> {
+        let Some(files) = result["artifacts"].as_array() else {
+            return Ok(());
+        };
+        if files.len() > 16 {
+            return Err(io::Error::other("artifact batch exceeds budget"));
+        }
+        let root = root.canonicalize()?;
+        let mut catalog = lock(&self.artifacts);
+        if catalog.len() + files.len() > MAX_ARTIFACTS {
+            return Err(io::Error::other("artifact quota reached"));
+        }
+        let directory = self.config.storage_root.join("artifacts");
+        fs::create_dir_all(&directory)?;
+        let mut published = Vec::new();
+        let mut total: u64 = catalog.values().map(|(a, _)| a.bytes as u64).sum();
+        for file in files {
+            let relative = Path::new(
+                file["path"]
+                    .as_str()
+                    .ok_or_else(|| io::Error::other("invalid artifact path"))?,
+            );
+            if relative
+                .components()
+                .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                || !relative.components().next().is_some_and(|part| {
+                    ["gpu", "audio", "movies", "content"]
+                        .iter()
+                        .any(|allowed| part.as_os_str() == std::ffi::OsStr::new(allowed))
+                })
+            {
+                return Err(io::Error::other("artifact path outside capture folders"));
+            }
+            let path = root.join(relative).canonicalize()?;
+            if !path.starts_with(&root) {
+                return Err(io::Error::other("artifact escaped session root"));
+            }
+            let size = fs::metadata(&path)?.len();
+            if size > 64 << 20 || total + size > 512 << 20 {
+                return Err(io::Error::other("artifact byte quota reached"));
+            }
+            total += size;
+            let bytes = fs::read(&path)?;
+            let id = SessionUuid::generate().to_string();
+            let destination = directory.join(&id);
+            fs::write(&destination, &bytes)?;
+            let artifact = Artifact {
+                uri: format!("lotus://artifact/{id}"),
+                screen: file["format"].as_str().unwrap_or("capture").to_string(),
+                width: file["width"].as_u64().unwrap_or(0) as u32,
+                height: file["height"].as_u64().unwrap_or(0) as u32,
+                bytes: bytes.len(),
+                sha256: format!("{:x}", Sha256::digest(&bytes)),
+                mime_type: match file["format"].as_str() {
+                    Some("json") => "application/json",
+                    Some("wav") => "audio/wav",
+                    _ => "application/octet-stream",
+                }
+                .into(),
+            };
+            catalog.insert(artifact.uri.clone(), (artifact.clone(), destination));
+            published.push(artifact);
+        }
+        result["artifacts"] = serde_json::to_value(published).map_err(io::Error::other)?;
+        Ok(())
+    }
+
+    /// Host presentation policy; never pauses the guest or changes deterministic capture.
+    pub async fn focus_audio(&self, id: &str, enabled: bool) -> io::Result<serde_json::Value> {
+        use lotus_protocol::debug::DebugCommand;
+        self.require_control()?;
+        let handle = self.handle(id)?;
+        let mut focus = self.audio_focus.lock().await;
+        if focus.as_deref() == Some(id) && enabled {
+            return Ok(serde_json::json!({"focused": id}));
+        }
+        if enabled {
+            if let Some(previous) = focus.take() {
+                if let Ok(old) = self.handle(&previous) {
+                    old.native
+                        .lock()
+                        .await
+                        .debug(&DebugCommand::AudioFocus { enabled: false })
+                        .await?;
+                }
+            }
+        }
+        let result = handle
+            .native
+            .lock()
+            .await
+            .debug(&DebugCommand::AudioFocus { enabled })
+            .await?;
+        if enabled {
+            *focus = Some(id.to_string());
+        } else if focus.as_deref() == Some(id) {
+            *focus = None;
+        }
+        Ok(result)
     }
 
     pub async fn registers(&self, id: &str, core: u32) -> io::Result<serde_json::Value> {
@@ -529,13 +962,16 @@ impl Supervisor {
     }
 
     pub async fn capture(&self, id: &str) -> io::Result<Vec<Artifact>> {
+        self.capture_scaled(id, 1).await
+    }
+    pub async fn capture_scaled(&self, id: &str, scale: u32) -> io::Result<Vec<Artifact>> {
         if lock(&self.artifacts).len() + 2 > MAX_ARTIFACTS {
             return Err(io::Error::other(
                 "artifact quota reached; restart host to reset catalog",
             ));
         }
         let handle = self.handle(id)?;
-        let frames = handle.native.lock().await.capture().await?;
+        let frames = handle.native.lock().await.capture_scaled(scale).await?;
         let directory = self.config.storage_root.join("artifacts");
         fs::create_dir_all(&directory)?;
         let mut artifacts = Vec::new();
@@ -550,6 +986,7 @@ impl Supervisor {
                 height: frame.lease.height,
                 bytes: frame.bgra.len(),
                 sha256: format!("{:x}", Sha256::digest(&frame.bgra)),
+                mime_type: "application/octet-stream".into(),
             };
             lock(&self.artifacts).insert(artifact.uri.clone(), (artifact.clone(), path));
             artifacts.push(artifact);
@@ -603,7 +1040,7 @@ impl Supervisor {
     /// Stop every session, bounding each stop; used when a frontend closes.
     pub async fn close(&self) {
         for id in self.sessions() {
-            let _ = tokio::time::timeout(CLOSE_DEADLINE, self.stop(&id, Actor::Host)).await;
+            let _ = self.stop(&id, Actor::Host).await;
         }
     }
 
@@ -619,7 +1056,7 @@ impl Supervisor {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    "session is not owned by this host",
+                    "unknown session for this host; session handles expire when the server exits. Create a new session; use a primary card to keep guest storage",
                 )
             })
     }
@@ -744,6 +1181,11 @@ async fn pump_session(handle: Arc<SessionHandle>) {
     }
     // A bounded run ended. Resume unless the guest stopped for a reason a retry
     // cannot fix; a host deadline only means the batch ran slowly.
+    let stop = status["stop"]["reason"].as_str().unwrap_or("");
+    if !matches!(stop, "" | "frame") {
+        handle.set_playing(false);
+        return;
+    }
     let reason = status["last_error"].as_str().unwrap_or("");
     if !matches!(reason, "" | "host_deadline") {
         handle.set_playing(false);
@@ -889,5 +1331,27 @@ mod tests {
             HostConfig::new(std::env::current_exe().expect("exe"), std::env::temp_dir());
         config.max_sessions = MAX_SESSIONS_LIMIT + 1;
         assert!(Supervisor::new(config).is_err());
+    }
+}
+
+fn actor_client(actor: Actor) -> &'static str {
+    match actor {
+        Actor::Host => "host",
+        Actor::Desktop => "desktop",
+        Actor::Mcp => "mcp",
+    }
+}
+
+fn check_lease(handle: &SessionHandle, client: &str) -> io::Result<()> {
+    if lock(&handle.lease)
+        .as_ref()
+        .is_some_and(|owner| owner != client)
+    {
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "debug lease held by another client",
+        ))
+    } else {
+        Ok(())
     }
 }

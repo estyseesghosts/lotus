@@ -3,14 +3,61 @@
   "title": "Lotus inherited-pipe request v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version_major", "version_minor", "request_id", "session", "epoch", "method"],
+  "required": [
+    "version_major",
+    "version_minor",
+    "request_id",
+    "session",
+    "epoch",
+    "method"
+  ],
   "properties": {
-    "version_major": {"type": "integer", "minimum": 0, "maximum": 65535},
-    "version_minor": {"type": "integer", "minimum": 0, "maximum": 65535},
-    "request_id": {"type": "integer", "minimum": 1, "maximum": 18446744073709551615},
-    "session": {"type": "string", "pattern": "^[0-9a-fA-F]{32}$"},
-    "epoch": {"type": "integer", "minimum": 0, "maximum": 18446744073709551615},
-    "method": {"enum": ["hello", "status", "stop", "load", "run", "run_until", "pause", "reset", "capture", "input", "read_memory", "registers"]},
-    "params": {"type": ["object", "null"]}
+    "version_major": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "version_minor": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 65535
+    },
+    "request_id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 18446744073709551615
+    },
+    "session": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{32}$"
+    },
+    "epoch": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "method": {
+      "enum": [
+        "hello",
+        "status",
+        "stop",
+        "load",
+        "run",
+        "run_until",
+        "pause",
+        "reset",
+        "capture",
+        "input",
+        "read_memory",
+        "registers",
+        "debug"
+      ]
+    },
+    "params": {
+      "type": [
+        "object",
+        "null"
+      ]
+    }
   }
 }

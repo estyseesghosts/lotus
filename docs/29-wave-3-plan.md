@@ -1,9 +1,10 @@
 # 29 — Wave 3 plan: comprehensive agentic debugger
 
-Status: **proposed**, 2026-11-15. Tickets and their Deliver/Check/Avoid terms
+Status: **implementation in progress**, 2026-11-16. Development evidence and
+remaining acceptance work are in [31](31-wave-3-progress.md). Tickets and their Deliver/Check/Avoid terms
 are in [15](15-implementation-tickets.md); this document holds the goal,
 decisions, Azahar parity matrix and milestone order. No item here is
-implemented; source facts below are **source inspected** at the native pin in
+complete; source facts below are **source inspected** at the native pin in
 `config/pins.toml`.
 
 ## Goal

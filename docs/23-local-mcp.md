@@ -25,7 +25,13 @@ server process owns its sessions and artifact catalog. Client tools cannot
 select executables, roots or arbitrary content paths. Controls require
 `allow_control`; status/memory/capture operate only on owned sessions.
 `max_sessions` workers and 128 screen artifacts (at most 49,152,000 bytes)
-bound resources. On client disconnect every session is stopped.
+bound resources. On client disconnect every session is stopped. Session handles expire with
+the server; create a session on the same primary card to retain SD/NAND data.
+CPU execution is not retained across server restarts. Secondary guest data is
+discarded. Primary manifests record `lifecycle: closed|crashed` and clear the
+PID after verified termination. The reusable `worker.lock` file is an OS-lock
+sentinel: its existence never means a worker is alive. Shutdown reports the
+number of closed sessions on stderr.
 
 Tools: status/list (sessions, cards), create (primary/secondary), load an
 approved asset, run/run_until, pause/reset/stop, input, session status with

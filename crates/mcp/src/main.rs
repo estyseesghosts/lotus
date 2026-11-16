@@ -33,7 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         pump.abort();
     }
     if let Some(host) = host {
+        let count = host.sessions().len();
         host.close().await;
+        eprintln!("LOTUS closed {count} session(s); primary cards retained, secondary guest data discarded. Session handles expire with this server.");
     }
     result?;
     Ok(())

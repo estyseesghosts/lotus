@@ -179,6 +179,7 @@ impl Loops {
         background.push(tokio::spawn(self.clone().pump_loop()));
         background.push(tokio::spawn(self.clone().input_loop()));
         let mut sequence = 0u64;
+        let mut audio_selected = String::new();
         let mut registers_key = None;
         let mut catalog_at: Option<Instant> = None;
         while !self.shutdown.load(Ordering::Acquire) {
@@ -210,6 +211,11 @@ impl Loops {
                 update.selected.clone()
             };
             if !selected.is_empty() {
+                if audio_selected != selected && self.host.allows_control() {
+                    if self.host.focus_audio(&selected, true).await.is_ok() {
+                        audio_selected = selected.clone();
+                    }
+                }
                 if let Some(frames) = self.host.preview(&selected).await {
                     sequence += 1;
                     lock(&self.published).preview = Some(Preview {

@@ -49,6 +49,8 @@ pub struct InputState {
 pub struct NativeSession {
     worker: ControlledWorker,
     root: PathBuf,
+    profile_hash: String,
+    identity: Value,
 }
 
 impl NativeSession {
@@ -69,11 +71,137 @@ impl NativeSession {
                 "protocol": lotus_protocol::protocol_id(), "backend": reply.backend,
                 "source": reply.data["source"], "backend_name": reply.data["backend_name"],
                 "session": reply.session, "pid": worker.pid(), "epoch": reply.epoch,
+                "lifecycle": "active",
                 "profile": "old3ds/software/hle/dsp-muted/ticks-0/time-2000-01-01",
             }))
             .map_err(io::Error::other)?,
         )?;
-        Ok(Self { worker, root })
+        let mut session = Self {
+            worker,
+            root,
+            profile_hash: String::new(),
+            identity: serde_json::json!({"source":reply.data["source"], "backend":reply.data["backend_name"],
+            "worker_sha256":file_hash(executable)?}),
+        };
+        if reply.data["debug_api"] == true {
+            session.refresh_profile().await?;
+        }
+        Ok(session)
+    }
+
+    pub async fn debug(
+        &mut self,
+        command: &lotus_protocol::debug::DebugCommand,
+    ) -> io::Result<Value> {
+        command.validate().map_err(io::Error::other)?;
+        if matches!(
+            command,
+            lotus_protocol::debug::DebugCommand::SaveState { .. }
+        ) {
+            self.refresh_profile().await?;
+        }
+        let mut result = self
+            .operation(
+                Method::Debug,
+                serde_json::to_value(command).map_err(io::Error::other)?,
+            )
+            .await?;
+        if matches!(
+            command,
+            lotus_protocol::debug::DebugCommand::SettingsSet { .. }
+                | lotus_protocol::debug::DebugCommand::InputState { .. }
+                | lotus_protocol::debug::DebugCommand::AssetMount { .. }
+                | lotus_protocol::debug::DebugCommand::SystemRegenerate { .. }
+        ) {
+            self.refresh_profile().await?;
+        }
+        result["profile_hash"] = self.profile_hash.clone().into();
+        Ok(result)
+    }
+
+    pub fn profile_hash(&self) -> &str {
+        &self.profile_hash
+    }
+    pub fn metadata(&self) -> Value {
+        serde_json::json!({"identity":self.identity,"profile_hash":self.profile_hash,"epoch":self.epoch(),
+            "renderer":self.identity["renderer"],"paused":self.state()!=SessionState::Running,
+            "safe_point":true,"rasterizer_cache_flush":false})
+    }
+    pub fn decorate(&self, result: &mut Value) {
+        if let (Some(result), Some(metadata)) =
+            (result.as_object_mut(), self.metadata().as_object())
+        {
+            for (key, value) in metadata {
+                result.entry(key.clone()).or_insert_with(|| value.clone());
+            }
+        }
+    }
+
+    /// Startup owns the worker exclusively; hash once after applying the complete profile.
+    pub async fn apply_profile(
+        &mut self,
+        profile: &std::collections::BTreeMap<String, lotus_protocol::debug::SettingValue>,
+    ) -> io::Result<()> {
+        for (name, value) in profile {
+            let command = lotus_protocol::debug::DebugCommand::SettingsSet {
+                name: name.clone(),
+                value: value.clone(),
+            };
+            command.validate().map_err(io::Error::other)?;
+            self.operation(
+                Method::Debug,
+                serde_json::to_value(command).map_err(io::Error::other)?,
+            )
+            .await?;
+        }
+        if !profile.is_empty() {
+            self.refresh_profile().await?;
+        }
+        Ok(())
+    }
+
+    async fn refresh_profile(&mut self) -> io::Result<()> {
+        use sha2::{Digest, Sha256};
+        let mut values = std::collections::BTreeMap::new();
+        let mut offset = 0u32;
+        loop {
+            let schema = self.operation(Method::Debug,
+                serde_json::json!({"operation": "settings_list", "offset": offset, "limit": 32})).await?;
+            for setting in schema["settings"]
+                .as_array()
+                .ok_or_else(|| io::Error::other("invalid settings schema"))?
+            {
+                let name = setting["name"]
+                    .as_str()
+                    .ok_or_else(|| io::Error::other("invalid setting name"))?;
+                values.insert(name.to_string(), setting["value"].clone());
+            }
+            match schema["next"].as_u64() {
+                Some(next) if next > u64::from(offset) && next <= 512 => offset = next as u32,
+                None => break,
+                _ => return Err(io::Error::other("invalid settings cursor")),
+            }
+        }
+        self.profile_hash = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&values).map_err(io::Error::other)?)
+        );
+        self.identity["renderer"] = values.get("graphics_api").cloned().unwrap_or(Value::Null);
+        let path = self.root.join("native-manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
+        manifest["profile_hash"] = self.profile_hash.clone().into();
+        manifest["settings"] = serde_json::to_value(values).map_err(io::Error::other)?;
+        manifest["identity"] = self.identity.clone();
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?,
+        )?;
+        Ok(())
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Value> {
+        self.worker.subscribe()
     }
 
     pub async fn load(&mut self, path: &Path) -> io::Result<Value> {
@@ -130,7 +258,15 @@ impl NativeSession {
     }
 
     pub async fn capture(&mut self) -> io::Result<Vec<Frame>> {
-        let data = self.operation(Method::Capture, Value::Null).await?;
+        self.capture_scaled(1).await
+    }
+    pub async fn capture_scaled(&mut self, scale: u32) -> io::Result<Vec<Frame>> {
+        if !(1..=4).contains(&scale) {
+            return Err(io::Error::other("capture scale 1..4"));
+        }
+        let data = self
+            .operation(Method::Capture, serde_json::json!({"scale":scale}))
+            .await?;
         let leases: Vec<FrameLease> =
             serde_json::from_value(data["frames"].clone()).map_err(io::Error::other)?;
         if leases.len() != 2 {
@@ -148,12 +284,30 @@ impl NativeSession {
     }
 
     pub async fn stop(&mut self) -> io::Result<()> {
-        self.worker.stop().await
+        let result = self.worker.stop().await;
+        if result.is_err() {
+            self.worker.abort().await;
+        }
+        self.mark_closed(if result.is_ok() { "closed" } else { "crashed" })?;
+        result
     }
 
     /// Explicit failure injection and emergency termination, limited to this job.
     pub async fn abort(&mut self) {
         self.worker.abort().await;
+        let _ = self.mark_closed("crashed");
+    }
+
+    fn mark_closed(&self, lifecycle: &str) -> io::Result<()> {
+        let path = self.root.join("native-manifest.json");
+        let mut manifest: Value =
+            serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
+        manifest["lifecycle"] = lifecycle.into();
+        manifest["pid"] = Value::Null;
+        fs::write(
+            path,
+            serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?,
+        )
     }
 
     #[must_use]
@@ -193,11 +347,42 @@ impl NativeSession {
     }
 
     async fn operation(&mut self, method: Method, params: Value) -> io::Result<Value> {
-        let Reply { status, data, .. } = self.worker.command(method, params).await?;
+        let Reply {
+            status, mut data, ..
+        } = self.worker.command(method, params).await?;
         if status != Status::Ok {
             return Err(io::Error::other(format!("{method:?}: {status:?}: {data}")));
         }
+        if data.is_object() {
+            data["profile_hash"] = self.profile_hash.clone().into();
+            data["identity"] = self.identity.clone();
+            data["epoch"] = self.epoch().into();
+            self.decorate(&mut data);
+        }
         Ok(data)
+    }
+}
+
+pub(crate) fn file_hash(path: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = File::open(path)?;
+    let mut hash = Sha256::new();
+    let mut buffer = [0; 65536];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hash.update(&buffer[..count]);
+    }
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+impl Drop for NativeSession {
+    fn drop(&mut self) {
+        if self.worker.state().is_active() {
+            let _ = self.mark_closed("crashed");
+        }
     }
 }
 
@@ -209,11 +394,13 @@ fn read_frame(root: &Path, lease: &FrameLease) -> io::Result<Vec<u8>> {
         _ => 0,
     };
     let expected_path = format!("frames/{}-{}.bgra", lease.screen, lease.sequence % 3);
+    let scale = lease.height / 240;
     if expected_width == 0
-        || lease.width != expected_width
-        || lease.height != 240
+        || !(1..=4).contains(&scale)
+        || lease.width != expected_width * scale
+        || lease.height != 240 * scale
         || lease.stride != lease.width * 4
-        || lease.bytes != (lease.stride * 240) as usize
+        || lease.bytes != (lease.stride * lease.height) as usize
         || lease.slot != lease.sequence % 3
         || lease.path != expected_path
         || lease.format != "bgra8"

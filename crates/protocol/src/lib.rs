@@ -81,3 +81,6 @@ mod tests {
 }
 
 pub mod control;
+
+pub mod debug;
+pub mod debug_schema;

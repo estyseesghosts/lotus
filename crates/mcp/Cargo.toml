@@ -17,6 +17,7 @@ name = "lotus-mcp"
 path = "src/main.rs"
 
 [dependencies]
+lotus-gdb.workspace = true
 lotus-debugger = { workspace = true }
 lotus-protocol = { workspace = true }
 lotus-runner = { workspace = true }

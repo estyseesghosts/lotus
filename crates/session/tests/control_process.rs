@@ -24,6 +24,10 @@ async fn handshake_query_clean_shutdown_and_second_launch() {
         assert_eq!(reply.backend, "mock");
         worker.stop().await.expect("graceful exit");
         assert_eq!(worker.state(), SessionState::Stopped);
+        let mut relaunched = ControlledWorker::spawn(&spec, Duration::from_secs(3))
+            .await
+            .expect("closed root can immediately be reused");
+        relaunched.stop().await.expect("second worker exits");
         assert!(
             worker.status().await.is_err(),
             "stopped connection cannot be reused"

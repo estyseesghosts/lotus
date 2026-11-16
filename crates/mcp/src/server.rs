@@ -26,8 +26,8 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler
 use serde_json::Value;
 
 use crate::tool_arguments::{
-    AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, InputArgs, KindArg, LoadArgs,
-    MemoryArgs, RegistersArgs, SessionArgs, ValidateScenarioArgs,
+    AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs, GdbOperation,
+    InputArgs, KindArg, LoadArgs, MemoryArgs, RegistersArgs, SessionArgs, ValidateScenarioArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -51,6 +51,7 @@ pub struct LotusServer {
     tool_router: ToolRouter<Self>,
     host: Option<Arc<Supervisor>>,
     frontend: Frontend,
+    gdb: Arc<tokio::sync::Mutex<BTreeMap<String, lotus_gdb::Server>>>,
     scenarios: BTreeMap<String, PathBuf>,
 }
 
@@ -67,6 +68,7 @@ impl LotusServer {
         Self {
             tool_router: Self::tool_router(),
             host: None,
+            gdb: Arc::default(),
             frontend: Frontend::Headless,
             scenarios: BTreeMap::new(),
         }
@@ -94,6 +96,7 @@ impl LotusServer {
         Self {
             tool_router: Self::tool_router(),
             host: Some(host),
+            gdb: Arc::default(),
             frontend,
             scenarios,
         }
@@ -131,7 +134,7 @@ fn json<T: serde::Serialize>(value: &T) -> io::Result<Value> {
 
 fn resource(artifact: &Artifact) -> Resource {
     Resource::new(&artifact.uri, &artifact.screen)
-        .with_mime_type("application/octet-stream")
+        .with_mime_type(&artifact.mime_type)
         .with_size(artifact.bytes as u64)
         .with_description(format!(
             "Native BGRA8 {}x{}, SHA-256 {}",
@@ -141,6 +144,42 @@ fn resource(artifact: &Artifact) -> Resource {
 
 #[tool_router(router = tool_router)]
 impl LotusServer {
+    #[tool(
+        description = "Start or stop an opt-in loopback GDB server for this session. Port 0 selects a free port. GDB exclusively leases mutation control while attached."
+    )]
+    async fn lotus_gdb(&self, Parameters(args): Parameters<GdbArgs>) -> CallToolResult {
+        tool_result(
+            async {
+                let host = self
+                    .host
+                    .clone()
+                    .ok_or_else(|| io::Error::other("native host is not configured"))?;
+                host.require_control()?;
+                host.summary(&args.session)?;
+                let mut servers = self.gdb.lock().await;
+                match args.operation {
+                    GdbOperation::Start => {
+                        if servers.contains_key(&args.session) {
+                            return Err(io::Error::other(
+                                "GDB server already started for this session",
+                            ));
+                        }
+                        let server =
+                            lotus_gdb::Server::start(host, args.session.clone(), args.port).await?;
+                        let address = server.address.to_string();
+                        servers.insert(args.session, server);
+                        Ok(serde_json::json!({"address": address, "loopback_only": true}))
+                    }
+                    GdbOperation::Stop => {
+                        servers.remove(&args.session);
+                        Ok(serde_json::json!({"stopped": true}))
+                    }
+                }
+            }
+            .await,
+        )
+    }
+
     #[tool(
         description = "Report LOTUS frontend (headless/windowed), protocol, session tree, cards, approved asset handles and limits."
     )]
@@ -201,7 +240,7 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Start a session in its own worker process. kind=primary mounts a persistent card (one primary per card); kind=secondary (default) is disposable: empty, or a point-in-time copy of `card`, deleted on stop. Optional asset loads paused. Requires host control permission."
+        description = "Start a session in its own worker process. Handles expire when this server exits; primary cards retain guest storage across restarts. kind=primary mounts a persistent card (one primary per card); kind=secondary (default) is disposable: empty, or a point-in-time copy of `card`, deleted on stop. Optional asset loads paused. Requires host control permission."
     )]
     pub async fn lotus_create_session(
         &self,
@@ -289,6 +328,19 @@ impl LotusServer {
             let status = host.status(&args.session).await?;
             let summary = host.summary(&args.session)?;
             Ok(serde_json::json!({"status": status, "session": summary}))
+        }
+        .await;
+        tool_result(result)
+    }
+
+    #[tool(
+        description = "Inspect settings with consumer sources, full CPU/VFP registers, threads/waits, processes, memory map, profiler, and frame-pointer backtraces. CITnLO supports paused register/memory editing and named checkpoints checked against the source pin and settings. Commands are typed and bounded; mutations require host control permission."
+    )]
+    pub async fn lotus_debug(&self, Parameters(args): Parameters<DebugArgs>) -> CallToolResult {
+        let result = async {
+            self.require_host()?
+                .debug(&args.session, &args.command, Actor::Mcp)
+                .await
         }
         .await;
         tool_result(result)
@@ -405,9 +457,17 @@ impl ServerHandler for LotusServer {
             .resource_bytes(&request.uri)
             .await
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
+        let mime = self
+            .require_host()
+            .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?
+            .artifacts()
+            .into_iter()
+            .find(|a| a.uri == request.uri)
+            .map(|a| a.mime_type)
+            .unwrap_or_else(|| "application/octet-stream".into());
         let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
         Ok(ReadResourceResult::new(vec![
-            ResourceContents::blob(encoded, request.uri).with_mime_type("application/octet-stream")
+            ResourceContents::blob(encoded, request.uri).with_mime_type(mime)
         ])
         .into())
     }
@@ -416,6 +476,17 @@ impl ServerHandler for LotusServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mcp_schema_exposes_the_entire_shared_debug_command_union() {
+        let schema = serde_json::to_value(schemars::schema_for!(DebugArgs)).expect("tool schema");
+        let actual = &schema["$defs"]["DebugCommand"]["oneOf"];
+        let expected = &lotus_protocol::debug_schema::schema()["oneOf"];
+        assert_eq!(
+            actual, expected,
+            "a CLI/MCP debug operation was omitted from the public schema"
+        );
+        assert!(actual.is_array());
+    }
 
     #[tokio::test]
     async fn unconfigured_server_cannot_read_paths_or_spawn_processes() {

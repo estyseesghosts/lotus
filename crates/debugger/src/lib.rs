@@ -233,3 +233,5 @@ mod tests {
         assert!(request.validate(&caps(1024 * 1024)).is_ok());
     }
 }
+
+pub mod symbols;

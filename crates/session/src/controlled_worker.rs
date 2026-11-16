@@ -20,7 +20,9 @@ use crate::{SessionState, WorkerSpec};
 pub struct ControlledWorker {
     child: Child,
     input: ChildStdin,
-    output: ChildStdout,
+    output: tokio::sync::mpsc::Receiver<io::Result<Reply>>,
+    events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    reader: tokio::task::JoinHandle<()>,
     session: String,
     next_request: u64,
     epoch: u64,
@@ -79,11 +81,49 @@ impl ControlledWorker {
             .stdout
             .take()
             .ok_or_else(|| io::Error::other("missing child stdout"))?;
+        let session = SessionUuid::generate().to_string();
+        let (replies, output_receiver) = tokio::sync::mpsc::channel(16);
+        let (events, _) = tokio::sync::broadcast::channel(256);
+        let event_sender = events.clone();
+        let expected_session = session.clone();
+        let reader = tokio::spawn(async move {
+            let mut output = output;
+            loop {
+                let frame = read_frame(&mut output).await;
+                match frame {
+                    Ok(value)
+                        if value.get("notification") == Some(&serde_json::Value::Bool(true)) =>
+                    {
+                        if value["session"].as_str() != Some(expected_session.as_str())
+                            || value["version_major"] != 1
+                            || !value["epoch"].is_u64()
+                        {
+                            let _ = replies
+                                .send(Err(io::Error::other("invalid event identity")))
+                                .await;
+                            break;
+                        }
+                        let _ = event_sender.send(value);
+                    }
+                    value => {
+                        let reply = value.and_then(|v| {
+                            serde_json::from_value::<Reply>(v).map_err(io::Error::other)
+                        });
+                        let failed = reply.is_err();
+                        if replies.send(reply).await.is_err() || failed {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
         let mut worker = Self {
             child,
             input,
-            output,
-            session: SessionUuid::generate().to_string(),
+            output: output_receiver,
+            events,
+            reader,
+            session,
             next_request: 1,
             epoch: 1,
             state: SessionState::Created,
@@ -92,7 +132,12 @@ impl ControlledWorker {
             #[cfg(windows)]
             job: Some(job),
         };
-        worker.request(Method::Hello).await?;
+        let hello = worker
+            .command(Method::Hello, serde_json::json!({"notifications": true}))
+            .await?;
+        if hello.status != Status::Ok {
+            return Err(io::Error::other("worker rejected handshake"));
+        }
         worker.state = SessionState::Idle;
         Ok(worker)
     }
@@ -118,6 +163,10 @@ impl ControlledWorker {
     #[must_use]
     pub fn working_set(&self) -> Option<u64> {
         crate::process_memory::working_set(&self.child)
+    }
+
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {
+        self.events.subscribe()
     }
 
     /// Query the worker without any GUI dependencies.
@@ -206,7 +255,17 @@ impl ControlledWorker {
             || reply.epoch
                 != self.epoch
                     + u64::from(
-                        matches!(method, Method::Load | Method::Reset)
+                        (matches!(method, Method::Load | Method::Reset)
+                            || (method == Method::Debug
+                                && matches!(
+                                    request.params["operation"].as_str(),
+                                    Some(
+                                        "load_state"
+                                            | "reverse_step"
+                                            | "reverse_continue"
+                                            | "boot_home_menu"
+                                    )
+                                )))
                             && reply.status == Status::Ok,
                     )
             || !matches!(
@@ -244,17 +303,25 @@ impl ControlledWorker {
     async fn exchange(&mut self, request: &Request) -> io::Result<Reply> {
         self.input.write_all(&control::encode(request)?).await?;
         self.input.flush().await?;
-        let length = self.output.read_u32_le().await?;
-        control::validate_length(length)?;
-        let mut payload = vec![0; length as usize];
-        self.output.read_exact(&mut payload).await?;
-        serde_json::from_slice(&payload).map_err(io::Error::other)
+        self.output
+            .recv()
+            .await
+            .ok_or_else(|| io::Error::new(io::ErrorKind::BrokenPipe, "worker output closed"))?
     }
 }
 
 impl Drop for ControlledWorker {
     fn drop(&mut self) {
+        self.reader.abort();
         let _ = self.child.start_kill();
         self.release_resources();
     }
+}
+
+async fn read_frame(output: &mut ChildStdout) -> io::Result<serde_json::Value> {
+    let length = output.read_u32_le().await?;
+    control::validate_length(length)?;
+    let mut payload = vec![0; length as usize];
+    output.read_exact(&mut payload).await?;
+    serde_json::from_slice(&payload).map_err(io::Error::other)
 }

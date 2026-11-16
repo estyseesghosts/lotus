@@ -47,6 +47,7 @@ const USAGE: &str = "\
 ctr-cli: Lotus command line interface
 
 Usage:
+  ctr-cli debug <host-config> <asset-or-dash> [--gdb <port>]    Typed JSON-line debugger on stdin; replies on stdout
   ctr-cli version              Print the Lotus version and worker protocol version
   ctr-cli mock <worker-executable> Query a mock worker over private pipes
   ctr-cli pins                 Print the pinned Azahar and GPUI revisions
@@ -61,6 +62,10 @@ fn main() -> Result<()> {
     let command = args.first().map(String::as_str).unwrap_or("help");
 
     match command {
+        "debug-schema" => println!(
+            "{}",
+            serde_json::to_string_pretty(&lotus_protocol::debug_schema::schema())?
+        ),
         "version" => {
             println!("lotus {}", env!("CARGO_PKG_VERSION"));
             println!("worker protocol {}", protocol_id());
@@ -87,6 +92,69 @@ fn main() -> Result<()> {
                 .await?;
                 println!("{}", serde_json::to_string(&worker.status().await?)?);
                 worker.stop().await
+            })?;
+        }
+        "debug" => {
+            use lotus_session::supervisor::{HostConfig, SessionKind, Supervisor};
+            use lotus_session::telemetry::Actor;
+            use std::io::BufRead;
+            let config: HostConfig = serde_json::from_str(&std::fs::read_to_string(
+                args.get(1).context("debug requires a host configuration")?,
+            )?)?;
+            let asset = args
+                .get(2)
+                .context("debug requires an asset handle or '-'")?;
+            tokio::runtime::Runtime::new()?.block_on(async {
+                let host = std::sync::Arc::new(Supervisor::new(config)?);
+                let info = host
+                    .create(
+                        SessionKind::Secondary { parent: None },
+                        if asset == "-" {
+                            None
+                        } else {
+                            Some(asset.as_str())
+                        },
+                        Actor::Host,
+                    )
+                    .await?;
+                println!("{}", serde_json::to_string(&info)?);
+                let _gdb = if args.get(3).is_some_and(|arg| arg == "--gdb") {
+                    let port = args
+                        .get(4)
+                        .context("--gdb requires port (0 selects a free port)")?
+                        .parse()?;
+                    let server =
+                        lotus_gdb::Server::start(host.clone(), info.id.clone(), port).await?;
+                    eprintln!("GDB listening on {}", server.address);
+                    Some(server)
+                } else {
+                    None
+                };
+                let pumping = host.clone();
+                let pump = tokio::spawn(async move {
+                    loop {
+                        pumping.pump().await;
+                        tokio::time::sleep(std::time::Duration::from_millis(16)).await;
+                    }
+                });
+                for line in std::io::stdin().lock().lines() {
+                    let line = line?;
+                    if line.trim() == "quit" {
+                        break;
+                    }
+                    let reply =
+                        match serde_json::from_str::<lotus_protocol::debug::DebugCommand>(&line) {
+                            Ok(command) => host
+                                .debug(&info.id, &command, Actor::Host)
+                                .await
+                                .unwrap_or_else(|e| serde_json::json!({"error": e.to_string()})),
+                            Err(e) => serde_json::json!({"error": e.to_string()}),
+                        };
+                    println!("{reply}");
+                }
+                pump.abort();
+                host.close().await;
+                Ok::<(), anyhow::Error>(())
             })?;
         }
         "scenario" => {

@@ -9,6 +9,7 @@ repository.workspace = true
 description = "Worker process lifecycle, isolation and session state for the Rust application."
 
 [dependencies]
+lotus-debugger.workspace = true
 tokio = { workspace = true }
 lotus-protocol = { workspace = true }
 serde = { workspace = true }

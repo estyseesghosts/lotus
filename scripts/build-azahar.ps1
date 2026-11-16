@@ -36,9 +36,13 @@ $flags = @('-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$Profile", "-DENABLE_CTR_WORKER=$w
     '-DCMAKE_PROJECT_citra_INCLUDE=',
     '-DENABLE_QT=OFF', '-DENABLE_LIBRETRO=OFF', '-DENABLE_SDL2=OFF',
     '-DENABLE_WEB_SERVICE=OFF', '-DENABLE_SCRIPTING=OFF', '-DENABLE_ROOM=OFF',
-    '-DENABLE_ROOM_STANDALONE=OFF', '-DENABLE_OPENAL=OFF', '-DENABLE_CUBEB=OFF',
-    '-DENABLE_LIBUSB=OFF', '-DENABLE_SOFTWARE_RENDERER=ON', '-DENABLE_VULKAN=OFF',
-    '-DENABLE_OPENGL=OFF', '-DENABLE_LTO=OFF', '-DCITRA_WARNINGS_AS_ERRORS=OFF')
+    '-DENABLE_ROOM_STANDALONE=OFF', '-DENABLE_OPENAL=OFF', '-DENABLE_CUBEB=ON',
+    '-DENABLE_LIBUSB=OFF', '-DENABLE_SOFTWARE_RENDERER=ON', '-DENABLE_VULKAN=ON',
+    '-DENABLE_OPENGL=OFF', '-DENABLE_GDBSTUB=OFF', '-DENABLE_LTO=OFF', '-DCITRA_WARNINGS_AS_ERRORS=OFF')
+if ($Branch -eq 'stock') {
+    $flags = $flags | Where-Object { $_ -notmatch '^-DENABLE_(CUBEB|VULKAN|GDBSTUB)=' }
+    $flags += @('-DENABLE_CUBEB=OFF', '-DENABLE_VULKAN=OFF')
+}
 $target = if ($Branch -eq 'stock') { 'citra_core' } else { 'ctr-worker' }
 if ($Branch -ne 'stock') {
     $backendName = if ($Branch -eq 'integration') { 'AZAHAR' } else { 'CITnLO' }

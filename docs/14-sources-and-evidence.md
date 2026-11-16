@@ -66,3 +66,27 @@
 - **Unknown:** insufficient evidence; require a concrete discriminating experiment.
 
 If a source is corrected or later contradicts older Coffeepot text, preserve both references and revise this dossier with the specific resolved conflict, rather than silently copying the more convenient interpretation.
+
+
+## Wave 3 native source map
+
+At the native pins in `config/pins.toml` (**source inspected**):
+
+- `src/ctr_worker/{control,debug,settings_bindings,input,frames}.h`: safe-point
+  dispatch, typed settings/CFG, input ownership and bounded frame capture.
+- `src/audio_core/{worker_sink,injected_input}.h`: pre-volume DSP PCM capture
+  and bounded PCM16 WAV mic source; `cubeb_sink.cpp`: focused host output.
+- Experimental `src/core/frontend/debug_channel.h`, `core.cpp`,
+  `arm/dynarmic/arm_dynarmic.cpp`, `memory.cpp`, `hle/kernel/svc.cpp`:
+  instruction, memory, exception, SVC and HIO observations.
+- Experimental `src/ctr_worker/debug_gpu.h`,
+  `video_core/debug_utils/debug_utils.h`, `shader/shader_interpreter.cpp`:
+  pre-draw register/resource snapshots and bounded shader observations.
+- `src/core/tracer/{citrace.h,recorder.cpp}`: upstream CiTrace file format and
+  recorder; record/replay parity remains open.
+- `src/core/movie.cpp`, `savestate.cpp`, `file_sys/*`: movie semantics,
+  compressed states and relocation of serialized guest storage paths.
+
+Owned fixtures cite these emulator implementations. They are verified against
+emulator behavior, not physical 3DS hardware. Fixture build metadata retains
+compiler command and ELF/3DSX hashes alongside local acceptance artifacts.

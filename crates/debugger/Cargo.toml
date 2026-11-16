@@ -9,6 +9,10 @@ repository.workspace = true
 description = "CPU, memory and kernel debugging types shared by the desktop app, the CLI and the MCP server."
 
 [dependencies]
+object = { version = "=0.40.0", default-features = false, features = ["read", "std"] }
+gimli = { version = "=0.34.0", default-features = false, features = ["read", "std", "endian-reader"] }
+addr2line = { version = "=0.27.1", default-features = false, features = ["std"] }
+
 lotus-protocol = { workspace = true }
 lotus-trace = { workspace = true }
 serde = { workspace = true }

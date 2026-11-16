@@ -201,6 +201,23 @@ fn copy_tree(from: &Path, to: &Path, budget: &mut u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Called while the source worker is paused at a checkpoint. Every target is private.
+pub(crate) fn copy_checkpoint_root(from: &Path, to: &Path) -> io::Result<()> {
+    let mut budget = MAX_COPY_BYTES;
+    for directory in ["sdmc", "nand", "sysdata", "checkpoints", "media"] {
+        let source = from.join(directory);
+        if source.is_dir() {
+            if fs::symlink_metadata(&source)?.file_type().is_symlink() {
+                return Err(io::Error::other(
+                    "checkpoint root contains a directory link",
+                ));
+            }
+            copy_tree(&source, &to.join(directory), &mut budget)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

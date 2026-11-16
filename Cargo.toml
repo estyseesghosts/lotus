@@ -9,6 +9,7 @@ members = [
     "crates/hardware",
     "crates/accuracy",
     "crates/mcp",
+    "crates/gdb",
     "crates/cli",
     "crates/desktop",
 ]
@@ -31,6 +32,8 @@ lotus-runner = { path = "crates/runner", version = "0.0.1" }
 lotus-hardware = { path = "crates/hardware", version = "0.0.1" }
 lotus-accuracy = { path = "crates/accuracy", version = "0.0.1" }
 lotus-mcp = { path = "crates/mcp", version = "0.0.1" }
+
+lotus-gdb = { path = "crates/gdb", version = "0.0.1" }
 
 # External crates.
 serde = { version = "1", features = ["derive"] }

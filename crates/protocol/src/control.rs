@@ -12,6 +12,7 @@ pub const MAX_CONTROL_BYTES: u32 = 65_536;
 #[serde(rename_all = "snake_case")]
 pub enum Method {
     Hello,
+    Debug,
     Status,
     Stop,
     Load,

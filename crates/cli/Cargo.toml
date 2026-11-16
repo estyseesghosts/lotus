@@ -13,6 +13,7 @@ name = "ctr-cli"
 path = "src/main.rs"
 
 [dependencies]
+lotus-gdb.workspace = true
 lotus-protocol = { workspace = true }
 lotus-runner = { workspace = true }
 lotus-session = { workspace = true }

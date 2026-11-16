@@ -99,3 +99,27 @@ pub struct InputArgs {
     pub y: u16,
     pub touch: bool,
 }
+
+/// Typed debug operations, with limits checked by the shared session API.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DebugArgs {
+    pub session: String,
+    pub command: lotus_protocol::debug::DebugCommand,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GdbOperation {
+    Start,
+    Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GdbArgs {
+    pub session: String,
+    pub operation: GdbOperation,
+    #[serde(default)]
+    pub port: u16,
+}
