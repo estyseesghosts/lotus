@@ -21,6 +21,11 @@ def archive(destination, repository, revision, prefix):
                 entry.create_system = 3
                 entry.external_attr = (stat.S_IFLNK | 0o777) << 16
                 destination.writestr(entry, member.linkname.encode("utf-8"))
+    # tarfile stops at its end marker. Drain Git's trailing tar padding before
+    # waiting: otherwise a full Windows pipe can leave git archive blocked.
+    while process.stdout.read(65536):
+        pass
+    process.stdout.close()
     if process.wait() != 0:
         raise RuntimeError(f"Source archive failed: {repository}")
     tree = subprocess.check_output(["git", "-C", str(repository), "ls-tree", "-r", "-z", revision])
