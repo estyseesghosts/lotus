@@ -1,0 +1,15 @@
+[package]
+name = "lotus-debugger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "CPU, memory and kernel debugging types shared by the desktop app, the CLI and the MCP server."
+
+[dependencies]
+lotus-protocol = { workspace = true }
+lotus-trace = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }

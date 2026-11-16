@@ -1,0 +1,31 @@
+[package]
+name = "lotus-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Model Context Protocol server exposing the session supervisor to agents."
+
+[lib]
+name = "lotus_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lotus-mcp"
+path = "src/main.rs"
+
+[dependencies]
+lotus-debugger = { workspace = true }
+lotus-protocol = { workspace = true }
+lotus-runner = { workspace = true }
+lotus-session = { workspace = true }
+lotus-trace = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }

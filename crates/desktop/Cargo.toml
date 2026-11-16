@@ -1,0 +1,30 @@
+[package]
+name = "lotus-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "GPUI desktop application: sessions, screens and debugger views."
+
+[lib]
+name = "lotus_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lotus-desktop"
+path = "src/main.rs"
+
+[dependencies]
+lotus-accuracy = { workspace = true }
+lotus-debugger = { workspace = true }
+lotus-hardware = { workspace = true }
+lotus-protocol = { workspace = true }
+lotus-session = { workspace = true }
+lotus-trace = { workspace = true }
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }

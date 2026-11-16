@@ -1,0 +1,35 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+*.ilk
+*.dSYM/
+
+# CMake / native builds (worker + vendored sources)
+build/
+cmake-build-*/
+out/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+
+# Vendored Azahar working files
+/vendor/azahar/build/
+/vendor/azahar/dist/compatibility_list/
+
+# Local artifacts: ROMs, captures, logs, saves are user assets and are never committed.
+/artifacts/
+/runs/
+*.3ds
+*.3dsx
+*.cci
+*.cxi
+*.elf
+*.gba
+*.iso
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

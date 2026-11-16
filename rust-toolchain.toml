@@ -1,0 +1,7 @@
+[toolchain]
+# The toolchain is pinned with an explicit host triple. This machine has no
+# MSVC linker installed, so the GNU toolchain is the one that can link here.
+# See docs/17-scaffold-and-pins.md for the toolchain situation.
+channel = "1.98.1-x86_64-pc-windows-gnu"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

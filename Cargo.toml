@@ -1,0 +1,64 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/session",
+    "crates/trace",
+    "crates/debugger",
+    "crates/runner",
+    "crates/hardware",
+    "crates/accuracy",
+    "crates/mcp",
+    "crates/cli",
+    "crates/desktop",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98"
+license = "GPL-3.0-or-later"
+authors = ["terezi <jules@foxtails.me>"]
+repository = "https://github.com/estyseesghosts/lotus"
+
+[workspace.dependencies]
+# Internal crates.
+lotus-protocol = { path = "crates/protocol", version = "0.1.0" }
+lotus-session = { path = "crates/session", version = "0.1.0" }
+lotus-trace = { path = "crates/trace", version = "0.1.0" }
+lotus-debugger = { path = "crates/debugger", version = "0.1.0" }
+lotus-runner = { path = "crates/runner", version = "0.1.0" }
+lotus-hardware = { path = "crates/hardware", version = "0.1.0" }
+lotus-accuracy = { path = "crates/accuracy", version = "0.1.0" }
+lotus-mcp = { path = "crates/mcp", version = "0.1.0" }
+
+# External crates.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "io-util",
+    "net",
+    "sync",
+    "time",
+] }
+rmcp = { version = "3", features = ["server", "macros", "schemars", "transport-io"] }
+schemars = "1.0"
+toml = "0.9"
+
+# GPUI is pinned to an exact upstream commit. See config/pins.toml and
+# docs/17-scaffold-and-pins.md. Never move this to a branch or tag.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "6b720973027999bae402df23d469026f4cced988", default-features = false }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "6b720973027999bae402df23d469026f4cced988", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

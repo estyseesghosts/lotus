@@ -1,0 +1,37 @@
+# Pinned dependency revisions for Lotus.
+#
+# Every external source this project builds against is pinned to an exact
+# commit. Moving a pin is a deliberate act: update the file, update
+# Cargo.lock or the submodule pointer in the same commit, and record why.
+#
+# Verified by scripts/verify-pins.ps1.
+
+[azahar]
+# Upstream project.
+repository = "https://github.com/azahar-emu/azahar.git"
+# Single fork that carries the two long lived branches.
+fork = "https://github.com/estyseesghosts/azahar.git"
+# Upstream commit the fork is based on.
+upstream_commit = "11eceda5e0e682a1f44e396bf954a1b9137097ca"
+# Branch with upstream minimal native worker hooks.
+integration_branch = "integration"
+integration_commit = "11eceda5e0e682a1f44e396bf954a1b9137097ca"
+# Branch with tracing, debugger and accuracy experiments.
+experimental_branch = "experimental"
+experimental_commit = "11eceda5e0e682a1f44e396bf954a1b9137097ca"
+# Vendored checkout of the pinned Azahar source.
+vendor_path = "vendor/azahar"
+
+[gpui]
+# GPUI lives in the Zed repository.
+repository = "https://github.com/zed-industries/zed.git"
+# Exact commit the GPUI crates are taken from.
+rev = "6b720973027999bae402df23d469026f4cced988"
+# Version of the gpui crate at that commit.
+crate_version = "0.2.2"
+
+[rust]
+# Toolchain used by every crate in the workspace.
+channel = "1.98.1"
+# Host triple the toolchain was installed for.
+host = "x86_64-pc-windows-gnu"

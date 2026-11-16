@@ -1,0 +1,4 @@
+[submodule "vendor/azahar"]
+	path = vendor/azahar
+	url = https://github.com/estyseesghosts/azahar.git
+	branch = integration

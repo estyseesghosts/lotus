@@ -1,0 +1,17 @@
+[package]
+name = "lotus-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Scenario definition and validation for repeatable, bounded emulation runs."
+
+[dependencies]
+lotus-hardware = { workspace = true }
+lotus-session = { workspace = true }
+lotus-trace = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
