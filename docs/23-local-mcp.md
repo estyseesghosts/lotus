@@ -18,7 +18,14 @@ the executable, root, approved asset handles and control permission:
 }
 ```
 
-The last two fields are optional (defaults: none, 4; limit 16).
+The last two fields are optional (defaults: none, 4; limit 16). Optional
+`prefer_vulkan` (default `true`) gives every new session whose `profile` names
+no `graphics_api` the Vulkan renderer; if the worker refuses Vulkan setup at
+load, the supervisor replaces that worker with a software one and reports
+`renderer_fallback` (status, telemetry, desktop RENDERER gauge). Set
+`"profile": {"graphics_api": 0}` to pin software for reference or determinism
+runs, or `prefer_vulkan: false` for the worker default (software). See
+[34](34-performance-and-issue-triage.md).
 
 Configuration is trusted local startup input, never a tool parameter. Each
 server process owns its sessions and artifact catalog. Client tools cannot

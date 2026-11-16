@@ -1,7 +1,7 @@
 # Glossary
 
 Single source of truth for project terms. Other documents link here instead of
-redefining them. Numbered documents (`01`–`30`) keep their numbers as stable
+redefining them. Numbered documents (`01`–`34`) keep their numbers as stable
 identifiers regardless of directory; prose references like "document 18" remain
 valid.
 
@@ -62,6 +62,16 @@ the consuming source lines (`tools/generate-settings.py`). [29](29-wave-3-plan.m
 **Reverse continue** — run backwards to the previous breakpoint or watchpoint
 hit by replaying the rewind checkpoint that holds it with instruction stepping;
 a watchpoint lands before the access executes. [31](31-wave-3-progress.md)
+
+**Preferred renderer** — supervisor sessions use Vulkan unless the host
+profile names `graphics_api` or sets `prefer_vulkan: false`; a refused Vulkan
+setup replaces the worker with a software one and records
+`renderer_fallback`. The raw worker default stays software. Canonical:
+[23](23-local-mcp.md), [34](34-performance-and-issue-triage.md).
+
+**Checkpoint interval** — frames between continuous-run rewind checkpoints
+(`rewind_configure.interval_frames`, 1–60, default 1); input changes force a
+checkpoint. Canonical: [34](34-performance-and-issue-triage.md).
 
 **Debug lease** — exclusive right to control execution (pause, step,
 continue) of one session, arbitrated between desktop, MCP and GDB clients;

@@ -191,3 +191,6 @@ Open exceptions: the devkitARM-specific GDB build was not run (its download was
 not approved; Arm GNU GDB passes the same session); actual two-DPI interaction
 and host audio-device glitches are unmeasured; Vulkan tick jitter is recorded
 above; no hardware accuracy claim is made.
+
+Update (issue #12, doc 34): devkitPro GDB 14.1 now passes the same session, including
+Thumb checks, on CITnLO for Clang and devkitARM-GCC fixtures, Old and New 3DS.

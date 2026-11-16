@@ -18,7 +18,7 @@ integration_branch = "integration"
 integration_commit = "5a3c702f0fb0291632deecbe32d91aedb235f819"
 # Branch with tracing, debugger and accuracy experiments.
 experimental_branch = "experimental"
-experimental_commit = "6361ddc38fbe2e1396337064e825dd16bc911bbf"
+experimental_commit = "c48dac6e6ca275290623f24914ae4e909e86b979"
 # Vendored checkout of the pinned Azahar source.
 vendor_path = "vendor/azahar"
 

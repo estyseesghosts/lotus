@@ -68,9 +68,8 @@ integration `5a3c702f`, experimental `6361ddc3` (`config/pins.toml`). Wave 4
 
 ## Open items for the next agent
 
-1. **devkitARM GDB** (milestone 3.1 exit check): install devkitPro, then run
-   `tools/gdb_acceptance.py` with its `arm-none-eabi-gdb`. Arm GNU GDB 16.3
-   already passes the same session.
+1. ~~devkitARM GDB~~ (milestone 3.1 exit check): passed with devkitPro GDB
+   14.1, Old and New 3DS, see [34](34-performance-and-issue-triage.md).
 2. **Movie input sensitivity**: record a movie on owned content that draws
    differently per button, then assert `input_changes_output`.
 3. Actual two-DPI desktop interaction, host audio-device glitches, other

@@ -82,8 +82,10 @@ foreach ($branch in 'integration','experimental') {
 `integration` is AZAHAR, `experimental` is CITnLO. Wave 3 pins now differ:
 integration carries frontend adapters; experimental adds debugger instrumentation.
 Native builds enable software/Vulkan and Cubeb, with Qt/SDL/Libretro/OpenGL,
-Azahar's GDB stub and LTO disabled. The worker's default profile still selects
-software and Old 3DS. Exact flags are recorded in `lotus-build-manifest.json`. First clean build: about 35–45 min on a
+Azahar's GDB stub and LTO disabled (`-Lto` turns LTO on and is recorded in the
+manifest; see [34](34-performance-and-issue-triage.md) before using it). The raw
+worker's default profile selects software and Old 3DS; supervisor sessions
+(desktop, MCP, CLI) prefer Vulkan with a software fallback ([23](23-local-mcp.md)). Exact flags are recorded in `lotus-build-manifest.json`. First clean build: about 35–45 min on a
 GitHub runner. `-Branch stock -Oracle` builds the unmodified-core oracle used for
 screen comparison ([20](20-native-baseline.md)).
 
@@ -190,7 +192,10 @@ Acceptance (outputs go to fresh directories under ignored `runs/`):
 | Check | Command |
 | --- | --- |
 | Native debugger/reverse/filesystem | `python tools/{debugger,reverse,filesystem}_acceptance.py <worker> <fixture.3dsx> <out>` |
-| GDB | `python tools/gdb_acceptance.py <arm-none-eabi-gdb> target/debug/ctr-cli.exe <worker> <debugger.3dsx> <out>` |
+| GDB | `python tools/gdb_acceptance.py <arm-none-eabi-gdb> target/debug/ctr-cli.exe <worker> <debugger.3dsx> <out>`; documented client: devkitPro `C:/devkitPro/devkitARM/bin/arm-none-eabi-gdb.exe` (GDB 14.1), CITnLO only |
+| Benchmark | `python tools/bench.py --worker NAME=<worker> … --rom <abs 3dsx> --output <fresh>` (see its docstring and [34](34-performance-and-issue-triage.md)) |
+| Renderer default | `python tests/test_renderer_default.py <ctr-cli.exe> <worker> <abs 3dsx> <out>` |
+| Hidden-start window | `python tests/test_window_visible.py <lotus-desktop.exe> [--mcp]` |
 | Settings | `python tools/settings_acceptance.py <worker> <debugger.3dsx> <gpu.3dsx> <out> [--classes-only]` |
 | Overhead / Vulkan | `tools/overhead_acceptance.py`, `tools/vulkan_acceptance.py` (see `--help`) |
 | MCP | `python tests/test_mcp_<name>.py <abs lotus-mcp.exe> <abs host.json> <asset handles…> <abs out>` |
