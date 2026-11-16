@@ -29,12 +29,12 @@ already pending native exchange can take up to its 30 s deadline.
 crash isolation, shared MCP, persistence; see [30](30-sessions-and-interface.md)).
 **Checked by screenshot** (Windows 11, one 100%-scale display, debug build,
 2026-11-16): native frames render; keyboard (Ctrl+I) and mouse (menu, collapse,
-rail selection, Step, Inspect, session rows) reach the window; working set held
+rail selection, Step, session rows) reach the window; working set held
 at ~96.6 MB over 20 s of continuous preview replacement. Actual two-DPI
 interaction, host audio and other platforms remain unverified.
 
-Source: `desktop::{desktop_controller, lotus_window, session_tree, gauges,
-theme, screen_geometry}`, `session::supervisor`. Primary GPUI APIs at its pinned
+Source: `desktop::{desktop_controller, lotus_window, layout, icons,
+preferences, presence, session_tree, gauges, theme, screen_geometry}`, `session::supervisor`. Primary GPUI APIs at its pinned
 source: `elements/{img,canvas,div}.rs`, `assets.rs` (`RenderImage` BGRA),
 `app.rs` (`drop_image`, `prompt_for_paths`), `app/context.rs` (activation/focus).
 Rollback: run headless (`lotus-mcp`, `ctr-cli`); no GUI is required.

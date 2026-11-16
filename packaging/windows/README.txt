@@ -9,7 +9,8 @@ AZAHAR backend. Dragging a .3dsx onto either launcher also lists it in LOTUS.
 
 No installer, administrator access, Rust, compiler or Python is required to run.
 Windows 11 x64 is the initial supported host; the GPUI desktop uses Direct3D 11.
-Keep all files together. Sessions, logs and saves live in data/<backend>/sessions.
+Keep all files together. Sessions, logs and saves live in data/<backend>/sessions;
+desktop preferences in data/desktop.json.
 Move the entire folder to move the installation. Select the homebrew again after
 moving: the launcher refreshes machine-specific asset/runtime paths each time.
 Closing LOTUS terminates its workers. Keep data/ when upgrading to retain runs.

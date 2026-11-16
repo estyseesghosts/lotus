@@ -6,8 +6,12 @@
 
 pub mod desktop_controller;
 pub mod gauges;
+pub mod icons;
 pub mod inspection;
+pub mod layout;
 pub mod lotus_window;
+pub mod preferences;
+pub mod presence;
 pub mod screen_geometry;
 pub mod session_tree;
 pub mod theme;

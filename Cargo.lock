@@ -9,7 +9,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3b7f7f85a7e5f68090000ed7622545829afd484d210358702ae4cb97dd0c320"
 dependencies = [
  "enumn",
- "uuid",
+ "uuid 1.29.2",
 ]
 
 [[package]]
@@ -1013,6 +1013,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "discord-rich-presence"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90c55d69cab17c19677ce3a5f8face993a9e6eaf847fecac3547f3a3ff4a2494"
+dependencies = [
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "serde_repr",
+ "thiserror",
+ "uuid 0.8.2",
+]
+
+[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1493,6 +1508,17 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
+version = "0.2.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "wasi",
+]
+
+[[package]]
+name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "899def5c37c4fd7b2664648c28120ecec138e4d395b459e5ca34f9cce2dd77fd"
@@ -1641,7 +1667,7 @@ dependencies = [
  "unicode-segmentation",
  "url",
  "usvg",
- "uuid",
+ "uuid 1.29.2",
  "waker-fn",
  "windows",
 ]
@@ -1703,7 +1729,7 @@ dependencies = [
  "objc2-ui-kit",
  "parking_lot",
  "raw-window-handle",
- "uuid",
+ "uuid 1.29.2",
 ]
 
 [[package]]
@@ -1730,7 +1756,7 @@ dependencies = [
  "smol",
  "strum",
  "url",
- "uuid",
+ "uuid 1.29.2",
 ]
 
 [[package]]
@@ -1771,7 +1797,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "strum",
- "uuid",
+ "uuid 1.29.2",
 ]
 
 [[package]]
@@ -1841,7 +1867,7 @@ dependencies = [
  "unicode-properties",
  "unicode-script",
  "unicode-segmentation",
- "uuid",
+ "uuid 1.29.2",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -1896,7 +1922,7 @@ dependencies = [
  "raw-window-handle",
  "scheduler",
  "smallvec",
- "uuid",
+ "uuid 1.29.2",
  "windows",
  "windows-core",
  "windows-numerics",
@@ -2574,6 +2600,7 @@ dependencies = [
 name = "lotus-desktop"
 version = "0.0.1"
 dependencies = [
+ "discord-rich-presence",
  "gpui",
  "gpui_platform",
  "image",
@@ -2713,7 +2740,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "time",
- "uuid",
+ "uuid 1.29.2",
 ]
 
 [[package]]
@@ -4004,7 +4031,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
+ "uuid 1.29.2",
 ]
 
 [[package]]
@@ -5147,6 +5174,15 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 
 [[package]]
 name = "uuid"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
+dependencies = [
+ "getrandom 0.2.17",
+]
+
+[[package]]
+name = "uuid"
 version = "1.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bed99139f7dac9b5cfe5f17be4d66dc7079a34dee1d74bcc77217119240e267c"
@@ -5831,7 +5867,7 @@ dependencies = [
  "serde_repr",
  "tracing",
  "uds_windows",
- "uuid",
+ "uuid 1.29.2",
  "windows-sys",
  "winnow 1.0.5",
  "zbus_macros 5.19.0",
@@ -5857,7 +5893,7 @@ dependencies = [
  "serde_repr",
  "socket2",
  "uds_windows",
- "uuid",
+ "uuid 1.29.2",
  "windows-sys",
  "winnow 1.0.5",
  "zbus_macros 6.3.0",

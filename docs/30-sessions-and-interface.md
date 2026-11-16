@@ -80,25 +80,66 @@ MCP clients still cannot name paths.
 
 ## Window
 
-- **Sidebar** (Ctrl+B collapses to a rail of state chips): cards with their
-  primary, secondaries nested beneath; square dot = primary, round =
-  secondary, colour = state. Hover: `+` starts a secondary copying that card
-  with the same content; `×` stops (primary data kept, secondary discarded).
-  `+` beside SESSIONS opens an existing card, creates the next free card name,
-  or starts an empty or copied secondary. Footer: MCP link and slot use.
-  Icon buttons and rail chips carry tooltips (compiled; not yet seen on screen,
-  since synthetic hover does not reach an inactive window).
-- **Toolbar**: name, PRIMARY/SECONDARY badge, card, state, content; Run/Pause,
-  Step (one frame), Reset, Load (approved content or Open file…), Stop; Fit /
-  1× / 2× zoom; stacked or side-by-side screens; Inspector.
-- **Gauge strip** under the screens; **Inspector** (Ctrl+I): session fields and
-  core-0 registers, fetched only while paused and open.
-- Keys: Z/X A/B, A/S X/Y, Q/W L/R, arrows, Enter/Backspace Start/Select; Space
-  run/pause; `.` step; Ctrl+O open file. Desktop loads start running; MCP loads
-  stay paused.
-- Theme: Geist-derived dark neutrals with colour only for state
-  (`desktop::theme`, after the workspace's `vercel.md`). Segoe UI and Consolas,
-  since Geist is not assumed installed.
+Layout is computed in logical pixels by `desktop::layout` (pure, unit-tested):
+
+- **Panes**: session sidebar 200–440 px (default 264, rail 52) and inspector
+  300–760 px (default 420, rail 44); the centre keeps at least 320 px. Drag a
+  pane's inner edge to resize. Dragging past half its minimum width snaps it to
+  its rail and keeps the previous width (the snap rule from VS Code's
+  `splitview.ts`, `halfSize = viewMinimumSize / 2`); dragging the rail edge outward
+  reopens it. When the window is too narrow for both, panes shrink to their minimums,
+  less recently used first, and then that pane is drawn as its rail without
+  changing its saved state. Ctrl+B / Ctrl+I toggle the same state.
+- **Sidebar**: cards with their primary and secondaries nested beneath; square
+  dot = primary, round = secondary, colour = state. Hover `+` copies a card,
+  `×` stops. Footer: MCP link, slot use, and the preferences gear. Long names
+  truncate with an ellipsis; the rail shows one chip per session.
+- **Toolbar** by centre width: ≥ 780 px labelled buttons, ≥ 520 px icons with
+  tooltips, otherwise Run/Pause and Step plus a ⋯ menu holding Reset, Load,
+  Stop, zoom and screen layout. Run/Pause and Step are always visible.
+- **Inspector rail** (always visible): CPU, breakpoints, threads | memory |
+  GPU | logs | snapshots, a More menu (IPC, timeline, audio, settings,
+  result), and Run/Pause and Step at the bottom. Choosing a view opens the inspector. The current
+  view is marked by its surface and a bar, not only by colour. The expanded
+  inspector shows the view's icon, name and group (EXECUTION, MEMORY, MEDIA,
+  TRACE, SESSION), its own commands (Back, reverse stop and replay are styled
+  as dangerous) and a ⋯ menu with Open JSONL, Run clipboard JSON and the keys.
+- **Gauges**: one row of cards when the centre is at least 7 × 112 px wide and the window
+  is at least 700 px tall; otherwise FPS, speed and frame as one-line pills,
+  and a chevron that shows the rest. Each pill shows the full detail in its tooltip.
+- **Keys**: Z/X A/B, A/S X/Y, Q/W L/R, arrows, Enter/Backspace Start/Select
+  (only while the screen has focus); Space run/pause; `.` step; Ctrl+O open
+  file; Ctrl+1–7 rail views; Ctrl+[ / Ctrl+] cycle views; Tab / Shift+Tab move
+  focus; Esc closes menus.
+- **Icons** are original 16 × 16 stroke SVGs (`desktop::icons`), tinted by
+  text colour, so they stay sharp at any scale.
+- **Theme**: Geist-derived dark neutrals with colour only for state
+  (`desktop::theme`, after the workspace's `vercel.md`). Segoe UI and Consolas.
+
+Pane widths, open states and Discord options persist in `desktop.json`
+(`desktop::preferences`): `LOTUS_DESKTOP_PREFERENCES`, else
+`%APPDATA%\LOTUS\desktop.json`, else `$XDG_CONFIG_HOME/lotus/desktop.json`.
+The portable launcher keeps it in `data/`. If the file exists but does not parse,
+it is never overwritten, and the preferences menu says so.
+
+## Discord Rich Presence
+
+Opt-in (preferences gear → Discord Rich Presence; off by default). Owned by
+the desktop only; `lotus-mcp` and `ctr-cli` never connect. Policy
+(`desktop::presence::derive`): sessions that are Running or Paused with content
+count. 0 clears the activity, 1 shows `Playing NAME...`, 2+ with the same
+content show `Debugging NAME...`, otherwise `Debugging multiple games`; `state`
+reads `N sessions`. Content is compared by the canonical path of the
+approved asset, so two files called `game.3dsx` differ. Only the sanitised file
+name is sent. "Hide game titles" sends `Playing a game` / `Debugging sessions`.
+
+Transport: `discord-rich-presence` 1.1.0 (MIT) over Discord's local IPC pipe,
+on one dedicated thread. The supervisor loop publishes the latest content and
+the thread only wakes when it changes. Every SET_ACTIVITY reply is read, so a
+dead pipe or an ERROR event is noticed. Reconnects back off from 5 s to 60 s,
+with one warning per outage. Shutdown clears the activity (bounded at 2 s).
+Application ID: preference `discord_application_id`, else build-time
+`LOTUS_DISCORD_APPLICATION_ID`, else the LOTUS application `1572001204404363274`.
 
 Replaced frames are dropped from GPUI's sprite atlas immediately
 (`App::drop_image`) so streaming stays bounded.
@@ -133,10 +174,31 @@ each with three running. The speed gauge reports this (≈ 8 %). It is a propert
 of the current software renderer, the motivation for ADR-009
 ([29](29-wave-3-plan.md)), not of this interface.
 
-Unit tests cover card names, copy/discard/sweep, reservations, asset
-directories, telemetry windows, tree building, fit scaling and formatting.
-Limits: no hardware claim; host audio stays muted; two-DPI and other
-platforms untested; no accessibility audit.
+**Layout and presence** (2026-11-16, one 100%-scale 1920 × 1080 display):
+
+- Unit tests: pane plans at 1600/1000/900/720 px, snap at half the minimum, toolbar
+  densities, pill sizes, rail/overflow coverage, the preferences round trip,
+  and presence policy and thread. The thread tests use a scripted transport
+  that covers disabled-never-connects, backoff while Discord is absent,
+  reconnect after a failed send, deduplication, and clearing on the last
+  session, on disable and on shutdown.
+- **Checked by screenshot** (`tools/desktop_shots.py`, window-only
+  PrintWindow with posted mouse messages, `runs/ui-shots-02`): 22 scenarios
+  covering both panes at 1280/1000/900/720 px, squeeze, every toolbar density
+  and menu, compact and expanded gauges, drag snap/reopen/resize for both
+  panes (saved widths read back from `desktop.json`), four sessions with
+  32-character card names and long asset handles, and the logical sizes that
+  125/150/200% scaling gives.
+- **Verified against Discord** (the user's running client): `tests/discord_live.rs`
+  sees each state confirmed by Discord's reply (none → Playing → Debugging
+  same → multiple → hidden → none → off). The full window path (MCP session
+  changes, status line read from the preferences menu) shows the same.
+
+Unverified: keyboard paths (Tab order, Ctrl shortcuts; no input was
+synthesised outside the window), a real non-100% display scale, Discord
+quitting and restarting (covered only by the scripted transport, and by
+`tests/test_discord_presence.py`, which needs Discord closed), and other
+platforms. No accessibility audit. Host audio stays muted.
 
 Source: `session::{supervisor, card_store, telemetry, process_memory}`,
 `mcp::{server, tool_arguments}`, `desktop::{desktop_controller, lotus_window,

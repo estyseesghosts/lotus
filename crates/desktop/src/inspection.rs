@@ -53,6 +53,62 @@ impl Panel {
             Self::Result => "Result",
         }
     }
+    /// Destinations on the inspector rail, most used first; Ctrl+1..7 select them.
+    /// Execution views lead, then memory, GPU, logs and snapshots.
+    pub const RAIL: [Self; 7] = [
+        Self::Cpu,
+        Self::Breakpoints,
+        Self::Threads,
+        Self::Memory,
+        Self::Gpu,
+        Self::Logs,
+        Self::States,
+    ];
+    /// The rest, behind the rail's overflow menu, grouped by `group`.
+    pub const OVERFLOW: [Self; 5] = [
+        Self::Ipc,
+        Self::Timeline,
+        Self::Audio,
+        Self::Settings,
+        Self::Result,
+    ];
+    pub fn group(self) -> &'static str {
+        match self {
+            Self::Cpu | Self::Threads | Self::Breakpoints => "EXECUTION",
+            Self::Memory => "MEMORY",
+            Self::Gpu | Self::Audio => "MEDIA",
+            Self::Logs | Self::Ipc | Self::Timeline => "TRACE",
+            Self::States | Self::Settings | Self::Result => "SESSION",
+        }
+    }
+    pub fn icon(self) -> crate::icons::Icon {
+        use crate::icons::Icon;
+        match self {
+            Self::Cpu => Icon::Cpu,
+            Self::Threads => Icon::Threads,
+            Self::Breakpoints => Icon::Breakpoints,
+            Self::Memory => Icon::Memory,
+            Self::Settings => Icon::Settings,
+            Self::Ipc => Icon::Ipc,
+            Self::Logs => Icon::Logs,
+            Self::Gpu => Icon::Gpu,
+            Self::Audio => Icon::Audio,
+            Self::States => Icon::Snapshots,
+            Self::Timeline => Icon::Timeline,
+            Self::Result => Icon::Result,
+        }
+    }
+    /// Next or previous panel in rail-then-overflow order (Ctrl+] / Ctrl+[).
+    pub fn cycle(self, forward: bool) -> Self {
+        let order: Vec<Self> = Self::RAIL.into_iter().chain(Self::OVERFLOW).collect();
+        let here = order.iter().position(|p| *p == self).unwrap_or(0);
+        let len = order.len();
+        order[if forward {
+            (here + 1) % len
+        } else {
+            (here + len - 1) % len
+        }]
+    }
     pub fn command(self, offset: u32) -> Option<D> {
         Some(match self {
             Self::Cpu => D::Registers { core: 0 },
@@ -374,6 +430,15 @@ impl Inspection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rail_and_overflow_cover_every_panel_once() {
+        let mut seen: Vec<Panel> = Panel::RAIL.into_iter().chain(Panel::OVERFLOW).collect();
+        assert_eq!(seen.len(), Panel::ALL.len());
+        seen.sort_by_key(|p| *p as usize);
+        assert_eq!(seen, Panel::ALL);
+        assert_eq!(Panel::Cpu.cycle(false), Panel::Result);
+        assert_eq!(Panel::Result.cycle(true), Panel::Cpu);
+    }
     #[test]
     fn large_trace_is_bounded_and_preserves_lanes() {
         let line = b"{\"kind\":\"ipc\",\"guest_ticks\":123,\"sequence\":4}\n";

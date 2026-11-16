@@ -26,6 +26,8 @@ $text = @{
 } | ConvertTo-Json -Depth 3
 # Windows PowerShell's default UTF-8 includes a BOM; serde_json expects plain UTF-8.
 [IO.File]::WriteAllText($config, $text, (New-Object Text.UTF8Encoding($false)))
+# Desktop preferences (pane layout, opt-in Discord presence) stay in the release folder.
+$env:LOTUS_DESKTOP_PREFERENCES = Join-Path $PSScriptRoot 'data/desktop.json'
 if ($ConfigureOnly) { return }
 switch ($Mode) {
     'MCP' { & (Join-Path $PSScriptRoot 'bin/lotus-mcp.exe') $config }

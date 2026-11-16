@@ -32,6 +32,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
+discord-rich-presence = "=1.1.0"
 
 [target.'cfg(windows)'.dependencies]
 # Versions already locked through GPUI; used to re-show a window started hidden (main.rs).

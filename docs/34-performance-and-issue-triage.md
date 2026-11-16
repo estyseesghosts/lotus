@@ -1,4 +1,4 @@
-# 34. Performance and issue triage (issues #1–#12)
+# 34. Performance and issue triage (issues #1–#18)
 
 Status: draft. Measurements are from `tools/bench.py` on one Windows machine, t03 homebrew ROM, Old 3DS, 30 warm-up frames. Run directories: `runs/bench-vk-02` (Vulkan, 120 frames x 3), `runs/bench-sw-02` (software, 60 frames x 3), `runs/bench-preview-02` (capture every 2 frames). Workers: `azahar` = integration pin, `citnlo_pin` = CITnLO pin before this work, `citnlo_new` = CITnLO with the changes below, now pinned as experimental `c48dac6e` (`config/pins.toml`). The integration pin is unchanged.
 
@@ -42,3 +42,5 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
 - #10 `tools/bench.py` added.
 - #11 `-Lto` switch in `scripts/build-azahar.ps1`. The LTO A/B was not run: an unrelated process held the host at about 80% CPU for the rest of the session, so timings taken then are not comparable.
 - #12 devkitPro GDB 14.1 passes `gdb_acceptance` on CITnLO (Old/New 3DS, Clang and devkitARM GCC fixtures, Thumb checks). GDB server refuses to start on AZAHAR.
+- #13–#17 (desktop layout): resizable, snap-collapsible panes with saved widths, an always-visible inspector rail with vector icons, grouped inspector navigation with per-view commands, and a toolbar and gauges that adapt to the centre width. Design and evidence in [30](30-sessions-and-interface.md#window).
+- #18 opt-in Discord Rich Presence, verified against a running Discord client. Policy, transport and limits in [30](30-sessions-and-interface.md#discord-rich-presence).

@@ -1161,6 +1161,14 @@ impl Supervisor {
         })
     }
 
+    /// Canonical file behind an approved handle, for identity comparisons and
+    /// display names. Not a capability: loading still goes through approval.
+    #[must_use]
+    pub fn asset_path(&self, handle: &str) -> Option<PathBuf> {
+        let path = self.resolve_asset(handle).ok()?;
+        Some(path.canonicalize().unwrap_or(path))
+    }
+
     fn resolve_asset(&self, handle: &str) -> io::Result<PathBuf> {
         if let Some(path) = self.config.assets.get(handle) {
             return Ok(path.clone());

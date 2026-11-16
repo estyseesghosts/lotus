@@ -4,13 +4,26 @@
 //! ([`lotus_session::telemetry`]); none is a guest-tick or hardware-cycle claim.
 use std::collections::VecDeque;
 
-use gpui::{canvas, div, fill, point, px, size, Bounds, IntoElement, ParentElement, Rgba, Styled};
+use gpui::{
+    canvas, div, fill, point, px, size, Bounds, InteractiveElement, IntoElement, ParentElement,
+    Rgba, Styled,
+};
 use lotus_session::telemetry::{Actor, Telemetry, GUEST_REFRESH_HZ};
 
+use crate::layout::{PILL_GAP, PILL_HEIGHT};
 use crate::theme;
 
-/// The full strip for one session.
-pub fn gauge_strip(telemetry: &Telemetry) -> impl IntoElement {
+/// One gauge: label, headline figure and a detail line.
+pub struct Gauge {
+    pub label: &'static str,
+    pub value: String,
+    pub colour: Rgba,
+    pub detail: String,
+}
+
+/// The seven gauges, most important first: the compact strip shows the first
+/// [`crate::layout::PRIMARY_GAUGES`] and discloses the rest.
+pub fn gauges(telemetry: &Telemetry) -> [Gauge; 7] {
     let speed_colour = if telemetry.fps == 0.0 {
         theme::text()
     } else if telemetry.speed >= 0.97 {
@@ -20,101 +33,161 @@ pub fn gauge_strip(telemetry: &Telemetry) -> impl IntoElement {
     } else {
         theme::error()
     };
-    div()
+    [
+        Gauge {
+            label: "FPS",
+            value: format_rate(telemetry.fps),
+            colour: theme::text(),
+            detail: "guest frames / host second".into(),
+        },
+        Gauge {
+            label: "SPEED",
+            value: format_speed(telemetry),
+            colour: speed_colour,
+            detail: format!("of {GUEST_REFRESH_HZ:.2} Hz"),
+        },
+        Gauge {
+            label: "FRAME",
+            value: telemetry.frames.to_string(),
+            colour: theme::text(),
+            detail: format!("epoch {}", telemetry.epoch),
+        },
+        Gauge {
+            label: "AUDIO",
+            value: format_audio(telemetry.audio_rate),
+            colour: theme::text(),
+            detail: format!("{} dropped · muted", telemetry.audio_dropped),
+        },
+        Gauge {
+            label: "RENDERER",
+            value: if telemetry.renderer.is_empty() {
+                "—".to_string()
+            } else {
+                telemetry.renderer.clone()
+            },
+            colour: if telemetry.renderer_fallback.is_empty() {
+                theme::text()
+            } else {
+                theme::warning()
+            },
+            detail: if telemetry.renderer_fallback.is_empty() {
+                telemetry.backend_name.clone()
+            } else {
+                format!("fallback: {}", telemetry.renderer_fallback)
+            },
+        },
+        Gauge {
+            label: "WORKER",
+            value: telemetry
+                .memory_bytes
+                .map(format_bytes)
+                .unwrap_or_else(|| "—".into()),
+            colour: theme::text(),
+            detail: telemetry
+                .pid
+                .map(|pid| format!("pid {pid} · up {}", format_uptime(telemetry.uptime_ms)))
+                .unwrap_or_else(|| "not running".into()),
+        },
+        Gauge {
+            label: "CONTROL",
+            value: actor_name(telemetry.last_actor).into(),
+            colour: theme::text(),
+            detail: format!(
+                "{} · input {}",
+                if telemetry.last_operation.is_empty() {
+                    "—"
+                } else {
+                    &telemetry.last_operation
+                },
+                if telemetry.input_owner.is_empty() {
+                    "—"
+                } else {
+                    &telemetry.input_owner
+                }
+            ),
+        },
+    ]
+}
+
+/// One row of cards; needs [`crate::layout::CARDS_MIN_WIDTH`].
+pub fn gauge_cards(telemetry: &Telemetry) -> impl IntoElement {
+    let mut strip = div()
         .flex()
         .flex_none()
         .gap_2()
         .p_3()
         .border_t_1()
-        .border_color(theme::border())
-        .child(
-            card("FPS")
+        .border_color(theme::border());
+    for (index, gauge) in gauges(telemetry).into_iter().enumerate() {
+        let mut card = card(gauge.label);
+        if index == 0 {
+            card = card.flex_none().w(px(184.0)).child(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap_3()
+                    .child(figure(gauge.value, gauge.colour))
+                    .child(sparkline(&telemetry.fps_history)),
+            );
+        } else {
+            card = card
+                .min_w(px(112.0))
+                .child(figure(gauge.value, gauge.colour));
+        }
+        strip = strip.child(card.child(detail(gauge.detail)));
+    }
+    strip
+}
+
+/// One-line label/value pills, detail in a tooltip.
+/// `wrap` lets the pills flow onto more rows; without it they stay on one line.
+pub fn gauge_pills(gauges: impl IntoIterator<Item = Gauge>, width: f32, wrap: bool) -> gpui::Div {
+    let mut row = div().flex().flex_none().gap(px(PILL_GAP));
+    if wrap {
+        row = row.flex_wrap().w_full();
+    }
+    for gauge in gauges {
+        let tooltip = format!(
+            "{}: {}
+{}",
+            gauge.label, gauge.value, gauge.detail
+        );
+        row = row.child(crate::lotus_window::with_tooltip(
+            div()
+                .id(gauge.label)
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
                 .flex_none()
-                .w(px(184.0))
+                .w(px(width))
+                .h(px(PILL_HEIGHT))
+                .px_2()
+                .rounded(px(5.0))
+                .border_1()
+                .border_color(theme::border())
+                .overflow_hidden()
                 .child(
                     div()
-                        .flex()
-                        .items_end()
-                        .gap_3()
-                        .child(figure(format_rate(telemetry.fps), theme::text()))
-                        .child(sparkline(&telemetry.fps_history)),
+                        .flex_none()
+                        .text_size(px(10.5))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme::text_muted())
+                        .child(gauge.label),
                 )
-                .child(detail("guest frames / host second")),
-        )
-        .child(
-            card("SPEED")
-                .child(figure(format_speed(telemetry), speed_colour))
-                .child(detail(format!("of {GUEST_REFRESH_HZ:.2} Hz"))),
-        )
-        .child(
-            card("FRAME")
-                .child(figure(telemetry.frames.to_string(), theme::text()))
-                .child(detail(format!("epoch {}", telemetry.epoch))),
-        )
-        .child(
-            card("AUDIO")
-                .child(figure(format_audio(telemetry.audio_rate), theme::text()))
-                .child(detail(format!(
-                    "{} dropped · muted",
-                    telemetry.audio_dropped
-                ))),
-        )
-        .child(
-            card("RENDERER")
-                .child(figure(
-                    if telemetry.renderer.is_empty() {
-                        "—".to_string()
-                    } else {
-                        telemetry.renderer.clone()
-                    },
-                    if telemetry.renderer_fallback.is_empty() {
-                        theme::text()
-                    } else {
-                        theme::warning()
-                    },
-                ))
-                .child(detail(if telemetry.renderer_fallback.is_empty() {
-                    telemetry.backend_name.clone()
-                } else {
-                    format!("fallback: {}", telemetry.renderer_fallback)
-                })),
-        )
-        .child(
-            card("WORKER")
-                .child(figure(
-                    telemetry
-                        .memory_bytes
-                        .map(format_bytes)
-                        .unwrap_or_else(|| "—".into()),
-                    theme::text(),
-                ))
-                .child(detail(
-                    telemetry
-                        .pid
-                        .map(|pid| format!("pid {pid} · up {}", format_uptime(telemetry.uptime_ms)))
-                        .unwrap_or_else(|| "not running".into()),
-                )),
-        )
-        .child(
-            card("CONTROL")
-                .child(figure(
-                    actor_name(telemetry.last_actor).into(),
-                    theme::text(),
-                ))
-                .child(detail(format!(
-                    "{} · input {}",
-                    if telemetry.last_operation.is_empty() {
-                        "—"
-                    } else {
-                        &telemetry.last_operation
-                    },
-                    if telemetry.input_owner.is_empty() {
-                        "—"
-                    } else {
-                        &telemetry.input_owner
-                    }
-                ))),
-        )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .font_family(theme::MONO)
+                        .text_sm()
+                        .text_color(gauge.colour)
+                        .child(gauge.value),
+                ),
+            tooltip,
+        ));
+    }
+    row
 }
 
 fn card(label: &'static str) -> gpui::Div {

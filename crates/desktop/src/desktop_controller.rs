@@ -16,6 +16,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::inspection::{Inspection, Panel};
+use crate::presence::{self, Presence};
 use lotus_mcp::server::{Frontend, LotusServer};
 use lotus_protocol::debug::DebugCommand;
 use lotus_session::native_session::{Frame, InputState};
@@ -116,6 +117,8 @@ pub struct DesktopController {
     /// Fetch registers while paused only when the inspector is open.
     pub inspector: Arc<AtomicBool>,
     pub inspection_selection: Arc<Mutex<(Panel, u32)>>,
+    /// Discord Rich Presence; configured from the window's preferences.
+    pub presence: Arc<Presence>,
     host: Arc<Supervisor>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -139,7 +142,9 @@ impl DesktopController {
         let inspector = Arc::new(AtomicBool::new(false));
         let inspection_selection = Arc::new(Mutex::new((Panel::Cpu, 0)));
         let shutdown = Arc::new(AtomicBool::new(false));
+        let presence = Arc::new(Presence::start());
         let context = Loops {
+            presence: presence.clone(),
             host: host.clone(),
             published: latest.clone(),
             input: input.clone(),
@@ -161,6 +166,7 @@ impl DesktopController {
             input,
             inspector,
             inspection_selection,
+            presence,
             host,
             shutdown,
             thread: Some(thread),
@@ -186,6 +192,7 @@ impl Drop for DesktopController {
 #[derive(Clone)]
 struct Loops {
     host: Arc<Supervisor>,
+    presence: Arc<Presence>,
     published: Arc<Mutex<Update>>,
     input: Arc<Mutex<BTreeMap<String, InputState>>>,
     inspector: Arc<AtomicBool>,
@@ -210,6 +217,8 @@ impl Loops {
         let mut inspection_key = None;
         let mut inspected_at = Instant::now();
         let mut catalog_at: Option<Instant> = None;
+        // Handle -> (canonical path, file name); resolved once per handle.
+        let mut content_names: BTreeMap<String, Option<(String, String)>> = BTreeMap::new();
         while !self.shutdown.load(Ordering::Acquire) {
             if !self.drain_commands(&receiver) {
                 break;
@@ -226,6 +235,17 @@ impl Loops {
                 catalog_at = Some(Instant::now());
             }
             let sessions = self.host.summaries();
+            self.presence
+                .publish(presence::live_content(&sessions, |handle| {
+                    content_names
+                        .entry(handle.to_string())
+                        .or_insert_with(|| {
+                            let path = self.host.asset_path(handle)?;
+                            let name = path.file_name()?.to_string_lossy().into_owned();
+                            Some((path.to_string_lossy().into_owned(), name))
+                        })
+                        .clone()
+                }));
             let selected = {
                 let mut update = lock(&self.published);
                 if !sessions.iter().any(|s| s.info.id == update.selected) {
