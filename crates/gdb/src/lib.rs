@@ -21,6 +21,22 @@ impl Server {
     pub async fn start(host: Arc<Supervisor>, session: String, port: u16) -> io::Result<Self> {
         host.require_control()?;
         host.summary(&session)?;
+        // Every connection starts with HIO forwarding, stepping and breakpoints, which only
+        // CITnLO implements. AZAHAR answers "operation requires CITnLO experimental backend";
+        // refuse here instead of accepting a connection that closes on its first packet.
+        if let Err(error) = host
+            .debug(
+                &session,
+                &D::HioForward { enabled: false },
+                lotus_session::telemetry::Actor::Host,
+            )
+            .await
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("GDB remote requires the CITnLO backend: {error}"),
+            ));
+        }
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
         let address = listener.local_addr()?;
         let task = tokio::spawn(async move {

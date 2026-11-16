@@ -52,7 +52,9 @@ for new in (False,True):
         commands = ["set pagination off","set confirm off",f"set remotelogfile {(root / 'rsp.log').as_posix()}","set debug remote 1",f"file {args.rom.with_suffix('.elf').resolve().as_posix()}",
             f"target remote {address}","break main","continue","info threads","info os processes",
             "monitor rewind on","stepi","p/x $pc","stepi","p/x $pc","reverse-stepi","p/x $pc","monitor rewind status",
-            "stepi","stepi","break lotus_tick_body",
+            "stepi","stepi",
+            "break thumb_tick","continue",'printf "thumb-cpsr=%x\\n", $cpsr & 0x20','printf "thumb-pc0=%x\\n", $pc',
+            "stepi",'printf "thumb-pc1=%x\\n", $pc',"delete breakpoints","break lotus_tick_body",
             "continue","bt","delete breakpoints","watch watched","continue","p/x watched","stepi",
             "delete breakpoints","set variable mode = 5","continue","p hio.result","detach"]
         script = root / "acceptance.gdb"
@@ -69,6 +71,10 @@ for new in (False,True):
         pcs = re.findall(r"^\$\d+ = (0x[0-9a-f]+)$", result.stdout, re.M)
         # stepi -> P1, stepi -> P2, reverse-stepi (GDB bs) must return to P1.
         assert len(pcs) >= 3 and pcs[0] != pcs[1] and pcs[2] == pcs[0], ("reverse-stepi", pcs)
+        # Thumb: execute breakpoint (Z0 kind 2) stops in Thumb state; stepi advances 2 or 4 bytes.
+        thumb = dict(re.findall(r"^(thumb-\w+)=([0-9a-f]+)$", result.stdout, re.M))
+        assert thumb.get("thumb-cpsr") == "20", ("Thumb state", thumb)
+        assert int(thumb["thumb-pc1"], 16) - int(thumb["thumb-pc0"], 16) in (2, 4), ("Thumb stepi", thumb)
         assert "Thread" in result.stdout, "info threads (qXfer:threads) listed nothing"
         # The same host's ELF/DWARF API resolves symbols and real source lines.
         def debug(command):

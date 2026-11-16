@@ -70,9 +70,16 @@ __attribute__((noinline)) static void output(const char* text, u32 length) {
     __asm__ volatile("svc 0x3d" : "+r"(r0), "+r"(r1) :: "r2", "r3", "memory");
 }
 
+volatile u32 thumb_counter;
+/* Thumb-state code for ARM/Thumb breakpoint and step checks (interworking via BLX). */
+__attribute__((noinline, target("thumb"))) void thumb_tick(void) {
+    thumb_counter = thumb_counter * 3 + 1;
+}
+
 __attribute__((noinline)) void tick(void) {
     __asm__ volatile(".global lotus_tick_body\nlotus_tick_body:" ::: "memory");
     watched = ++counter;
+    thumb_tick();
     if (mode == 1) {
         u32 value;
         __asm__ volatile("ldr %0, [%1]" : "=r"(value) : "r"(0) : "memory");

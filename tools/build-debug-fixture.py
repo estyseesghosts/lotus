@@ -31,6 +31,8 @@ command = [compiler, "-mcpu=mpcore", "-marm", "-mfloat-abi=soft", "-O1", "-g", "
 if args.fixture == "divergence":  # VFP probes; other fixtures keep their soft-float builds
     command[command.index("-mfloat-abi=soft")] = "-mfloat-abi=softfp"
     command.insert(1, "-mfpu=vfpv2")
+if args.gcc:  # devkitARM defaults to -mtp=cp15, which GCC rejects for 16-bit Thumb; fixtures use no TLS
+    command.insert(1, "-mtp=soft")
 if not args.gcc:
     command[1:1] = ["--target=armv6k-none-eabi", "-fuse-ld=lld"]
 subprocess.run(command, check=True)
