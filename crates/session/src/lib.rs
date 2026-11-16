@@ -235,3 +235,4 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
+pub mod controlled_worker;

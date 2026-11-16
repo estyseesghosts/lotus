@@ -47,6 +47,7 @@ tokio = { version = "1", features = [
     "net",
     "sync",
     "time",
+    "process",
 ] }
 rmcp = { version = "3", features = ["server", "macros", "schemars", "transport-io"] }
 schemars = "1.0"
@@ -62,3 +63,4 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 panic = "abort"
+

@@ -41,26 +41,20 @@ impl EnvelopeKind {
 pub struct SessionUuid(pub [u8; 16]);
 
 impl SessionUuid {
-    /// Generate a random session identifier.
+    /// Generate a process-unique session identifier.
     pub fn generate() -> Self {
-        // A random value is good enough for a per-run local identifier; it is
-        // never used as a security token.
-        let mut bytes = [0u8; 16];
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        // Clock granularity on Windows is too coarse for per-call entropy.
+        // The counter guarantees distinct identifiers within this process.
+        // This identifier is not an authentication secret.
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
+            .map(|duration| duration.as_nanos())
             .unwrap_or_default();
-        let pid = std::process::id() as u128;
-        let mut state = nanos ^ (pid << 64) ^ 0x9E37_79B9_7F4A_7C15;
-        for byte in bytes.iter_mut() {
-            // xorshift64*
-            state ^= state >> 12;
-            state ^= state << 25;
-            state ^= state >> 27;
-            let value = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
-            *byte = (value >> 32) as u8;
-        }
-        Self(bytes)
+        let prefix = (nanos as u64) ^ u64::from(std::process::id());
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        Self(((u128::from(prefix) << 64) | u128::from(counter)).to_le_bytes())
     }
 
     /// Raw bytes of the identifier.

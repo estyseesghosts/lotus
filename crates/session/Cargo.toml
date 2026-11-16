@@ -9,8 +9,15 @@ repository.workspace = true
 description = "Worker process lifecycle, isolation and session state for the Rust application."
 
 [dependencies]
+tokio = { workspace = true }
 lotus-protocol = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+
+[[bin]]
+name = "lotus-mock-worker"
+path = "src/mock_worker.rs"
+
+

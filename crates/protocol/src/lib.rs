@@ -79,3 +79,5 @@ mod tests {
         assert!(is_compatible(1, MIN_SUPPORTED_MINOR));
     }
 }
+
+pub mod control;

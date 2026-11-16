@@ -48,6 +48,7 @@ ctr-cli: Lotus command line interface
 
 Usage:
   ctr-cli version              Print the Lotus version and worker protocol version
+  ctr-cli mock <worker-executable> Query a mock worker over private pipes
   ctr-cli pins                 Print the pinned Azahar and GPUI revisions
   ctr-cli scenario validate <path>
                                 Validate a scenario file against the execution limits
@@ -65,6 +66,26 @@ fn main() -> Result<()> {
         "pins" => {
             let pins = load_pins()?;
             println!("{}", toml::to_string_pretty(&pins)?);
+        }
+        "mock" => {
+            let executable = args
+                .get(1)
+                .context("usage: ctr-cli mock <worker-executable>")?;
+            let root = std::env::temp_dir().join(format!(
+                "lotus-cli-{}",
+                lotus_protocol::envelope::SessionUuid::generate()
+            ));
+            let spec = lotus_session::WorkerSpec::new(executable, &root);
+            let runtime = tokio::runtime::Runtime::new()?;
+            runtime.block_on(async {
+                let mut worker = lotus_session::controlled_worker::ControlledWorker::spawn(
+                    &spec,
+                    std::time::Duration::from_secs(3),
+                )
+                .await?;
+                println!("{}", serde_json::to_string(&worker.status().await?)?);
+                worker.stop().await
+            })?;
         }
         "scenario" => {
             let sub = args.get(1).map(String::as_str).unwrap_or("help");
