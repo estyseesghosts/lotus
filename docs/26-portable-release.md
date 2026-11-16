@@ -8,6 +8,11 @@ location, retaining sessions under `data/<backend>/sessions`. No installer,
 registry changes or developer tools are required. Windows 11 x64 / Direct3D 11
 is the initial target. The binaries are unsigned.
 
+**Verified compiled**, Windows GNU: optimized Rust applications and both native
+runtimes. **Verified emulator**: native evidence in [25](25-wave-status.md).
+Local release-profile workspace tests and portable ZIP relocation/startup tests
+passed, including Windows PowerShell 5.1 launcher configuration for both backends.
+
 The packager reads AMD64 PE imports, copies non-system DLLs recursively, and
 rejects missing dependencies or MSYS runtime dependencies. Windows system/API-set
 DLLs stay supplied by Windows. All payload files have SHA-256 entries in

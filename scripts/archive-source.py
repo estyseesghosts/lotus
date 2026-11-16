@@ -2,6 +2,7 @@
 import argparse
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import tarfile
 import zipfile
@@ -15,6 +16,11 @@ def archive(destination, repository, revision, prefix):
             if member.isfile():
                 with source.extractfile(member) as content, destination.open(prefix + member.name, "w") as output:
                     shutil.copyfileobj(content, output)
+            elif member.issym():
+                entry = zipfile.ZipInfo(prefix + member.name)
+                entry.create_system = 3
+                entry.external_attr = (stat.S_IFLNK | 0o777) << 16
+                destination.writestr(entry, member.linkname.encode("utf-8"))
     if process.wait() != 0:
         raise RuntimeError(f"Source archive failed: {repository}")
     tree = subprocess.check_output(["git", "-C", str(repository), "ls-tree", "-r", "-z", revision])
