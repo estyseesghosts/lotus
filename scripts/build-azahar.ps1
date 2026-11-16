@@ -39,6 +39,10 @@ $flags = @('-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$Profile", "-DENABLE_CTR_WORKER=$w
     '-DENABLE_LIBUSB=OFF', '-DENABLE_SOFTWARE_RENDERER=ON', '-DENABLE_VULKAN=OFF',
     '-DENABLE_OPENGL=OFF', '-DENABLE_LTO=OFF', '-DCITRA_WARNINGS_AS_ERRORS=OFF')
 $target = if ($Branch -eq 'stock') { 'citra_core' } else { 'ctr-worker' }
+if ($Branch -ne 'stock') {
+    $backendName = if ($Branch -eq 'integration') { 'AZAHAR' } else { 'CITnLO' }
+    $flags += "-DCTR_BACKEND_NAME=$backendName"
+}
 if ($Oracle) {
     if ($Branch -ne 'stock') { throw 'The independent oracle must use stock source' }
     $inject = (Join-Path $root 'workers/oracle/inject.cmake').Replace('\', '/')

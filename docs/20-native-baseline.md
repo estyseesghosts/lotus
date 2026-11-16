@@ -50,6 +50,9 @@ These are emulator output bytes, not hardware witnesses. Stock uses upstream
 compatibility applets. Source-layout metadata: 240 columns by 400/320 rows,
 transposed by upstream into contiguous native display rows (400/320 by 240).
 
-Native commits and their immutable product pins are recorded only after their
-build/test gates pass. No experimental changes should be merged wholesale into
-integration. Do not upload guest assets or local run logs.
+Current shared native pin: `020136d270a5ed3ae67987644432028f979a2204`.
+Additional patches: T05 frontend `e089d9825`, T06 native frames `616b21889`,
+T07 input/muted audio `f7e593c8a`, T08 safe-point control `31a7c1188`,
+backend naming `020136d27`. All belong to integration; no accuracy changes exist.
+AZAHAR is compiled/tested; the independent CITnLO build is in progress.
+See [21](21-native-control.md) for interfaces, tests and limitations.
