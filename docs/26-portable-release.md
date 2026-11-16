@@ -62,3 +62,10 @@ pins — runtime manifests record integration `5a3c702f` and experimental
 `6361ddc3` — and `tests/test_portable.py` passed (relocation, hashes, DLL
 closure, launchers, CLI/MCP/native startup). Not published: a release needs a
 version bump past the existing v0.0.1 tag and the owner's go-ahead.
+
+v0.0.3 packaging (2026-11-16, local, **verified compiled** and package-tested):
+the same commands built `LOTUS-v0.0.3-windows-x64.zip` from runtime manifests
+recording integration `b4b9f0c2` and experimental `559f3f4d`, and
+`tests/test_portable.py` passed. The desktop executable carries one
+RT_MANIFEST, GPUI's ([35](35-release-notes.md)). The published release is
+rebuilt by CI from the `v0.0.3` tag, so its hashes differ from this local build.
