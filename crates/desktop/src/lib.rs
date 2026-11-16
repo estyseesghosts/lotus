@@ -96,4 +96,5 @@ mod tests {
         assert_eq!(LotusUiState::new().protocol_version, "1.0");
     }
 }
+pub mod desktop_controller;
 pub mod screen_geometry;
