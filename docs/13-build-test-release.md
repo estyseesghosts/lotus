@@ -11,6 +11,9 @@ No requirement to compile GPUI and Azahar into one binary. IPC compatibility is 
 
 ## Local development on Windows first
 
+> The commands below are the original plan. The working, verified commands are in
+> [27](27-build-and-run.md); `ctr-cli`/`ctr-worker` paths and flags there supersede these.
+
 Suggested prerequisites: Git, CMake, Ninja, C++ compiler/toolchain matching Azahar's supported build paths, Rust/Cargo, Python for small scripts where useful, Windows SDK/Vulkan tools for GPU backend. Use official Azahar build instructions for actual compiler versions; don't assume Microsoft/MSYS2/MXE settings from a past release remain valid. The source currently uses CMake >=3.25 and has platform-specific conditionals. On macOS/Linux, follow GPUI's platform prerequisites and Azahar's native build requirements separately.
 
 Suggested commands after implementation (not executable in untouched upstream):
