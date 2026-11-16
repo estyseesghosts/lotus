@@ -148,6 +148,8 @@ struct SessionHandle {
     playing: AtomicBool,
     lease: Mutex<Option<String>>,
     symbols: Mutex<Option<lotus_debugger::symbols::Symbols>>,
+    /// (epoch, frames) of the last preview served while paused; see [`Supervisor::preview`].
+    previewed: Mutex<Option<(u64, u64)>>,
 }
 
 impl SessionHandle {
@@ -425,6 +427,7 @@ impl Supervisor {
             playing: AtomicBool::new(false),
             lease: Mutex::new(None),
             symbols: Mutex::new(None),
+            previewed: Mutex::new(None),
         });
         reservation.commit(handle);
         Ok(info)
@@ -983,15 +986,37 @@ impl Supervisor {
         native.memory(address, length).await
     }
 
-    /// Latest screens for display, or `None` when the session is busy or blank.
+    /// Make the next [`Self::preview`] capture even if the paused session is unchanged
+    /// (a frontend that dropped its images, e.g. after switching sessions).
+    pub fn forget_preview(&self, id: &str) {
+        if let Ok(handle) = self.handle(id) {
+            *lock(&handle.previewed) = None;
+        }
+    }
+
+    /// Latest screens for display, or `None` when the session is busy, blank, or paused
+    /// with nothing new since the last preview.
     pub async fn preview(&self, id: &str) -> Option<Vec<Frame>> {
         let handle = self.handle(id).ok()?;
         let mut native = handle.native.try_lock().ok()?;
-        let has_frames = handle.telemetry().frames > 0;
-        if !matches!(native.state(), SessionState::Running | SessionState::Paused) || !has_frames {
+        let (frames, epoch) = {
+            let telemetry = handle.telemetry();
+            (telemetry.frames, native.epoch())
+        };
+        if !matches!(native.state(), SessionState::Running | SessionState::Paused) || frames == 0 {
             return None;
         }
-        native.capture().await.ok()
+        // A paused guest presents nothing new until it runs or its epoch changes (load,
+        // reset, state restore, replay). Re-capturing would rewrite both screen files, stall
+        // Vulkan on its readback and make the window rebuild identical images ~30 times/s.
+        let key = (epoch, frames);
+        let paused = native.state() == SessionState::Paused;
+        if paused && *lock(&handle.previewed) == Some(key) {
+            return None;
+        }
+        let captured = native.capture().await.ok()?;
+        *lock(&handle.previewed) = paused.then_some(key);
+        Some(captured)
     }
 
     pub async fn capture(&self, id: &str) -> io::Result<Vec<Artifact>> {

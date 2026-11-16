@@ -205,6 +205,7 @@ impl Loops {
         background.push(tokio::spawn(self.clone().input_loop()));
         let mut sequence = 0u64;
         let mut audio_selected = String::new();
+        let mut previewed_session = String::new();
         let mut registers_key = None;
         let mut inspection_key = None;
         let mut inspected_at = Instant::now();
@@ -243,6 +244,11 @@ impl Loops {
                     && self.host.focus_audio(&selected, true).await.is_ok()
                 {
                     audio_selected = selected.clone();
+                }
+                if previewed_session != selected {
+                    // The window drops its images on a session switch (lotus_window.rs).
+                    self.host.forget_preview(&selected);
+                    previewed_session = selected.clone();
                 }
                 if let Some(frames) = self.host.preview(&selected).await {
                     sequence += 1;
