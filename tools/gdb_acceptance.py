@@ -2,9 +2,9 @@
 import argparse
 import json
 from pathlib import Path
-import queue
+import re
+import socket
 import subprocess
-import threading
 
 parser = argparse.ArgumentParser(__doc__)
 parser.add_argument("gdb", type=Path)
@@ -13,6 +13,25 @@ parser.add_argument("worker", type=Path)
 parser.add_argument("rom", type=Path)
 parser.add_argument("output", type=Path)
 args = parser.parse_args()
+# ADR-008: Azahar's INADDR_ANY stub must not be linked into the worker.
+worker_bytes = args.worker.read_bytes()
+for marker in (b"command_buffer overflow in SendReply", b"Failed to set non-blocking gdb socket"):
+    assert marker not in worker_bytes, f"Azahar GDB stub marker {marker!r} present in worker"
+
+
+def exposed(port):
+    """Non-loopback host addresses that accept a TCP connection on the GDB port."""
+    addresses = {info[4][0] for info in socket.getaddrinfo(socket.gethostname(), None)
+                 if not info[4][0].startswith(("127.", "::1"))}
+    accepted = []
+    for address in sorted(addresses):
+        try:
+            with socket.create_connection((address.split("%")[0], int(port)), timeout=1):
+                accepted.append(address)
+        except OSError:
+            pass
+    return addresses, accepted
+
 for new in (False,True):
     root = args.output.resolve() / ("new" if new else "old")
     root.mkdir(parents=True,exist_ok=False)
@@ -27,8 +46,13 @@ for new in (False,True):
         line = host.stderr.readline()
         assert line.startswith("GDB listening on "),line
         address = line.strip().split()[-1]
+        port = address.rsplit(":", 1)[1]
+        checked, accepted = exposed(port)
+        assert checked and not accepted, ("GDB port reachable off loopback", accepted)
         commands = ["set pagination off","set confirm off",f"set remotelogfile {(root / 'rsp.log').as_posix()}","set debug remote 1",f"file {args.rom.with_suffix('.elf').resolve().as_posix()}",
-            f"target remote {address}","break main","continue","stepi","stepi","break lotus_tick_body",
+            f"target remote {address}","break main","continue","info threads","info os processes",
+            "monitor rewind on","stepi","p/x $pc","stepi","p/x $pc","reverse-stepi","p/x $pc","monitor rewind status",
+            "stepi","stepi","break lotus_tick_body",
             "continue","bt","delete breakpoints","watch watched","continue","p/x watched","stepi",
             "delete breakpoints","set variable mode = 5","continue","p hio.result","detach"]
         script = root / "acceptance.gdb"
@@ -42,6 +66,10 @@ for new in (False,True):
         assert "failure reply" not in result.stderr,(result.stdout,result.stderr)
         assert "Hardware watchpoint" in result.stdout
         assert "#1" in result.stdout and "main" in result.stdout
+        pcs = re.findall(r"^\$\d+ = (0x[0-9a-f]+)$", result.stdout, re.M)
+        # stepi -> P1, stepi -> P2, reverse-stepi (GDB bs) must return to P1.
+        assert len(pcs) >= 3 and pcs[0] != pcs[1] and pcs[2] == pcs[0], ("reverse-stepi", pcs)
+        assert "Thread" in result.stdout, "info threads (qXfer:threads) listed nothing"
         # The same host's ELF/DWARF API resolves symbols and real source lines.
         def debug(command):
             host.stdin.write(json.dumps(command)+"\n");host.stdin.flush()
