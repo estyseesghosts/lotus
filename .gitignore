@@ -4,6 +4,7 @@
 *.pdb
 *.ilk
 *.dSYM/
+__pycache__/
 
 # CMake / native builds (worker + vendored sources)
 build/

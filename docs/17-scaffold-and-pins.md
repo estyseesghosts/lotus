@@ -69,3 +69,7 @@ primary source paths: [18](18-control-pipes.md), [21](21-native-control.md),
 [22](22-scenario-runner.md), [23](23-local-mcp.md), [24](24-desktop.md).
 The original FFI structs remain scaffold types; the implemented IPC is bounded
 JSON control plus file-ring BGRA frames. Neither implies hardware accuracy.
+
+Portable Windows packages and tagged GitHub releases:
+[26](26-portable-release.md). Optimized GPUI builds additionally require the
+pinned Microsoft FXC shader compiler; the portable runtime does not.
