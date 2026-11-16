@@ -15,7 +15,10 @@
 [CmdletBinding()]
 param()
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 Import-Module (Join-Path $PSScriptRoot 'Pins.psm1') -Force
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -57,12 +60,17 @@ if (Test-Path -LiteralPath (Join-Path $azaharRoot '.git')) {
 }
 
 # 2. Submodule pointer in the index.
-$pointer = (& git -C $root ls-tree HEAD $pins['azahar']['vendor_path'])
-if ($pointer -match '^160000 commit ([0-9a-f]{40})') {
-    Test-Pin -Name 'azahar submodule pointer' -Ok ($Matches[1] -eq $expectedAzahar) `
-        -Detail ("index records {0}" -f $Matches[1])
+$hasHead = $null -ne (& git -C $root rev-parse --verify HEAD 2>$null)
+if ($hasHead) {
+    $pointer = (& git -C $root ls-tree HEAD $pins['azahar']['vendor_path'])
+    if ($pointer -match '^160000 commit ([0-9a-f]{40})') {
+        Test-Pin -Name 'azahar submodule pointer' -Ok ($Matches[1] -eq $expectedAzahar) `
+            -Detail ("index records {0}" -f $Matches[1])
+    } else {
+        Test-Pin -Name 'azahar submodule pointer' -Ok $false -Detail 'no submodule pointer in the index'
+    }
 } else {
-    Test-Pin -Name 'azahar submodule pointer' -Ok $false -Detail 'no submodule pointer in the index'
+    Test-Pin -Name 'azahar submodule pointer' -Ok $false -Detail 'the repository has no commit yet'
 }
 
 # 3. GPUI revision in Cargo.lock.
