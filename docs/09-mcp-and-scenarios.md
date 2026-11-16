@@ -1,0 +1,85 @@
+# 09 — MCP, programmatic debugging and scenario runner
+
+## Architecture
+
+MCP is an **adapter to the Rust session supervisor**, not a second debugger implementation. Use the Rust MCP SDK (`rmcp`, pin version and check actual API). The same typed operations must be available through: GPUI actions, `ctr-cli`, test scripts and MCP. MCP tools return bounded structured records plus artifact handles; raw multi-megabyte traces/screenshots are resources/files, never giant tool response bodies.
+
+## MCP tool taxonomy
+
+| Group | Suggested tools | Design constraints |
+|---|---|---|
+| Session | `session_create`, `session_load`, `session_status`, `session_stop`, `session_list` | explicit instance IDs; no accidental 'current' global |
+| Control | `run_until`, `pause`, `reset`, `step_instruction`, `step_frame` | guest and wall timeout, stop reason |
+| CPU | `cpu_state`, `disassemble`, `breakpoint_set`, `breakpoint_remove` | core/thread/process selectors |
+| Memory | `memory_map`, `memory_read`, `memory_write`, `memory_compare` | byte caps, explicit address space, write permission |
+| Kernel | `thread_list`, `ipc_trace`, `handle_lookup` | bounded lists, parsed + raw fallbacks |
+| GPU | `gpu_capture_frame`, `gpu_capture_draw`, `gpu_registers`, `texture_export` | state-at-draw, resource hashes, renderer sync |
+| Trace | `trace_configure`, `trace_start`, `trace_stop`, `artifact_list`, `artifact_open` | budgets, loss reporting, artifacts |
+| Tests | `scenario_run`, `scenario_cancel`, `scenario_result`, `comparison_run` | background jobs owned by supervisor, not open loops in tool call |
+
+Prefer fewer higher-value tools and a composable `scenario_run` over thousands of single-frame requests. Do not expose arbitrary `execute_shell`, arbitrary OS memory reads or unrestricted host filesystem access through MCP.
+
+## Resources and metadata
+
+Resources can expose versioned immutable artifacts: screenshots, GPU command lists, memory dumps, trace summaries, reports. Use URI-like handles such as `ctr://session/<id>/artifact/<artifact-id>` if supported by the MCP SDK; access control must be validated on every resource read. Resource description includes content type, size, hash, epoch, lifetime and provenance. `artifact_open` should allow bounded ranges / paging for large traces.
+
+## Example successful agent workflow
+
+**Question:** Why does a title-screen animation get choppy in the original 3DS-targeting program?
+
+1. Agent creates two sessions: baseline build and candidate build, each with private storage and identical emulator model/options.
+2. Runs a deterministic input script to a title-screen checkpoint, explicitly disables live input.
+3. Captures frame pacing, guest CPU samples, draw/transfer counts, rasterizer-cache events and host profiler metrics; selects 3 anomalous frames for L2 snapshots.
+4. Compares draw counts/command order and CPU SVC/thread waits. It may identify CPU-higher work or host-emulation stalls but **must not infer actual Old 3DS GPU milliseconds from host renderer timing**.
+5. If hardware performance prediction matters, requests the corresponding Coffeepot/physical-console benchmark or marks this question unresolved.
+6. Exports a small Markdown finding, commands/scripts, capture manifest, diff report and confidence labels.
+
+## Scenarios: deterministic, bounded and repeatable
+
+A scenario is declarative data with a **start state**, **input ownership**, **actions/checkpoints**, **stop condition**, **capture policy**, and **assertions**. See `specs/scenario-example.yaml`.
+
+Requirements:
+- Every scenario must have a terminal condition and host timeout; `run forever` is invalid for automation.
+- `seed`, virtual-clock policy, initial save/NAND snapshot, game hash, model, graphics backend, worker SHA and build flags are recorded.
+- Inputs are sampled at explicit guest boundaries or frame IDs. If replay requires exact instruction tick timing, only claim it when supported; frame-anchored input is a weaker level.
+- Detect desync at checkpoints using targeted stable state (PC/thread, memory ranges, framebuffer hash, GPU state). Hashes must exclude volatile fields unless relevant.
+- For gameplay checks, show script coverage and which branch actually executed; a passing fixture for an unused fast path isn't evidence that optimization helped the game.
+- Assertions can be `equal`, `within_tolerance`, `monotonic`, `event_seen`, `no_event`, `frame_count`, `resource_limit`, `stop_reason`, etc., with explicit confidence of signal.
+
+## Agent ergonomics
+
+A single `run_until` can return:
+
+```json
+{
+  "session_id":"<uuid>", "epoch":4, "stop_reason":"breakpoint",
+  "guest_tick":123456789, "process_id":12, "thread_id":7,
+  "artifacts":["ctr://session/.../trace/..."]
+}
+```
+
+Never silently fall back from `step_cpu_instruction` to `step_frame`. Return `UNSUPPORTED` with `available_alternatives` when semantics cannot be met. Make tool schemas self-describing and prefer typed enums over stringly typed free-form commands.
+
+## Concurrency
+
+- One **lease owner** for state-mutating control of a session at any time (UI or agent). Other clients may read immutable snapshots. Lease has timeout and revocation on disconnect.
+- Queue operations with priorities and explicit budgeting; `stop`/cancel remains available even when trace export is active.
+- A scenario runner owns its input channel; manual keyboard changes are suspended or require explicit takeover with scenario failure marker.
+- An agent should be able to spawn multiple sessions but supervisor enforces total CPU, RAM, GPU, disk and concurrent-run quotas.
+
+## Failure modes
+
+- Agent asks for memory past mapped range -> partial read with typed holes or explicit error.
+- Agent uses stale epoch -> `STALE_EPOCH`, not accidental reads from another program.
+- GPU readback not supported -> `UNSUPPORTED`, no made-up capture.
+- Scenario times out -> partial artifact pack with `INCOMPLETE` and last stable checkpoint, not green result.
+- Worker crashes -> supervisor preserves per-run metadata and stdout/stderr while invalidating shared-memory handles.
+- Tool uses nonsensical clock time -> error with valid time domains.
+
+## Security
+
+Local MCP stdio is a good initial transport. Refuse broad remote-listen defaults. Require per-session grants for writes, launch, attaching to user-provided firmware and reading captures. Validate every path under a managed run root and never let model-generated commands pass directly to shell execution. Allow explicit user approval for destructive file/restore operations.
+
+## API versioning and tests
+
+Include tool compatibility matrix (`MCP tool version -> protocol -> worker capability`). Generate tool schemas from shared Rust types. Contract tests must run the *same* command through CLI and MCP and compare normalized result. Add fuzz tests for invalid addresses, malformed tool payloads, huge lists and expired artifact handles.

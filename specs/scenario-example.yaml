@@ -1,0 +1,41 @@
+# Proposed format: illustrative and NOT executable until a runner implements it.
+version: 1
+name: gpu-command-capture-smoke
+content:
+  kind: homebrew_3dsx
+  path_handle: fixtures/basic-draw.3dsx
+  sha256: "<fill-from-built-fixture>"
+profile:
+  model: old3ds
+  renderer: software
+  worker_flavor: integration
+  deterministic_initial_ticks: 12345
+  audio_output: discard  # DSP still runs
+storage:
+  mode: isolated_copy
+  base_snapshot: empty-homebrew
+input:
+  owner: scenario
+  schedule:
+    - at_frame: 30
+      button: A
+      action: down
+    - at_frame: 32
+      button: A
+      action: up
+stop:
+  max_frames: 120
+  wall_timeout_seconds: 45
+captures:
+  - when: { frame: 80 }
+    include: [top_raw_frame, bottom_raw_frame, gpu_command_list, cpu_registers]
+    max_bytes: 16777216
+assertions:
+  - type: event_seen
+    event: gpu.submit_cmdlist
+    count_at_least: 1
+  - type: no_worker_crash
+  - type: frame_count
+    minimum: 120
+outputs:
+  retain: [manifest, event_log, image_hashes, screenshots]
