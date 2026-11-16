@@ -8,6 +8,9 @@ param(
     [string]$AzaharRoot,
     [string]$BuildDirectory,
     [switch]$Oracle,
+    # Link-time optimization (CMake IPO, src/CMakeLists.txt). Off by default until the
+    # A/B in docs/34 justifies it; the flag is recorded in the build manifest.
+    [switch]$Lto,
     [int]$Parallel = 4
 )
 $ErrorActionPreference = 'Stop'
@@ -38,7 +41,7 @@ $flags = @('-G', 'Ninja', "-DCMAKE_BUILD_TYPE=$Profile", "-DENABLE_CTR_WORKER=$w
     '-DENABLE_WEB_SERVICE=OFF', '-DENABLE_SCRIPTING=OFF', '-DENABLE_ROOM=OFF',
     '-DENABLE_ROOM_STANDALONE=OFF', '-DENABLE_OPENAL=OFF', '-DENABLE_CUBEB=ON',
     '-DENABLE_LIBUSB=OFF', '-DENABLE_SOFTWARE_RENDERER=ON', '-DENABLE_VULKAN=ON',
-    '-DENABLE_OPENGL=OFF', '-DENABLE_GDBSTUB=OFF', '-DENABLE_LTO=OFF', '-DCITRA_WARNINGS_AS_ERRORS=OFF')
+    '-DENABLE_OPENGL=OFF', '-DENABLE_GDBSTUB=OFF', "-DENABLE_LTO=$(if ($Lto) { 'ON' } else { 'OFF' })", '-DCITRA_WARNINGS_AS_ERRORS=OFF')
 if ($Branch -eq 'stock') {
     $flags = $flags | Where-Object { $_ -notmatch '^-DENABLE_(CUBEB|VULKAN|GDBSTUB)=' }
     $flags += @('-DENABLE_CUBEB=OFF', '-DENABLE_VULKAN=OFF')
