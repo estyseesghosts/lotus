@@ -65,6 +65,31 @@ pub struct Profile {
     /// Audio output mode; `discard` still runs the DSP.
     #[serde(default = "default_audio_output")]
     pub audio_output: String,
+    /// Determinism profile: synchronous async operations and filesystem
+    /// (`deterministic_async_operations` on, `async_fs_operations` off) on top
+    /// of the worker's fixed initial clock and ticks.
+    #[serde(default)]
+    pub determinism: bool,
+}
+
+/// Movie recorded or replayed by a scenario (CITnLO workers only).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Movie {
+    /// `record` or `play`.
+    pub mode: String,
+    /// Movie name: 1..32 letters, digits, `_` or `-`.
+    pub name: String,
+    /// For `play`: recorded `.ctm` relative to the scenario file; its metadata
+    /// `.json` must sit next to it.
+    #[serde(default)]
+    pub path_handle: Option<String>,
+    /// For `play`: refuse any input that is not from the movie.
+    #[serde(default = "default_read_only")]
+    pub read_only: bool,
+}
+
+fn default_read_only() -> bool {
+    true
 }
 
 fn default_audio_output() -> String {
@@ -178,6 +203,9 @@ pub struct Scenario {
     pub input: Input,
     /// Stop condition.
     pub stop: Stop,
+    /// Movie recording or playback.
+    #[serde(default)]
+    pub movie: Option<Movie>,
     /// Captures.
     #[serde(default)]
     pub captures: Vec<Capture>,

@@ -34,6 +34,10 @@ pub struct RunReport {
     pub final_status: Value,
     pub host_elapsed_ms: u128,
     pub evidence: String,
+    /// Movie status at the end of the run; a recording's `.ctm`/`.json` pair
+    /// is retained next to the report.
+    #[serde(default)]
+    pub movie: Option<Value>,
 }
 
 /// SHA-256 without loading an entire executable/content asset into memory.
@@ -61,7 +65,7 @@ pub fn validate_execution(scenario: &Scenario) -> io::Result<()> {
         .validate()
         .map_err(|error| invalid(error.to_string()))?;
     if scenario.content.kind != "homebrew_3dsx"
-        || scenario.profile.model != "old3ds"
+        || !matches!(scenario.profile.model.as_str(), "old3ds" | "new3ds")
         || scenario.profile.renderer != "software"
         || scenario.profile.audio_output != "discard"
         || scenario.profile.deterministic_initial_ticks.unwrap_or(0) != 0
@@ -69,7 +73,29 @@ pub fn validate_execution(scenario: &Scenario) -> io::Result<()> {
         || scenario.storage.base_snapshot.is_some()
         || scenario.input.owner != "scenario"
     {
-        return Err(invalid("executor requires homebrew_3dsx, old3ds/software, discard, ticks 0, empty isolated_copy, scenario input"));
+        return Err(invalid("executor requires homebrew_3dsx, old3ds|new3ds/software, discard, ticks 0, empty isolated_copy, scenario input"));
+    }
+    if let Some(movie) = &scenario.movie {
+        let named = !movie.name.is_empty()
+            && movie.name.len() <= 32
+            && movie
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-');
+        if !named || scenario.profile.worker_flavor != crate::WorkerFlavor::Experimental {
+            return Err(invalid(
+                "movies need a valid name and the experimental worker",
+            ));
+        }
+        match movie.mode.as_str() {
+            "record" if movie.path_handle.is_none() => {}
+            "play" if movie.path_handle.is_some() && scenario.input.schedule.is_empty() => {}
+            _ => {
+                return Err(invalid(
+                    "movie mode is record, or play with a path_handle and no scenario input",
+                ))
+            }
+        }
     }
     if scenario.input.schedule.len() > 4096 || scenario.captures.len() > 64 {
         return Err(invalid("scenario event/capture count limit"));
@@ -161,6 +187,94 @@ fn apply_input(state: &mut InputState, event: &InputEvent) {
     }
 }
 
+/// Applies the model/determinism profile and stages the movie before loading.
+async fn prepare(
+    session: &mut NativeSession,
+    scenario: &Scenario,
+    directory: &Path,
+) -> io::Result<()> {
+    use lotus_protocol::debug::{DebugCommand, SettingValue};
+    let mut settings = vec![(
+        "is_new_3ds",
+        SettingValue::Boolean(scenario.profile.model == "new3ds"),
+    )];
+    if scenario.profile.determinism {
+        settings.push((
+            "deterministic_async_operations",
+            SettingValue::Boolean(true),
+        ));
+        settings.push(("async_fs_operations", SettingValue::Boolean(false)));
+    }
+    for (name, value) in settings {
+        session
+            .debug(&DebugCommand::SettingsSet {
+                name: name.into(),
+                value,
+            })
+            .await?;
+    }
+    let Some(movie) = &scenario.movie else {
+        return Ok(());
+    };
+    if movie.mode == "record" {
+        session
+            .debug(&DebugCommand::MovieRecord {
+                name: movie.name.clone(),
+            })
+            .await?;
+        return Ok(());
+    }
+    let source = directory
+        .join(movie.path_handle.as_deref().expect("validated play path"))
+        .canonicalize()?;
+    if fs::metadata(&source)?.len() > (32 << 20) + 4096 {
+        return Err(invalid("movie exceeds 32 MiB budget"));
+    }
+    let movies = session.root().join("movies");
+    fs::create_dir_all(&movies)?;
+    fs::copy(&source, movies.join(format!("{}.ctm", movie.name)))?;
+    fs::copy(
+        source.with_extension("json"),
+        movies.join(format!("{}.json", movie.name)),
+    )?;
+    session
+        .debug(&DebugCommand::MoviePlay {
+            name: movie.name.clone(),
+            read_only: movie.read_only,
+        })
+        .await?;
+    Ok(())
+}
+
+/// Stops the movie; a recording is kept next to the report for later playback.
+async fn finish_movie(
+    session: &mut NativeSession,
+    movie: &crate::Movie,
+    output: &Path,
+) -> io::Result<Value> {
+    use lotus_protocol::debug::DebugCommand;
+    let status = session.debug(&DebugCommand::MovieStatus).await?;
+    let stopped = session.debug(&DebugCommand::MovieStop).await?;
+    if movie.mode == "play" && status["input_index"].as_u64() != status["total_inputs"].as_u64() {
+        return Err(io::Error::other(
+            "movie playback did not consume every recorded input",
+        ));
+    }
+    if movie.mode == "record" {
+        let movies = session.root().join("movies");
+        for extension in ["ctm", "json"] {
+            let name = format!("{}.{extension}", movie.name);
+            fs::copy(movies.join(&name), output.join(&name))?;
+        }
+    }
+    Ok(serde_json::json!({
+        "mode": movie.mode,
+        "name": movie.name,
+        "status": status,
+        "stopped": stopped,
+    }))
+}
+
 /// One fresh root, one worker, one bounded run. Always attempt stop; Drop kills on failure.
 pub async fn run(
     scenario: &Scenario,
@@ -187,11 +301,18 @@ pub async fn run(
     fs::create_dir(output)?;
     let started = Instant::now();
     let mut session = NativeSession::spawn(executable, &output.join("worker")).await?;
+    let playing = scenario
+        .movie
+        .as_ref()
+        .is_some_and(|movie| movie.mode == "play");
     let result = tokio::time::timeout(
         Duration::from_secs(scenario.stop.wall_timeout_seconds),
         async {
+            prepare(&mut session, scenario, scenario_directory).await?;
             session.load(&content).await?;
-            session.input(InputState::default(), "scenario").await?;
+            if !playing {
+                session.input(InputState::default(), "scenario").await?;
+            }
             let mut schedule: BTreeMap<u64, Vec<InputEvent>> = BTreeMap::new();
             for event in &scenario.input.schedule {
                 schedule
@@ -266,6 +387,10 @@ pub async fn run(
                     return Err(io::Error::other("frame count assertion failed"));
                 }
             }
+            let movie = match &scenario.movie {
+                Some(movie) => Some(finish_movie(&mut session, movie, output).await?),
+                None => None,
+            };
             let status = session.status().await?;
             Ok(RunReport {
                 name: scenario.name.clone(),
@@ -278,6 +403,7 @@ pub async fn run(
                 final_status: status,
                 host_elapsed_ms: started.elapsed().as_millis(),
                 evidence: "verified emulator; no hardware claim".into(),
+                movie,
             })
         },
     )
