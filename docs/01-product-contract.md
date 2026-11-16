@@ -66,6 +66,10 @@ Ship independent evidence scores. A visually correct draw is not proof of precis
 - ADR-005: Observability at explicit safe points, configurable tracing and artifact-based comparisons.
 - ADR-006: Original 3DS first; New 3DS support is explicitly labeled.
 - ADR-007: Native custom worker, **not Libretro**.
+- ADR-008: GDB remote protocol server written in Rust over the Lotus debug API; Azahar's stub unused ([29](29-wave-3-plan.md)).
+- ADR-009: Offscreen Vulkan worker from the start of Wave 3; software renderer kept as fallback and oracle ([29](29-wave-3-plan.md)).
+- ADR-010: Settings schema and transport in `integration`; stock defaults unchanged ([29](29-wave-3-plan.md)).
+- ADR-011: Audio (output, capture, HLE/LLE DSP, mic) in Wave 3 ([29](29-wave-3-plan.md)).
 
 ## Outward-facing differentiation
 

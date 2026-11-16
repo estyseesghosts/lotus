@@ -8,7 +8,15 @@
 
 ## Attribution
 
-Agents never insert their own branding as a commit attribution or co-attribution. All commits are authored solely by the git identity already set on the authors computer. For example, the project owner's git identity should always be `terezi <jules@foxtails.me>`. 
+Agents never insert their own branding as a commit attribution or co-attribution. All commits are authored solely by the git identity already set on the authors computer. For example, the project owner's git identity should always be `terezi <jules@foxtails.me>`.
+
+## Documentation 
+
+Agents should keep documentation and comments as brief as possible. This does not mean spare on technical details. Explain what it is, what it's doing, how it works, what it isn't, and the relevant necessary information. 
+
+Agents must keep documentation consistent.
+
+Agents must always be able to refer back to primary sources (such as 3DBrew, the citra wiki, source code citations from azahar) to justify changes or decisions. Agents are encouraged to use secondary sources, such as Coffeepot, for easy lookup of information - coffeepot, however, should not be your citation. 
 
 ## Branch discipline
 
