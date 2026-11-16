@@ -47,7 +47,10 @@ pub enum SessionState {
 impl SessionState {
     /// Whether the session can still issue emulation commands.
     pub fn is_active(&self) -> bool {
-        matches!(self, SessionState::Idle | SessionState::Running | SessionState::Paused)
+        matches!(
+            self,
+            SessionState::Idle | SessionState::Running | SessionState::Paused
+        )
     }
 }
 
@@ -189,7 +192,8 @@ mod tests {
     use super::*;
 
     fn temp_root(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("lotus-session-test-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("lotus-session-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
     }

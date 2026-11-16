@@ -128,7 +128,9 @@ pub enum DebugError {
 impl MemoryReadRequest {
     /// Validate the request against the worker's advertised limits.
     pub fn validate(&self, caps: &Capabilities) -> Result<(), DebugError> {
-        let max = caps.max_memory_read_bytes.min(DEFAULT_MAX_MEMORY_READ_BYTES);
+        let max = caps
+            .max_memory_read_bytes
+            .min(DEFAULT_MAX_MEMORY_READ_BYTES);
         if self.length as u64 > max {
             return Err(DebugError::ReadTooLarge {
                 length: self.length,

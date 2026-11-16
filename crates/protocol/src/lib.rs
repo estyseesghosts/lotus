@@ -23,6 +23,15 @@ pub const PROTOCOL_VERSION_MINOR: u16 = 0;
 /// migration note.
 pub const MIN_SUPPORTED_MINOR: u16 = 0;
 
+/// The minimum peer version, packed the same way as [`peer_version`].
+const MIN_SUPPORTED_VERSION: u32 =
+    ((PROTOCOL_VERSION_MAJOR as u32) << 16) | (MIN_SUPPORTED_MINOR as u32);
+
+/// Pack a major and minor version into a single comparable number.
+const fn peer_version(major: u16, minor: u16) -> u32 {
+    ((major as u32) << 16) | (minor as u32)
+}
+
 /// Human readable protocol identifier, e.g. `"1.0"`.
 pub fn protocol_id() -> String {
     format!("{PROTOCOL_VERSION_MAJOR}.{PROTOCOL_VERSION_MINOR}")
@@ -36,7 +45,8 @@ pub fn protocol_id() -> String {
 /// any field that the peer may be missing, which is what
 /// [`MIN_SUPPORTED_MINOR`] expresses.
 pub fn is_compatible(peer_major: u16, peer_minor: u16) -> bool {
-    peer_major == PROTOCOL_VERSION_MAJOR && peer_minor >= MIN_SUPPORTED_MINOR
+    peer_major == PROTOCOL_VERSION_MAJOR
+        && peer_version(peer_major, peer_minor) >= MIN_SUPPORTED_VERSION
 }
 
 #[cfg(test)]

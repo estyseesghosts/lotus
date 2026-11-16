@@ -129,7 +129,13 @@ pub fn compare(left: &Framebuffer, right: &Framebuffer) -> Result<FrameDiff, Dif
     let mut max_abs_delta = 0u8;
     let mut per_channel_sum = [0u64; CHANNELS];
 
-    for (l, r) in left.pixels.chunks_exact(CHANNELS).zip(right.pixels.chunks_exact(CHANNELS)) {
+    for (l, r) in left
+        .pixels
+        .as_chunks::<CHANNELS>()
+        .0
+        .iter()
+        .zip(right.pixels.as_chunks::<CHANNELS>().0.iter())
+    {
         let mut pixel_differs = false;
         for channel in 0..CHANNELS {
             let delta = l[channel].abs_diff(r[channel]);

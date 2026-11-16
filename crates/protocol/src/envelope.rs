@@ -29,7 +29,9 @@ impl EnvelopeKind {
             1 => Ok(Self::Request),
             2 => Ok(Self::Reply),
             3 => Ok(Self::Event),
-            other => Err(ProtocolError::Malformed(format!("unknown envelope kind {other}"))),
+            other => Err(ProtocolError::Malformed(format!(
+                "unknown envelope kind {other}"
+            ))),
         }
     }
 }
@@ -141,7 +143,13 @@ mod tests {
 
     #[test]
     fn payload_limit_is_enforced() {
-        let header = EnvelopeHeader::new(1, SessionUuid::generate(), 0, EnvelopeKind::Request, MAX_PAYLOAD_LEN + 1);
+        let header = EnvelopeHeader::new(
+            1,
+            SessionUuid::generate(),
+            0,
+            EnvelopeKind::Request,
+            MAX_PAYLOAD_LEN + 1,
+        );
         assert!(matches!(
             header.check_payload_len(),
             Err(ProtocolError::PayloadTooLarge { .. })
@@ -150,7 +158,11 @@ mod tests {
 
     #[test]
     fn envelope_kind_round_trips() {
-        for kind in [EnvelopeKind::Request, EnvelopeKind::Reply, EnvelopeKind::Event] {
+        for kind in [
+            EnvelopeKind::Request,
+            EnvelopeKind::Reply,
+            EnvelopeKind::Event,
+        ] {
             assert_eq!(EnvelopeKind::from_wire(kind as u8).unwrap(), kind);
         }
         assert!(EnvelopeKind::from_wire(9).is_err());

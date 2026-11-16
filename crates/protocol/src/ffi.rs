@@ -95,7 +95,11 @@ impl WorkerHello {
     pub const ABI_VERSION: u32 = 1;
 
     /// Build a handshake payload for a worker at `commit_sha256`.
-    pub fn new(commit_sha256: [u8; SHA256_LEN], max_memory_read_bytes: u64, max_trace_bytes: u64) -> Self {
+    pub fn new(
+        commit_sha256: [u8; SHA256_LEN],
+        max_memory_read_bytes: u64,
+        max_trace_bytes: u64,
+    ) -> Self {
         Self {
             struct_size: std::mem::size_of::<WorkerHello>() as u32,
             abi_version: Self::ABI_VERSION,

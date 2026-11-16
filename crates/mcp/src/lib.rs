@@ -55,7 +55,10 @@ impl LotusServer {
 
     /// Number of sessions currently known to the supervisor.
     pub fn session_count(&self) -> usize {
-        self.sessions.lock().map(|manager| manager.len()).unwrap_or(0)
+        self.sessions
+            .lock()
+            .map(|manager| manager.len())
+            .unwrap_or(0)
     }
 }
 
@@ -68,7 +71,9 @@ impl Default for LotusServer {
 #[tool_router(router = tool_router)]
 impl LotusServer {
     /// Report the state of the Lotus server.
-    #[tool(description = "Report the Lotus server status: worker protocol version, session count and event categories.")]
+    #[tool(
+        description = "Report the Lotus server status: worker protocol version, session count and event categories."
+    )]
     pub async fn lotus_status(&self) -> String {
         let status = serde_json::json!({
             "protocol_version": lotus_protocol::protocol_id(),
@@ -83,14 +88,20 @@ impl LotusServer {
     #[tool(description = "List the emulator sessions currently known to the Lotus supervisor.")]
     pub async fn lotus_list_sessions(&self) -> String {
         let ids = match self.sessions.lock() {
-            Ok(manager) => manager.ids().iter().map(|id| id.to_string()).collect::<Vec<_>>(),
+            Ok(manager) => manager
+                .ids()
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>(),
             Err(_) => Vec::new(),
         };
         serde_json::json!({ "sessions": ids }).to_string()
     }
 
     /// Validate a scenario file.
-    #[tool(description = "Load a scenario file and report whether it satisfies the project's execution limits.")]
+    #[tool(
+        description = "Load a scenario file and report whether it satisfies the project's execution limits."
+    )]
     pub async fn lotus_validate_scenario(
         &self,
         Parameters(args): Parameters<ValidateScenarioArgs>,
@@ -107,9 +118,9 @@ impl LotusServer {
                     })
                     .to_string(),
                 )])),
-                Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(
-                    format!("scenario is invalid: {error}"),
-                )])),
+                Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                    "scenario is invalid: {error}"
+                ))])),
             },
             Err(error) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "cannot load scenario: {error}"

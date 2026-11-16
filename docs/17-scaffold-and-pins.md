@@ -65,10 +65,12 @@ lotus/
 | --- | --- |
 | `cargo build --workspace` | **verified compiled** |
 | `cargo test --workspace` (51 tests) | **verified compiled** |
+| `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets` | **verified clean** |
 | `ctr-cli version`, `ctr-cli pins`, `ctr-cli scenario validate` | **verified compiled** |
 | Vendored Azahar checkout with all of its submodules | **verified compiled** (source present, not built) |
-| GPUI window shell opening on the host | **proposed** (compiles; not yet run on this host) |
-| Native worker | **proposed**: the entry point is a protocol stub, no Azahar core is linked |
+| GPUI desktop shell | **verified compiled** and **launched**: the process starts, opens a window and stays running; the window contents were not inspected |
+| MCP server | **verified compiled**: `initialize`, `tools/list` and `tools/call` answered over stdio |
+| Native worker | **verified compiled**: the entry point is a protocol stub, no Azahar core is linked |
 | Azahar core build on this host | **not built**: see section 5 |
 
 The Rust workspace builds against the pinned GPUI commit and links with the GNU toolchain. The
@@ -109,6 +111,9 @@ Consequences to keep in mind:
   switching to them without installing the MSVC build tools.
 - A future switch to MSVC means changing `channel` in `rust-toolchain.toml`, reinstalling the
   toolchain and re-running `cargo build` from a clean `target` directory.
+- Linking `lotus-desktop` prints one linker warning: `.rsrc merge failure: multiple non-default
+  manifests`. It comes from GPUI's own `windows-manifest` feature on Windows and does not affect the
+  binary. It is left visible rather than silenced.
 
 ## 6. What is deliberately not built yet
 

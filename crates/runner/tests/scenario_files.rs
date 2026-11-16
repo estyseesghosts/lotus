@@ -34,5 +34,9 @@ fn every_scenario_in_the_repository_validates() {
         checked += 1;
     }
 
-    assert!(checked > 0, "no scenario files were found in {}", directory.display());
+    assert!(
+        checked > 0,
+        "no scenario files were found in {}",
+        directory.display()
+    );
 }

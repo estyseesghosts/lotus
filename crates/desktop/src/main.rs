@@ -7,8 +7,8 @@
 //! host platform.
 
 use gpui::{
-    App, Bounds, Context, Render, Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb,
-    size,
+    div, prelude::*, px, rgb, size, App, Bounds, Context, Render, Window, WindowBounds,
+    WindowOptions,
 };
 use gpui_platform::application;
 use lotus_desktop::{LotusUiState, SessionSummary};
@@ -83,7 +83,14 @@ impl Render for LotusWindow {
             .bg(rgb(0x1e1e1e))
             .text_color(rgb(0xe6e6e6))
             .child(header)
-            .child(div().flex().flex_1().w_full().child(instances).child(screens))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .w_full()
+                    .child(instances)
+                    .child(screens),
+            )
     }
 }
 
@@ -110,9 +117,11 @@ fn main() {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| LotusWindow {
-                state: LotusUiState::new(),
-            }),
+            |_, cx| {
+                cx.new(|_| LotusWindow {
+                    state: LotusUiState::new(),
+                })
+            },
         )
         .expect("cannot open the Lotus window");
 

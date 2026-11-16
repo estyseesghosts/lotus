@@ -85,7 +85,8 @@ mod tests {
 
     #[test]
     fn layout_is_per_session() {
-        let base = std::env::temp_dir().join(format!("lotus-storage-test-2-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("lotus-storage-test-2-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let a = StorageLayout::create(&base, SessionId(1)).unwrap();
         let b = StorageLayout::create(&base, SessionId(2)).unwrap();

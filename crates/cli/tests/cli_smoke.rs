@@ -14,7 +14,10 @@ fn version_reports_the_protocol_version() {
     let output = cli().arg("version").output().expect("cannot run ctr-cli");
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("worker protocol 1.0"), "unexpected output: {stdout}");
+    assert!(
+        stdout.contains("worker protocol 1.0"),
+        "unexpected output: {stdout}"
+    );
 }
 
 #[test]
@@ -28,6 +31,9 @@ fn pins_reports_the_pinned_revisions() {
 
 #[test]
 fn unknown_commands_fail() {
-    let output = cli().arg("definitely-not-a-command").output().expect("cannot run ctr-cli");
+    let output = cli()
+        .arg("definitely-not-a-command")
+        .output()
+        .expect("cannot run ctr-cli");
     assert!(!output.status.success());
 }

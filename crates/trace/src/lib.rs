@@ -172,7 +172,10 @@ impl BoundedEventBuffer {
 
     /// Number of events of a given category currently retained.
     pub fn count_of(&self, category: EventCategory) -> usize {
-        self.events.iter().filter(|e| e.category == category).count()
+        self.events
+            .iter()
+            .filter(|e| e.category == category)
+            .count()
     }
 
     /// Remove all events, keeping the drop counter.

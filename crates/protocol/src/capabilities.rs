@@ -34,7 +34,7 @@ pub enum RenderBackend {
 ///
 /// Every field is set from a build flag or a runtime probe. A feature that was
 /// not compiled in must be reported as `false`, never as "probably works".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Features {
     /// CPU debugging: breakpoints, stepping, register inspection.
@@ -45,17 +45,6 @@ pub struct Features {
     pub firmware_boot: bool,
     /// Worker runs without a window system.
     pub headless: bool,
-}
-
-impl Default for Features {
-    fn default() -> Self {
-        Self {
-            cpu_debug: false,
-            gpu_draw_snapshot: false,
-            firmware_boot: false,
-            headless: false,
-        }
-    }
 }
 
 /// Capabilities advertised by a worker.

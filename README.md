@@ -31,8 +31,8 @@ The repository is scaffolded and builds. There is no emulator in it yet.
 
 | Part | State |
 | --- | --- |
-| Rust workspace (`crates/`) | **verified compiled**: protocol, session, trace, debugger, runner, hardware, accuracy, MCP, CLI and the GPUI shell; 51 tests pass |
-| GPUI desktop shell | **verified compiled**: opens a window; screens are placeholders |
+| Rust workspace (`crates/`) | **verified compiled**: protocol, session, trace, debugger, runner, hardware, accuracy, MCP, CLI and the GPUI shell; 51 tests pass; `fmt` and `clippy` clean |
+| GPUI desktop shell | **verified compiled** and launched: opens a window; screens are placeholders |
 | MCP server | **verified compiled**: serves `initialize`, `tools/list` and `tools/call` over stdio |
 | `ctr-cli` | **verified compiled**: `version`, `pins`, `scenario validate` |
 | Native worker (`workers/azahar`) | **verified compiled**: a protocol stub that prints its handshake; no Azahar core linked |
