@@ -50,8 +50,9 @@ Stock/native screen hashes and three-run reports are summarized in documents
 Final checks passed on both AZAHAR and CITnLO: three native session/resource
 tests, desktop controller crash/isolation test, MCP native parity and malformed
 wire tests. The workspace build/tests, formatting, Clippy with warnings denied
-and pin verification passed. GNU linking still reports GPUI's duplicate Windows
-resource-manifest warning; visible DPI behavior remains unverified.
+and pin verification passed. GNU linking then reported GPUI's duplicate Windows
+resource-manifest warning; v0.0.3 removes the duplicate ([35](35-release-notes.md)).
+Visible DPI behavior remains unverified.
 
 Primary source anchors: native System pending-work APIs in
 [core.h](../vendor/azahar/src/core/core.h) and [core.cpp](../vendor/azahar/src/core/core.cpp);

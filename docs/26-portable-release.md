@@ -1,6 +1,6 @@
 # Portable Windows release
 
-`LOTUS-v0.0.1-windows-x64.zip` contains the desktop, CLI, MCP server and separate
+`LOTUS-v0.0.3-windows-x64.zip` contains the desktop, CLI, MCP server and separate
 AZAHAR/CITnLO runtimes. Extract it into a writable folder. `LOTUS.cmd` selects
 homebrew using a Windows file dialog and launches CITnLO; `LOTUS-AZAHAR.cmd`
 selects AZAHAR. Both recreate absolute host configuration from the installation
@@ -53,7 +53,7 @@ claimed. Rollback is extracting an earlier ZIP; preserve `data/` when upgrading.
 
 Corresponding source: the tag's LOTUS tree, pinned fork commits and recursive
 submodules, plus Cargo.lock's exact Rust sources. The source ZIP excludes Git
-metadata; use `git clone --branch v0.0.1 --recurse-submodules
+metadata; use `git clone --branch v0.0.3 --recurse-submodules
 https://github.com/estyseesghosts/lotus.git` for the Git-based build scripts.
 
 Wave 3 packaging (2026-11-16, local, **verified compiled** and package-tested):

@@ -123,6 +123,11 @@ an older epoch are rejected. Incremented on load/reset/restore.
 32-byte header and native BGRA8 pixels; leases invalidated by reset/crash.
 [21](21-native-control.md)
 
+**Preview ring** — the worker's named shared-memory section
+(`Local\lotus-ctr-<pid>-<nonce>`) holding LTRF-headed preview frames; the host
+maps it read-only and `capture` stays file-based.
+[21](21-native-control.md#ownership-and-budgets)
+
 **Scenario** — declarative bounded run: start state, input ownership,
 checkpoints, stop condition, capture policy, assertions. [09](09-mcp-and-scenarios.md),
 [22](22-scenario-runner.md)
