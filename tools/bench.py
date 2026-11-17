@@ -56,7 +56,12 @@ REWIND_FAST_LEVEL = 1  # zstd level for the *_fast rewind configs; default check
 CONFIGS = {
     "off": [],
     "svc_ipc_trace": [("trace", dict(enabled=True))],
+    # Worker default capture=full: every draw snapshotted with resources (pre-#24 behaviour).
     "pica_events": [("gpu_configure", dict(enabled=True, stop_events=[]))],
+    # GPU capture levels (lotus#24); older CITnLO workers ignore `capture` and run full.
+    **{f"gpu_{level}": [("gpu_configure", dict(enabled=True, stop_events=[], capture=level))]
+       for level in ("counters", "events")},
+    "gpu_draws_8": [("gpu_configure", dict(enabled=True, stop_events=[], capture="draws", max_draws=8))],
     "rewind_frames": [("rewind_configure", dict(enabled=True, capacity=32, budget_mib=64))],
     **{f"rewind_interval_{n}": [("rewind_configure", dict(enabled=True, capacity=32, budget_mib=64,
                                                           interval_frames=n))] for n in (2, 5, 10)},

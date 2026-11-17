@@ -76,6 +76,20 @@ pub enum DebugCommand {
     GpuConfigure {
         enabled: bool,
         stop_events: Vec<u32>,
+        /// Emulation-thread cost of capture (worker default `full`). `counters` keeps the
+        /// batched PICA command path and accepts no stop events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capture: Option<GpuCapture>,
+        /// Inclusive `[first, last]` draw ids snapshotted in `draws` mode.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        draw_range: Option<[u64; 2]>,
+        /// Snapshot budget in `draws` mode (1..=4096, worker default 8); later draws are
+        /// counted as `snapshots_skipped_budget`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_draws: Option<u32>,
+        /// Copy texture/index/vertex bytes into `draws` snapshots (always on in `full`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resources: Option<bool>,
     },
     GpuDraws,
     CitraceStart,
@@ -303,6 +317,20 @@ pub enum DebugCommand {
     Trace {
         enabled: bool,
     },
+}
+
+/// How much a GPU capture records per draw (CITnLO `debug_gpu.h`, lotus#24).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum GpuCapture {
+    /// PicaCore command-list, draw and fast-path counters; no debug context.
+    Counters,
+    /// Per-command PICA events and draw metadata.
+    Events,
+    /// Events plus register/shader snapshots of selected draws.
+    Draws,
+    /// Every draw snapshotted with its resources.
+    Full,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -571,6 +599,19 @@ impl DebugCommand {
             {
                 Err("PICA events 0..7")
             }
+            Self::GpuConfigure {
+                capture: Some(GpuCapture::Counters),
+                stop_events,
+                ..
+            } if !stop_events.is_empty() => Err("stop_events need capture events or more"),
+            Self::GpuConfigure {
+                draw_range: Some([first, last]),
+                ..
+            } if first > last => Err("draw_range: [first, last]"),
+            Self::GpuConfigure {
+                max_draws: Some(budget),
+                ..
+            } if !(1..=4096).contains(budget) => Err("max_draws 1..4096"),
             Self::Surface {
                 width,
                 height,
@@ -797,5 +838,31 @@ mod tests {
         assert!(rewind(Some(-8)).validate().is_err());
         assert!(rewind(Some(-7)).validate().is_ok());
         assert!(rewind(None).validate().is_ok());
+        let gpu = |capture, stop_events, draw_range, max_draws| DebugCommand::GpuConfigure {
+            enabled: true,
+            stop_events,
+            capture,
+            draw_range,
+            max_draws,
+            resources: None,
+        };
+        assert!(gpu(Some(GpuCapture::Counters), vec![2], None, None)
+            .validate()
+            .is_err());
+        assert!(gpu(Some(GpuCapture::Events), vec![2], None, None)
+            .validate()
+            .is_ok());
+        assert!(gpu(Some(GpuCapture::Draws), vec![], Some([5, 4]), None)
+            .validate()
+            .is_err());
+        assert!(gpu(Some(GpuCapture::Draws), vec![], Some([4, 4]), Some(0))
+            .validate()
+            .is_err());
+        assert!(gpu(None, vec![], None, Some(4096)).validate().is_ok());
+        // Clients that omit the new fields keep sending the v0.0.3 request.
+        assert_eq!(
+            serde_json::to_value(gpu(None, vec![], None, None)).expect("json"),
+            serde_json::json!({"operation": "gpu_configure", "enabled": true, "stop_events": []})
+        );
     }
 }

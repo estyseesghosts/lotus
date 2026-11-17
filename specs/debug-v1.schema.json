@@ -90,6 +90,31 @@
         }
       ]
     },
+    "GpuCapture": {
+      "description": "How much a GPU capture records per draw (CITnLO `debug_gpu.h`, lotus#24).",
+      "oneOf": [
+        {
+          "const": "counters",
+          "description": "PicaCore command-list, draw and fast-path counters; no debug context.",
+          "type": "string"
+        },
+        {
+          "const": "events",
+          "description": "Per-command PICA events and draw metadata.",
+          "type": "string"
+        },
+        {
+          "const": "draws",
+          "description": "Events plus register/shader snapshots of selected draws.",
+          "type": "string"
+        },
+        {
+          "const": "full",
+          "description": "Every draw snapshotted with its resources.",
+          "type": "string"
+        }
+      ]
+    },
     "MatrixProfile": {
       "additionalProperties": false,
       "properties": {
@@ -762,12 +787,53 @@
     {
       "additionalProperties": false,
       "properties": {
+        "capture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/GpuCapture"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Emulation-thread cost of capture (worker default `full`). `counters` keeps the\nbatched PICA command path and accepts no stop events."
+        },
+        "draw_range": {
+          "description": "Inclusive `[first, last]` draw ids snapshotted in `draws` mode.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 2,
+          "minItems": 2,
+          "type": [
+            "array",
+            "null"
+          ]
+        },
         "enabled": {
           "type": "boolean"
+        },
+        "max_draws": {
+          "description": "Snapshot budget in `draws` mode (1..=4096, worker default 8); later draws are\ncounted as `snapshots_skipped_budget`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "operation": {
           "const": "gpu_configure",
           "type": "string"
+        },
+        "resources": {
+          "description": "Copy texture/index/vertex bytes into `draws` snapshots (always on in `full`).",
+          "type": [
+            "boolean",
+            "null"
+          ]
         },
         "stop_events": {
           "items": {

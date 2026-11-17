@@ -34,7 +34,7 @@ use crate::preferences::{self, Store};
 use crate::screen_geometry::TouchTransform;
 use crate::session_tree::{self, TreeNode};
 use crate::theme;
-use lotus_protocol::debug::DebugCommand as D;
+use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 const TOOLBAR_HEIGHT: f32 = 52.0;
 const SCREEN_GAP: f32 = 12.0;
@@ -2093,6 +2093,16 @@ impl LotusWindow {
     /// Commands that belong to the selected view. `true` marks a command that
     /// replaces or rewinds guest state.
     fn panel_commands(panel: Panel) -> Vec<(&'static str, D, bool)> {
+        // `draws` snapshots registers and shader state of the next 8 draws without resource
+        // copies; `full` copies every draw's resources (lotus#24).
+        let gpu = |enabled, capture| D::GpuConfigure {
+            enabled,
+            stop_events: vec![],
+            capture: Some(capture),
+            draw_range: None,
+            max_draws: None,
+            resources: None,
+        };
         match panel {
             Panel::Cpu => vec![
                 ("Step", D::Step { core: 0, count: 1 }, false),
@@ -2122,22 +2132,10 @@ impl LotusWindow {
                 ("Reverse stop", D::ReverseContinue, true),
             ],
             Panel::Gpu => vec![
-                (
-                    "Capture draws",
-                    D::GpuConfigure {
-                        enabled: true,
-                        stop_events: vec![],
-                    },
-                    false,
-                ),
-                (
-                    "Disable capture",
-                    D::GpuConfigure {
-                        enabled: false,
-                        stop_events: vec![],
-                    },
-                    false,
-                ),
+                ("Count draws", gpu(true, GpuCapture::Counters), false),
+                ("Capture 8 draws", gpu(true, GpuCapture::Draws), false),
+                ("Full capture", gpu(true, GpuCapture::Full), false),
+                ("Disable capture", gpu(false, GpuCapture::Counters), false),
                 ("Record CiTrace", D::CitraceStart, false),
                 ("Finish trace", D::CitraceStop, false),
                 ("Replay trace", D::CitraceReplay, true),

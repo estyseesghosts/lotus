@@ -54,6 +54,10 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
 - #13–#17 (desktop layout): resizable, snap-collapsible panes with saved widths, an always-visible inspector rail with vector icons, grouped inspector navigation with per-view commands, and a toolbar and gauges that adapt to the centre width. Design and evidence in [30](30-sessions-and-interface.md#window).
 - #18 opt-in Discord Rich Presence, verified against a running Discord client. Policy, transport and limits in [30](30-sessions-and-interface.md#discord-rich-presence).
 
+## Issues after v0.0.3 (#19–#32)
+
+- #24 GPU capture levels (CITnLO `459d3662`). `gpu_configure` takes `capture`: `counters` (debug context stays detached, so the batched PICA path runs; new PicaCore `command_lists` and `draw_calls` counters), `events` (per-command events, draw metadata only), `draws` (register and shader snapshots of draws in `draw_range`, at most `max_draws`, resource bytes only with `resources: true`), `full` (every draw with resources; the default, so older clients keep their behaviour). A snapshot keeps raw copies; JSON, hex and the file are built only when `gpu_draw` asks for that draw, so no level writes a file per draw. Synchronous cost per snapshotted draw is the register/shader copy plus, with resources, `FlushRegion` and the copy of each texture/index/vertex range (4 MiB budget per draw, 8 draws retained). `tools/gpu_capture_modes.py` passes on software and Vulkan (`runs/gpu-modes-24-03`, verified emulator): counters keep `command_path: batched` and write no `gpu/` files; events write none either; `max_draws: 2` takes 2 snapshots and counts 778 skipped; draw 1 under `draws` + `draw_range [1,1]` + resources is byte-identical to `full`, and `full` is byte-identical to the v0.0.3 worker (103,380 bytes). `gpu_acceptance` and `pica_path_acceptance` pass unchanged (`runs/gpu-24-01`, `runs/pica-path-24-01`). Busy-host Vulkan times for 30 frames, not acceptance evidence: off 524 ms, counters 508, events 901, draws 807, full 799. `events` costs as much as `full`: the remaining per-event cost is building, buffering and notifying one JSON object per PICA event (`Record` in `src/ctr_worker/debug.h`), which is #26. Identical boots of t03 do not always reach draw 1 in the same guest state, on Vulkan and occasionally on software (`runs/gpu-repeat-24-01`, `runs/gpu-modes-24-02`), so the fidelity check repeats boots until a pair matches; that divergence is #29. Desktop GPU view: Count draws, Capture 8 draws, Full capture, Disable capture. Bench configs `gpu_counters`, `gpu_events`, `gpu_draws_8`; `pica_events` is `full`.
+
 ## Quiet-machine timing runs
 
 Use a Release build ([27](27-build-and-run.md) §4) on an otherwise idle host; `--require-idle` refuses to start above 15 % CPU load. ROM paths must be absolute. `<w>` is `build/native-<branch>/bin/Release/ctr-worker.exe`, or `runtimes/<backend>/ctr-worker.exe` in an unpacked portable ZIP.
@@ -67,6 +71,10 @@ python tools/bench.py --worker azahar=<integration w> --worker citnlo=<experimen
 python tools/bench.py --worker v001=<v0.0.1 citnlo w> --worker v003=<v0.0.3 citnlo w> --rom C:\abs\t03.3dsx `
   --output runs/bench-rewind-ab-01 --renderer vulkan --renderer software --config off --config rewind_frames --require-idle
 python tools/reverse_acceptance.py <v0.0.3 citnlo w> C:\abs\debugger.3dsx runs/rev-v003-01
+# GPU capture levels (#24); add --worker v003=<v0.0.3 citnlo w> for the before figure
+python tools/bench.py --worker citnlo=<experimental w> --rom C:bs	03.3dsx --output runs/bench-gpu-01 `
+  --renderer vulkan --renderer software --config off --config gpu_counters --config gpu_events `
+  --config gpu_draws_8 --config pica_events --require-idle
 # Headless against visible desktop, unthrottled (#6, #10)
 python tools/bench_frontends.py --mcp target/release/lotus-mcp.exe --desktop target/release/lotus-desktop.exe `
   --worker <experimental w> --rom C:\abs\t03.3dsx --output runs/frontends-quiet-01 --require-idle
