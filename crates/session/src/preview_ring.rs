@@ -35,6 +35,33 @@ pub struct PreviewReply {
     pub frame: u64,
     pub current_frame: u64,
     pub current_epoch: u64,
+    /// False when a running Vulkan worker had no newer completed readback and answered with
+    /// its last slot again (lotus#25); absent from older workers, which always copy.
+    #[serde(default = "fresh")]
+    pub new_frame: bool,
+    /// Worker preview counters (`frames.h` `PreviewRing::Stats`); absent from older workers.
+    #[serde(default)]
+    pub stats: Option<WorkerPreviewStats>,
+}
+
+fn fresh() -> bool {
+    true
+}
+
+/// Cumulative preview counters of one worker process.
+#[derive(Debug, Clone, Default, Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct WorkerPreviewStats {
+    pub requests: u64,
+    /// Requests answered with the previous slot.
+    pub reused: u64,
+    /// Screen pairs read back from the GPU.
+    pub readbacks: u64,
+    /// Requests that submitted no readback because every staging slot was still in flight.
+    pub skipped_busy: u64,
+    /// GPU waits, which happen only for paused requests.
+    pub gpu_waits: u64,
+    pub gpu_wait_ns: u64,
+    pub copied_bytes: u64,
 }
 
 /// Checks a lease against the native screen geometry and the ring size.

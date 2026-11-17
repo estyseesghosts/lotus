@@ -70,6 +70,8 @@ pub struct Telemetry {
     pub supervision: SupervisionMetrics,
     /// This session's live-input mailbox.
     pub input: InputMetrics,
+    /// This session's live preview.
+    pub preview: PreviewMetrics,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -106,6 +108,7 @@ impl Telemetry {
             last_operation: String::new(),
             supervision: SupervisionMetrics::default(),
             input: InputMetrics::default(),
+            preview: PreviewMetrics::default(),
             started: Instant::now(),
             window: None,
         }
@@ -210,6 +213,44 @@ impl SupervisionMetrics {
         }
         self.status_ms = status.as_secs_f64() * 1e3;
         self.status_max_ms = self.status_max_ms.max(self.status_ms);
+    }
+}
+
+/// Live preview of one session (lotus#25): host-side counts plus the worker's own counters.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PreviewMetrics {
+    pub requests: u64,
+    /// Requests that returned pixels not shown before.
+    pub new_frames: u64,
+    /// Requests answered with the previous slot, or with nothing yet in a new epoch.
+    pub reused: u64,
+    /// Guest frames between the current frame and the one shown, at the last request.
+    pub age_frames: u64,
+    pub age_max_frames: u64,
+    /// Explicit captures (always synchronous and exact).
+    pub captures: u64,
+    /// The last request showed a new frame.
+    pub fresh: bool,
+    /// Worker-side counters (readbacks, skipped submissions, GPU waits, copied bytes).
+    pub worker: Option<crate::preview_ring::WorkerPreviewStats>,
+}
+
+impl PreviewMetrics {
+    pub fn observe(&mut self, reply: &crate::preview_ring::PreviewReply) {
+        self.requests += 1;
+        self.fresh = reply.new_frame && !reply.frames.is_empty();
+        if self.fresh {
+            self.new_frames += 1;
+        } else {
+            self.reused += 1;
+        }
+        if !reply.frames.is_empty() {
+            self.age_frames = reply.current_frame.saturating_sub(reply.frame);
+            self.age_max_frames = self.age_max_frames.max(self.age_frames);
+        }
+        if reply.stats.is_some() {
+            self.worker.clone_from(&reply.stats);
+        }
     }
 }
 

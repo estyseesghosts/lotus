@@ -2,8 +2,13 @@
 
 Per renderer, against one worker:
 - paused: `preview` pixels equal an explicit `capture` byte for byte;
-- running: each preview names the frame it shows; it is the current frame or the one from
-  the previous preview request (Vulkan double buffering), never older;
+- running: each preview names the frame it shows, never older than the previous preview's,
+  always of the current epoch. Vulkan never waits for the GPU while running (lotus#25): the
+  worker's `gpu_waits` counter does not move during 120 back-to-back previews, which also
+  exercise backpressure (`reused` answers repeat the previous slot, `skipped_busy` counts
+  requests that found every staging slot in flight). Reported, not asserted: lag in frames;
+  under Vulkan it is no longer bounded by one request, since a busy GPU leaves the older
+  frame on screen;
 - after `reset` (new epoch) no preview carries the old epoch, and a paused preview again
   equals capture;
 - 120 previews while running leave every `frames/` file untouched, and the worker's write
@@ -75,6 +80,8 @@ def main():
             lags, last = [], None
             files = {path: path.stat().st_mtime_ns for path in (root / "frames").glob("*.bgra")}
             before = process_usage(peer.process)
+            stats_before = peer.call("preview").get("stats")
+            fresh = 0
             for _ in range(120):
                 reply = peer.call("preview")
                 ring.read(reply)
@@ -83,6 +90,10 @@ def main():
                 assert all(lease["epoch"] == reply["current_epoch"] for lease in reply["frames"]), reply
                 last = reply["frame"]
                 lags.append(lag)
+                fresh += reply.get("new_frame", True)
+            stats = reply.get("stats")
+            if stats_before and stats:
+                assert stats["gpu_waits"] == stats_before["gpu_waits"], (stats_before, stats)
             after = process_usage(peer.process)
             written = after["io_write_bytes"] - before["io_write_bytes"]
             assert written < 4096 * len(lags), f"{written} bytes written during previews"
@@ -103,7 +114,10 @@ def main():
             ring.view and ring.view.close()
             peer.close()
         report[renderer] = dict(previews=len(lags), max_lag_frames=max(lags),
-                                lagged_previews=sum(1 for lag in lags if lag), io_write_bytes=written)
+                                lagged_previews=sum(1 for lag in lags if lag), io_write_bytes=written,
+                                new_frames=fresh, worker_stats=stats,
+                                running_stats_delta=None if not (stats_before and stats) else
+                                {k: stats[k] - stats_before[k] for k in stats})
         print(renderer, json.dumps(report[renderer]), flush=True)
     (args.output.resolve() / "report.json").write_text(json.dumps(report, indent=2))
 

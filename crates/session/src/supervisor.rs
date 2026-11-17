@@ -1212,9 +1212,12 @@ impl Supervisor {
         if paused && *lock(&handle.previewed) == Some(key) {
             return None;
         }
-        let (captured, _) = native.preview().await.ok()?;
+        let preview = native.preview().await;
+        handle.telemetry().preview = native.preview_metrics().clone();
+        let (captured, _) = preview.ok()?;
         *lock(&handle.previewed) = paused.then_some(key);
-        Some(captured)
+        // A repeated slot or no frame yet: the window keeps what it shows (lotus#25).
+        native.preview_metrics().fresh.then_some(captured)
     }
 
     pub async fn capture(&self, id: &str) -> io::Result<Vec<Artifact>> {

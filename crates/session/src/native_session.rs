@@ -70,6 +70,8 @@ pub struct NativeSession {
     kill: std::sync::Arc<std::sync::Mutex<crate::controlled_worker::KillSwitch>>,
     /// Frame count at which the current `run` pauses itself, from its reply.
     run_target: Option<u64>,
+    /// Live preview counters for telemetry.
+    preview_metrics: crate::telemetry::PreviewMetrics,
 }
 
 /// Frames one `run` advances before the worker pauses itself (`run` accepts 1-600,
@@ -115,6 +117,7 @@ impl NativeSession {
             preview_ring: None,
             kill: std::sync::Arc::default(),
             run_target: None,
+            preview_metrics: crate::telemetry::PreviewMetrics::default(),
         };
         *session
             .kill
@@ -317,6 +320,12 @@ impl NativeSession {
         Ok(reply)
     }
 
+    /// Counters of this session's live previews.
+    #[must_use]
+    pub fn preview_metrics(&self) -> &crate::telemetry::PreviewMetrics {
+        &self.preview_metrics
+    }
+
     /// Frame count at which the last `run` pauses itself, if its reply reported frames.
     #[must_use]
     pub fn run_target(&self) -> Option<u64> {
@@ -385,6 +394,7 @@ impl NativeSession {
         if !(1..=4).contains(&scale) {
             return Err(io::Error::other("capture scale 1..4"));
         }
+        self.preview_metrics.captures += 1;
         let data = self
             .operation(Method::Capture, serde_json::json!({"scale":scale}))
             .await?;
@@ -408,6 +418,10 @@ impl NativeSession {
     /// writes; on Vulkan possibly the previous request's frame, see `preview_ring`), else an
     /// explicit capture. Also returns the presented frame the pixels belong to, when known.
     /// Frames from an earlier epoch are refused.
+    /// Both screens of the newest previewable frame and its number. A running Vulkan worker
+    /// never waits for the GPU: it may answer with its previous slot again
+    /// ([`Self::preview_metrics`] `fresh` is then false) or, right after a load or reset,
+    /// with no frames yet (an empty list).
     pub async fn preview(&mut self) -> io::Result<(Vec<Frame>, Option<u64>)> {
         if !self.shared_preview {
             return Ok((self.capture().await?, None));
@@ -415,6 +429,10 @@ impl NativeSession {
         let data = self.operation(Method::Preview, Value::Null).await?;
         let reply: crate::preview_ring::PreviewReply =
             serde_json::from_value(data).map_err(io::Error::other)?;
+        self.preview_metrics.observe(&reply);
+        if reply.frames.is_empty() && !reply.new_frame {
+            return Ok((Vec::new(), None));
+        }
         if reply.frames.len() != 2 {
             return Err(io::Error::other("preview must contain exactly two screens"));
         }

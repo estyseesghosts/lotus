@@ -61,11 +61,23 @@ read-only (`crates/session/src/preview_ring.rs`), validates the lease against
 native geometry and the mapping size, checks the header and copies the pixels
 before its next request to that worker. The session command lock serializes
 both, so a slot is never read while being written. A lease from an older epoch
-is refused. Under Vulkan the worker records the copy, submits without waiting,
-and returns the previous request's slot when it is ready, so a preview can be
-one request behind (`frame` < `current_frame`, at most 3 frames in
-`tools/preview_acceptance.py`). Software previews are never behind. `capture`
-is unchanged and stays synchronous, for tests and artifacts. Paused previews
+is refused. A running Vulkan worker never waits for the GPU (#25,
+`RendererBase::PreviewScreens`): it polls completion (`MasterSemaphore::Refresh`,
+`Scheduler::IsFree`), publishes the newest frame whose top and bottom readbacks
+have both finished and that it has not published yet, and submits the current
+frame into a free staging slot (three per screen), or submits nothing while all
+are in flight (`skipped_busy`). Both screens of one request share one GPU tick,
+so a published pair is one frame. With nothing newer the reply repeats the
+last slot with `new_frame: false`; early in a new epoch it has no frames. The
+host keeps showing its last image in both cases (`Supervisor::preview` returns
+nothing). A paused worker may wait and always shows the current frame. Each
+reply carries `stats` (requests, reused, readbacks, skipped_busy, gpu_waits,
+gpu_wait_ns, copied_bytes), surfaced as `telemetry.preview` with the shown
+frame's age. `tools/preview_acceptance.py` asserts that `gpu_waits` does not
+move during 120 back-to-back running previews on both workers (`runs/preview-25-02`,
+`runs/preview-25-int-01`, verified emulator; lag at most 1 frame there).
+Software previews are never behind. `capture` is unchanged and stays
+synchronous and exact, for tests and artifacts. Paused previews
 match `capture` byte for byte on both workers (`tools/preview_acceptance.py`,
 verified emulator). Disk writes stay below 4 KiB per preview, which is the pipe
 reply, and the capture files are untouched.
