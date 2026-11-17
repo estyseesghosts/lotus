@@ -9,7 +9,32 @@ on a background Tokio runtime. UI commands have a 32-entry bound and each runs
 as its own task, so a slow worker never stalls another session. Every key or
 touch change submits the complete input state to that session's mailbox
 without waiting ([30](30-sessions-and-interface.md#shared-supervisor)), so
-releases never depend on command-queue space or another worker. Only the selected session is previewed; the latest screen
+releases never depend on command-queue space or another worker.
+
+The controller's main loop never awaits a worker (#21). Every 33 ms (fixed
+deadlines; plain `sleep` measured 46.6 ms on Windows) it drains commands and
+publishes summaries, catalog and selection. Three tasks do the worker
+requests, each one at a time:
+
+- **Preview** of the selected session only.
+- **Inspector**, only while the inspector is open: registers when the paused
+  frame changes; live panels every 500 ms; settings and memory map
+  (`Panel::live` false) when the view or paused frame changes.
+- **Audio focus**, which follows the selection, latest selection wins, and
+  retries a failed hand-off every second.
+
+An exchange in flight is never cancelled, since dropping it would leave its
+reply on the pipe. Each result carries the selection generation it started
+with and is discarded if the selection, panel or epoch changed meanwhile
+(`stale_dropped`). An operation pending over 1 s is named in the toolbar
+("waiting: inspection on 3f2a… 2.4 s") instead of freezing other controls.
+Loop interval and per-operation latency are published as `frontend_metrics`
+in `lotus_status`. `tests/responsive_controller.rs` stalls the selected mock
+worker for 4 s: switching to and pausing its sibling completes within 500 ms,
+publication continues at about 33 ms, and the stalled worker's late inspector
+result is dropped (**verified compiled**, mock workers).
+
+Only the selected session is previewed; the latest screen
 pair replaces the previous one, and replaced images are dropped from GPUI's
 sprite atlas. Previews come from the worker's shared-memory ring and fall back to
 `capture` on workers without it ([21](21-native-control.md#ownership-and-budgets)).

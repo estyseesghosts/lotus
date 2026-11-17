@@ -161,6 +161,7 @@ pub struct LotusWindow {
     dismissed_error: String,
     mcp: McpLink,
     pending: usize,
+    waiting: Vec<String>,
     focus: FocusHandle,
     input: InputState,
     bottom_rect: Arc<Mutex<Option<TouchTransform>>>,
@@ -240,6 +241,7 @@ impl LotusWindow {
             dismissed_error: String::new(),
             mcp: McpLink::Off,
             pending: 0,
+            waiting: Vec::new(),
             focus,
             input: InputState::default(),
             bottom_rect: Arc::default(),
@@ -425,6 +427,7 @@ impl LotusWindow {
             self.control = update.control;
             self.mcp = update.mcp;
             self.pending = update.pending;
+            self.waiting.clone_from(&update.waiting);
             self.registers = update.registers.clone();
             self.inspection = update.inspection.clone();
             if update.error != self.error {
@@ -1361,13 +1364,18 @@ impl LotusWindow {
         } else {
             bar = bar.child(div().flex_1().min_w_0());
         }
-        if self.pending > 0 && density >= ToolbarDensity::Icons {
+        if (self.pending > 0 || !self.waiting.is_empty()) && density >= ToolbarDensity::Icons {
+            // A slow worker operation is named instead of freezing unrelated controls.
+            let text = self
+                .waiting
+                .first()
+                .map_or_else(|| "working…".to_string(), |slow| format!("waiting: {slow}"));
             bar = bar.child(
                 div()
                     .flex_none()
                     .text_xs()
                     .text_color(theme::text_muted())
-                    .child("working…"),
+                    .child(text),
             );
         }
         let labelled = density == ToolbarDensity::Full;

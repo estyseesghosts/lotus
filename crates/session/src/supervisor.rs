@@ -231,6 +231,8 @@ pub struct Supervisor {
     audio_focus: tokio::sync::Mutex<Option<String>>,
     /// Set by [`Supervisor::close`]; refuses new sessions.
     closing: AtomicBool,
+    /// Loop cadence and latency reported by a windowed frontend; null when headless.
+    frontend_metrics: Mutex<serde_json::Value>,
 }
 
 impl Supervisor {
@@ -269,6 +271,7 @@ impl Supervisor {
             focus_request: Mutex::default(),
             audio_focus: tokio::sync::Mutex::default(),
             closing: AtomicBool::new(false),
+            frontend_metrics: Mutex::default(),
         })
     }
 
@@ -1275,6 +1278,16 @@ impl Supervisor {
             ));
         }
         outcomes
+    }
+
+    /// Replace the frontend's self-reported loop metrics (desktop only).
+    pub fn set_frontend_metrics(&self, metrics: serde_json::Value) {
+        *lock(&self.frontend_metrics) = metrics;
+    }
+
+    #[must_use]
+    pub fn frontend_metrics(&self) -> serde_json::Value {
+        lock(&self.frontend_metrics).clone()
     }
 
     /// Whether [`Self::close`] has started.

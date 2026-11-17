@@ -1,15 +1,17 @@
 //! Bridge between GPUI and the shared supervisor; no emulation on the UI thread.
 //!
-//! A background thread runs a Tokio runtime for UI commands (each its own task,
-//! so one slow worker never stalls the others) and the selected session's
-//! preview. Gauges, continuous running and live input belong to each session's
-//! own tasks in the supervisor; the window submits input without waiting. With [`McpMode::Stdio`] the same runtime also serves the
+//! A background thread runs a Tokio runtime. Its main loop only drains UI
+//! commands (each its own task) and publishes state every 33 ms; it never awaits
+//! a worker. The selected session's preview, inspector polling and audio focus
+//! run as separate tasks whose stale results are dropped (#21). Gauges,
+//! continuous running and live input belong to each session's own tasks in the
+//! supervisor; the window submits input without waiting. With [`McpMode::Stdio`] the same runtime also serves the
 //! MCP tools over stdio against the same supervisor, so an agent and the person
 //! at the window drive one set of sessions.
 use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -105,6 +107,8 @@ pub struct Update {
     pub inspection: Option<(String, Panel, Arc<Inspection>)>,
     pub debug_image: Option<DebugImage>,
     pub error: String,
+    /// Worker operations of this window pending longer than one second.
+    pub waiting: Vec<String>,
     pub mcp: McpLink,
     /// Commands still in flight.
     pub pending: usize,
@@ -125,6 +129,42 @@ pub struct DesktopController {
 
 const TICK: Duration = Duration::from_millis(33);
 const CATALOG_PERIOD: Duration = Duration::from_secs(1);
+const INSPECT_PERIOD: Duration = Duration::from_millis(500);
+/// An operation pending this long is shown as waiting.
+const SLOW: Duration = Duration::from_secs(1);
+
+/// A 33 ms ticker on fixed deadlines. `sleep(TICK)` measured 46.6 ms per loop on Windows,
+/// whose default timer resolution rounds each sleep up; deadlines keep the average period.
+/// A late tick is skipped rather than replayed in a burst.
+fn tick() -> tokio::time::Interval {
+    let mut ticker = tokio::time::interval(TICK);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    ticker
+}
+
+/// Host latency of one kind of desktop worker operation.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct OperationStats {
+    pub count: u64,
+    pub last_ms: f64,
+    pub max_ms: f64,
+}
+
+/// Desktop loop cadence and per-operation latency, published to `lotus_status`.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct LoopMetrics {
+    /// State publications to the window.
+    pub ticks: u64,
+    /// Interval between the last two publications; the target is 33 ms.
+    pub tick_interval_ms: f64,
+    pub tick_interval_max_ms: f64,
+    pub preview: OperationStats,
+    pub registers: OperationStats,
+    pub inspection: OperationStats,
+    pub audio_focus: OperationStats,
+    /// Results discarded because the selection, panel or epoch changed meanwhile.
+    pub stale_dropped: u64,
+}
 
 impl DesktopController {
     pub fn start(config: HostConfig, mcp: McpMode) -> io::Result<Self> {
@@ -148,6 +188,10 @@ impl DesktopController {
             previous_draw: Arc::default(),
             shutdown: shutdown.clone(),
             pending: Arc::new(AtomicUsize::new(0)),
+            selected: Arc::new(tokio::sync::watch::channel(String::new()).0),
+            generation: Arc::new(AtomicU64::new(0)),
+            in_flight: Arc::default(),
+            metrics: Arc::default(),
         };
         let thread = std::thread::Builder::new()
             .name("lotus-supervisor".into())
@@ -200,21 +244,29 @@ struct Loops {
     previous_draw: Arc<Mutex<Option<(String, Value)>>>,
     shutdown: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
+    /// The selected session, for the preview, inspector and audio tasks.
+    selected: Arc<tokio::sync::watch::Sender<String>>,
+    /// Increments on every selection change; results carry the value they started with.
+    generation: Arc<AtomicU64>,
+    /// Operation kind -> (session, start), for [`Update::waiting`].
+    in_flight: Arc<Mutex<BTreeMap<&'static str, (String, Instant)>>>,
+    metrics: Arc<Mutex<LoopMetrics>>,
 }
 
 impl Loops {
+    /// Publishes state every tick without awaiting any worker. Preview, inspector polling
+    /// and audio focus run as their own tasks; a slow worker delays only its own results.
     async fn run(self, receiver: mpsc::Receiver<Command>, mcp: McpMode) {
         let mut background = Vec::new();
         if mcp == McpMode::Stdio {
             background.push(tokio::spawn(self.clone().serve_mcp()));
         }
-        let mut sequence = 0u64;
-        let mut audio_selected = String::new();
-        let mut previewed_session = String::new();
-        let mut registers_key = None;
-        let mut inspection_key = None;
-        let mut inspected_at = Instant::now();
+        background.push(tokio::spawn(self.clone().preview_loop()));
+        background.push(tokio::spawn(self.clone().inspector_loop()));
+        background.push(tokio::spawn(self.clone().audio_focus_loop()));
         let mut catalog_at: Option<Instant> = None;
+        let mut published_at: Option<Instant> = None;
+        let mut ticker = tick();
         // Handle -> (canonical path, file name); resolved once per handle.
         let mut content_names: BTreeMap<String, Option<(String, String)>> = BTreeMap::new();
         while !self.shutdown.load(Ordering::Acquire) {
@@ -244,6 +296,7 @@ impl Loops {
                         })
                         .clone()
                 }));
+            let waiting = self.waiting();
             let selected = {
                 let mut update = lock(&self.published);
                 if !sessions.iter().any(|s| s.info.id == update.selected) {
@@ -252,86 +305,256 @@ impl Loops {
                         .map(|s| s.info.id.clone())
                         .unwrap_or_default();
                 }
-                update.sessions = sessions.clone();
+                update.sessions = sessions;
                 update.pending = self.pending.load(Ordering::Acquire);
+                update.waiting = waiting;
                 update.selected.clone()
             };
-            if !selected.is_empty() {
-                if audio_selected != selected
-                    && self.host.allows_control()
-                    && self.host.focus_audio(&selected, true).await.is_ok()
-                {
-                    audio_selected = selected.clone();
+            self.selected.send_if_modified(|current| {
+                let changed = *current != selected;
+                if changed {
+                    current.clone_from(&selected);
+                    self.generation.fetch_add(1, Ordering::AcqRel);
                 }
-                if previewed_session != selected {
-                    // The window drops its images on a session switch (lotus_window.rs).
-                    self.host.forget_preview(&selected);
-                    previewed_session = selected.clone();
-                }
-                if let Some(frames) = self.host.preview(&selected).await {
-                    sequence += 1;
-                    lock(&self.published).preview = Some(Preview {
-                        session: selected.clone(),
-                        sequence,
-                        frames,
-                    });
-                }
-                let paused = sessions
-                    .iter()
-                    .find(|s| s.info.id == selected)
-                    .filter(|s| s.telemetry.state == SessionState::Paused && !s.telemetry.playing);
-                let key = paused.map(|s| (selected.clone(), s.telemetry.epoch, s.telemetry.frames));
-                if self.inspector.load(Ordering::Acquire) && key.is_some() && key != registers_key {
-                    if let Ok(value) = self.host.registers(&selected, 0).await {
-                        lock(&self.published).registers = Some((selected.clone(), value));
-                        registers_key = key;
-                    }
-                } else if key.is_none() {
-                    registers_key = None;
-                }
-                let (panel, offset) = *lock(&self.inspection_selection);
-                let view_key = (selected.clone(), panel, offset);
-                if self.inspector.load(Ordering::Acquire)
-                    && (inspection_key.as_ref() != Some(&view_key)
-                        || inspected_at.elapsed() >= Duration::from_millis(500))
-                {
-                    if let Some(command) = panel.command(offset) {
-                        let value = match self.host.debug(&selected, &command, Actor::Desktop).await
-                        {
-                            Ok(value) => value,
-                            Err(error) => serde_json::json!({"error":error.to_string()}),
-                        };
-                        let mut value = value;
-                        if panel == Panel::Cpu {
-                            if let Some(pc) = value["registers"][15].as_u64() {
-                                let command = DebugCommand::Disassemble {
-                                    address: pc as u32,
-                                    length: 64,
-                                    thumb: value["cpsr"].as_u64().unwrap_or(0) & 32 != 0,
-                                };
-                                if let Ok(assembly) =
-                                    self.host.debug(&selected, &command, Actor::Desktop).await
-                                {
-                                    value["disassembly"] = assembly;
-                                }
-                            }
-                        }
-                        lock(&self.published).inspection = Some((
-                            selected.clone(),
-                            panel,
-                            Arc::new(Inspection::from_value(&value, panel)),
-                        ));
-                    }
-                    inspection_key = Some(view_key);
-                    inspected_at = Instant::now();
-                }
+                changed
+            });
+            let now = Instant::now();
+            if let Some(previous) = published_at {
+                let interval = now.duration_since(previous).as_secs_f64() * 1e3;
+                let mut metrics = lock(&self.metrics);
+                metrics.ticks += 1;
+                metrics.tick_interval_ms = interval;
+                metrics.tick_interval_max_ms = metrics.tick_interval_max_ms.max(interval);
+                self.host
+                    .set_frontend_metrics(serde_json::to_value(&*metrics).unwrap_or_default());
             }
-            tokio::time::sleep(TICK).await;
+            published_at = Some(now);
+            ticker.tick().await;
         }
         for task in background {
             task.abort();
         }
         self.host.close().await;
+    }
+
+    /// Operations older than [`SLOW`], for the toolbar instead of a frozen window.
+    fn waiting(&self) -> Vec<String> {
+        lock(&self.in_flight)
+            .iter()
+            .filter(|(_, (_, started))| started.elapsed() >= SLOW)
+            .map(|(kind, (session, started))| {
+                let short = session.get(..8).unwrap_or(session);
+                format!("{kind} on {short} {:.1} s", started.elapsed().as_secs_f64())
+            })
+            .collect()
+    }
+
+    /// Run one worker operation, recording its host latency and making it visible while slow.
+    async fn timed<T>(
+        &self,
+        kind: &'static str,
+        session: &str,
+        operation: impl std::future::Future<Output = T>,
+    ) -> T {
+        let started = Instant::now();
+        lock(&self.in_flight).insert(kind, (session.to_string(), started));
+        let output = operation.await;
+        lock(&self.in_flight).remove(kind);
+        let ms = started.elapsed().as_secs_f64() * 1e3;
+        let mut metrics = lock(&self.metrics);
+        let stats = match kind {
+            "preview" => &mut metrics.preview,
+            "registers" => &mut metrics.registers,
+            "audio focus" => &mut metrics.audio_focus,
+            _ => &mut metrics.inspection,
+        };
+        stats.count += 1;
+        stats.last_ms = ms;
+        stats.max_ms = stats.max_ms.max(ms);
+        output
+    }
+
+    /// Whether a result requested at `generation` for `session` still matches the view.
+    fn current(&self, session: &str, generation: u64) -> bool {
+        let current = *self.selected.borrow() == session
+            && self.generation.load(Ordering::Acquire) == generation;
+        if !current {
+            lock(&self.metrics).stale_dropped += 1;
+        }
+        current
+    }
+
+    /// Live screens of the selected session only. An exchange already in flight is never
+    /// cancelled (dropping it would leave its reply on the pipe); a result for a session or
+    /// epoch that is no longer shown is discarded instead.
+    async fn preview_loop(self) {
+        let mut previewed = String::new();
+        let mut sequence = 0u64;
+        let mut ticker = tick();
+        loop {
+            ticker.tick().await;
+            let selected = self.selected.borrow().clone();
+            let generation = self.generation.load(Ordering::Acquire);
+            if selected.is_empty() {
+                continue;
+            }
+            if previewed != selected {
+                // The window drops its images on a session switch (lotus_window.rs).
+                self.host.forget_preview(&selected);
+                previewed.clone_from(&selected);
+            }
+            let Some(frames) = self
+                .timed("preview", &selected, self.host.preview(&selected))
+                .await
+            else {
+                continue;
+            };
+            let epoch = frames.first().map_or(0, |frame| frame.lease.epoch);
+            let newer_epoch = self
+                .host
+                .summary(&selected)
+                .is_ok_and(|summary| summary.telemetry.epoch > epoch);
+            if !self.current(&selected, generation) || newer_epoch {
+                continue;
+            }
+            sequence += 1;
+            lock(&self.published).preview = Some(Preview {
+                session: selected,
+                sequence,
+                frames,
+            });
+        }
+    }
+
+    /// Inspector data for the selected session while the inspector is open. Live panels
+    /// refresh every 500 ms; on-change panels ([`Panel::live`]) only when the view or the
+    /// paused frame changes. One request at a time, so a slow worker never piles them up.
+    async fn inspector_loop(self) {
+        let mut registers_key = None;
+        let mut inspection_key = None;
+        let mut inspected_at = Instant::now();
+        let mut ticker = tick();
+        loop {
+            ticker.tick().await;
+            if !self.inspector.load(Ordering::Acquire) {
+                continue;
+            }
+            let selected = self.selected.borrow().clone();
+            let generation = self.generation.load(Ordering::Acquire);
+            let Ok(summary) = self.host.summary(&selected) else {
+                continue;
+            };
+            let telemetry = &summary.telemetry;
+            let paused = telemetry.state == SessionState::Paused && !telemetry.playing;
+            let key = paused.then(|| (selected.clone(), telemetry.epoch, telemetry.frames));
+            if key.is_some() && key != registers_key {
+                let result = self
+                    .timed("registers", &selected, self.host.registers(&selected, 0))
+                    .await;
+                if let Ok(value) = result {
+                    if self.current(&selected, generation) {
+                        lock(&self.published).registers = Some((selected.clone(), value));
+                        registers_key.clone_from(&key);
+                    }
+                }
+            } else if key.is_none() {
+                registers_key = None;
+            }
+            let (panel, offset) = *lock(&self.inspection_selection);
+            let view_key = (
+                selected.clone(),
+                panel,
+                offset,
+                (telemetry.epoch, telemetry.frames),
+            );
+            let due = match &inspection_key {
+                None => true,
+                Some((session, old_panel, old_offset, frame)) => {
+                    (session, old_panel, old_offset) != (&selected, &panel, &offset)
+                        || if panel.live() {
+                            inspected_at.elapsed() >= INSPECT_PERIOD
+                        } else {
+                            paused && *frame != view_key.3
+                        }
+                }
+            };
+            if !due {
+                continue;
+            }
+            let Some(command) = panel.command(offset) else {
+                inspection_key = Some(view_key);
+                continue;
+            };
+            let value = self
+                .timed(
+                    "inspection",
+                    &selected,
+                    self.inspect(&selected, panel, &command),
+                )
+                .await;
+            inspected_at = Instant::now();
+            if self.current(&selected, generation)
+                && *lock(&self.inspection_selection) == (panel, offset)
+            {
+                lock(&self.published).inspection = Some((
+                    selected,
+                    panel,
+                    Arc::new(Inspection::from_value(&value, panel)),
+                ));
+                inspection_key = Some(view_key);
+            }
+        }
+    }
+
+    async fn inspect(&self, selected: &str, panel: Panel, command: &DebugCommand) -> Value {
+        let mut value = match self.host.debug(selected, command, Actor::Desktop).await {
+            Ok(value) => value,
+            Err(error) => serde_json::json!({"error":error.to_string()}),
+        };
+        if panel == Panel::Cpu {
+            if let Some(pc) = value["registers"][15].as_u64() {
+                let command = DebugCommand::Disassemble {
+                    address: pc as u32,
+                    length: 64,
+                    thumb: value["cpsr"].as_u64().unwrap_or(0) & 32 != 0,
+                };
+                if let Ok(assembly) = self.host.debug(selected, &command, Actor::Desktop).await {
+                    value["disassembly"] = assembly;
+                }
+            }
+        }
+        value
+    }
+
+    /// Exclusive audio follows the selection, latest selection wins. Runs apart from the UI
+    /// tick, so a slow hand-off between two workers never delays publication.
+    async fn audio_focus_loop(self) {
+        if !self.host.allows_control() {
+            return;
+        }
+        let mut selection = self.selected.subscribe();
+        let mut focused = String::new();
+        loop {
+            let target = selection.borrow_and_update().clone();
+            if !target.is_empty() && target != focused {
+                let result = self
+                    .timed("audio focus", &target, self.host.focus_audio(&target, true))
+                    .await;
+                if result.is_ok() {
+                    focused = target;
+                    continue;
+                }
+                // Retry a failed hand-off unless the selection moves on first.
+                tokio::select! {
+                    _ = selection.changed() => {}
+                    () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                }
+                continue;
+            }
+            if selection.changed().await.is_err() {
+                return;
+            }
+        }
     }
 
     /// Returns false once the window side has gone away.

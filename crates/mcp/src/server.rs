@@ -195,6 +195,7 @@ impl LotusServer {
             "assets": host.map(Supervisor::assets).unwrap_or_default(),
             "max_sessions": host.map(Supervisor::max_sessions).unwrap_or(0),
             "guest_refresh_hz": GUEST_REFRESH_HZ,
+            "frontend_metrics": host.map(Supervisor::frontend_metrics).unwrap_or_default(),
         })
         .to_string()
     }

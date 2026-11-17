@@ -109,6 +109,11 @@ impl Panel {
             (here + len - 1) % len
         }]
     }
+    /// Refreshed on a cadence while shown. The others (settings, memory map) are fetched when
+    /// the view, the session or the paused frame changes.
+    pub fn live(self) -> bool {
+        !matches!(self, Self::Settings | Self::Memory | Self::Result)
+    }
     pub fn command(self, offset: u32) -> Option<D> {
         Some(match self {
             Self::Cpu => D::Registers { core: 0 },

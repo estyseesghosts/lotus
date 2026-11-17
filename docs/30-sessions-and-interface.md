@@ -104,7 +104,8 @@ These are host-observed throughput figures, not guest-tick or hardware timing.
 ## MCP surface
 
 Headless and windowed servers expose the same tools; `lotus_status` reports
-`frontend: headless|windowed`. New or changed relative to [23](23-local-mcp.md):
+`frontend: headless|windowed` and, windowed, the desktop loop's
+`frontend_metrics` ([24](24-desktop.md)). New or changed relative to [23](23-local-mcp.md):
 
 | Tool | Behaviour |
 | --- | --- |
