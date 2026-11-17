@@ -156,7 +156,13 @@ impl ControlledWorker {
             job: Some(std::sync::Arc::new(job)),
         };
         let hello = worker
-            .command(Method::Hello, serde_json::json!({"notifications": true}))
+            // Only stops are pushed: the GDB server is the one consumer (crates/gdb
+            // wait_for_stop). Other categories stay readable through `events`/`logs`
+            // (lotus#26). Workers before that change ignore `subscriptions` and push all.
+            .command(
+                Method::Hello,
+                serde_json::json!({"notifications": true, "subscriptions": ["stopped"]}),
+            )
             .await?;
         if hello.status != Status::Ok {
             return Err(io::Error::other("worker rejected handshake"));

@@ -317,6 +317,33 @@ pub enum DebugCommand {
     Trace {
         enabled: bool,
     },
+    /// Which event categories the worker pushes as notifications and keeps for `events`/`logs`
+    /// (CITnLO, lotus#26). An omitted field keeps the worker's current set; stops are always
+    /// kept. Unsubscribed categories are not built at all.
+    EventsConfigure {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notify: Option<Vec<EventCategory>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history: Option<Vec<EventCategory>>,
+    },
+}
+
+/// Worker event categories (CITnLO `debug.h` `DebugTools::CATEGORIES`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum EventCategory {
+    /// `stopped`: debug stops, including the per-run `frame` stop.
+    Stopped,
+    /// `guest_log` (svcOutputDebugString), `hio_stdout`, `logpoint`.
+    Log,
+    /// Emulator log entries that pass the log filter.
+    NativeLog,
+    /// `svc_enter`/`svc_exit` while `trace` or an SVC predicate is active.
+    Svc,
+    /// `ipc` while `trace` is enabled.
+    Ipc,
+    /// `pica` while `gpu_configure` captures `events` or more.
+    Pica,
 }
 
 /// How much a GPU capture records per draw (CITnLO `debug_gpu.h`, lotus#24).
@@ -728,6 +755,13 @@ impl DebugCommand {
             Self::Events { limit, .. } | Self::Logs { limit, .. } if !(1..=128).contains(limit) => {
                 Err("stream limit 1..128")
             }
+            // Lotus's GDB server waits for pushed `stopped` notifications (crates/gdb wait_for_stop).
+            Self::EventsConfigure {
+                notify: Some(notify),
+                ..
+            } if !notify.contains(&EventCategory::Stopped) => {
+                Err("notify must include stopped; Lotus's debugger waits for it")
+            }
             _ => Ok(()),
         }
     }
@@ -784,6 +818,7 @@ impl DebugCommand {
                 | Self::LoadState { .. }
                 | Self::SaveState { .. }
                 | Self::Trace { .. }
+                | Self::EventsConfigure { .. }
                 | Self::Continue
                 | Self::Pause
                 | Self::Advance { .. }
@@ -864,5 +899,28 @@ mod tests {
             serde_json::to_value(gpu(None, vec![], None, None)).expect("json"),
             serde_json::json!({"operation": "gpu_configure", "enabled": true, "stop_events": []})
         );
+    }
+
+    #[test]
+    fn events_configure_keeps_stops_and_omits_unset_fields() {
+        let configure = |notify, history| DebugCommand::EventsConfigure { notify, history };
+        assert!(configure(Some(vec![EventCategory::Log]), None)
+            .validate()
+            .is_err());
+        assert!(configure(
+            Some(vec![EventCategory::Stopped, EventCategory::Log]),
+            Some(vec![])
+        )
+        .validate()
+        .is_ok());
+        assert_eq!(
+            serde_json::to_value(configure(None, Some(vec![EventCategory::NativeLog])))
+                .expect("json"),
+            serde_json::json!({"operation": "events_configure", "history": ["native_log"]})
+        );
+        assert!(serde_json::from_value::<DebugCommand>(
+            serde_json::json!({"operation": "events_configure", "notify": ["gpu"]})
+        )
+        .is_err());
     }
 }

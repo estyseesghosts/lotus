@@ -68,6 +68,12 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
 - #23 host policy (`crates/session/src/policy.rs`, docs/23): `interactive` (default) allows 2 rewind sessions, 2 GPU-capture sessions above `counters` and 2 concurrent full-state operations; `batch` has no budgets. New sessions need available RAM above `memory_reserve_mib` plus the largest worker working set. Optional above-normal priority for the focused session's worker. `tests/test_mcp_policy.py` passes against CITnLO (`runs/policy-01`, verified emulator).
 - #25 non-blocking Vulkan preview (CITnLO `58e00ed1`, AZAHAR `ed51b869`, Lotus `9f39e16`). A running preview never waits for the GPU: three staging slots per screen, the newest finished one is copied, a request that finds none ready repeats the last slot (`new_frame: false`). Only the selected session is previewed. `preview_acceptance` asserts `gpu_waits` does not move over 120 running previews (both workers, `runs/preview-wait-*-01`); max lag 2 frames.
 - #28 card copies (`995e988`): a secondary created together with its card's primary waits up to 30 s for the primary to commit, instead of failing with "still being mounted".
+- #26 event delivery, with proposal #33 (CITnLO `0cef6413`, AZAHAR `9016f8ab`). Workers wrote each reply and notification on the thread that produced it, so emulation stopped when the host stopped reading, and every PICA, SVC and log event was built as JSON and written whether or not anyone used it. Now a `ControlWriter` thread (`transport.h`, both branches) writes every frame. Replies and `stopped` keep their order and are never dropped. Other notifications are best effort: at most 1024 queued, the oldest dropped first, counted in `notifications_dropped` and `status.transport`. CITnLO groups events into the categories `stopped`, `log`, `native_log`, `svc`, `ipc` and `pica`. hello `subscriptions` and `events_configure` (`notify`, `history`; accepted before load) choose which categories are pushed and which are kept for `events`/`logs`, and producers skip any category nobody wants. `stop_reason.sequence` ties `status.stop` to its notification. Lotus subscribes to `stopped` only, because the GDB server is the only consumer of pushed events. The protocol refuses a `notify` set without `stopped`. Fixture mode 8 floods svcOutputDebugString at a `log_mask` rate; `tools/event_flood.py` drives it.
+  Busy host (load 0.53), not acceptance evidence (`runs/flood-05`, verified emulator):
+  - Slow reader, 3 s unread: the new worker emulated 179 frames, private bytes went from 544 to 546 MiB, and 45,857 events were dropped and counted. The stop arrived and `status.stop.sequence` named it. v0.0.3 emulated 1 frame.
+  - `log_mask 0xff` (31k–48k events/s per worker), per-session fps at N = 1 / 4 / 8: v0.0.3 117 / 57 / 30 (0.26 CPU s/s at N = 8, blocked on the pipe); new worker pushing every category 119 / 94 / 71; `stops` (the Lotus default) 184 / 168 / 136; `quiet` (no history) 205 / 177 / 165. Status p50 was 0.3 ms under `stops`, against 6.6–10 ms for v0.0.3 (which still has the #22 tick wait).
+  - At N = 1 the new worker pushing every category is no faster than v0.0.3. There the cost is building the events, not the pipe, which is why unsubscribed categories are not built at all.
+  Regressions pass on the new workers: `debugger_acceptance` (`runs/r26-dbg-01`), `gdb_acceptance` continue/stop through `ctr-cli` (`runs/r26-gdb-01`), `preview_acceptance` on both workers (`runs/r26-preview-{exp,int}-01`, no running GPU waits), and the `native_process` ignored tests on both workers.
 
 ## Quiet-machine timing runs
 
@@ -97,6 +103,9 @@ python tools/bench_parallel.py --server target/release/lotus-mcp.exe --worker ci
 python tools/bench_parallel.py ... --workers 4 --idle 4 --output runs/bp-quiet-03 --require-idle
 python tools/bench_parallel.py ... --workers 4 --stall --capture --output runs/bp-quiet-04 --require-idle
 python tools/bench_parallel.py ... --workers 4 --focus-priority --output runs/bp-quiet-05 --require-idle
+# Event delivery under a guest_log flood (#26): slow reader and 1/4/8 sessions, against v0.0.3
+python tools/event_flood.py --worker citnlo=<experimental w> --worker v003=<v0.0.3 citnlo w> `
+  --rom C:\abs\debugger.3dsx --output runs/flood-quiet-01 --require-idle
 # Headless against visible desktop, unthrottled (#6, #10)
 python tools/bench_frontends.py --mcp target/release/lotus-mcp.exe --desktop target/release/lotus-desktop.exe `
   --worker <experimental w> --rom C:\abs\t03.3dsx --output runs/frontends-quiet-01 --require-idle

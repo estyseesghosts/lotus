@@ -33,6 +33,7 @@ This table records reachability, not native-backend acceptance.
 | `dsp_inspect` | `ctr-cli debug`: `dsp_inspect` | `lotus_debug`: `dsp_inspect` |
 | `dsp_load_firmware` | `ctr-cli debug`: `dsp_load_firmware` | `lotus_debug`: `dsp_load_firmware` |
 | `events` | `ctr-cli debug`: `events` | `lotus_debug`: `events` |
+| `events_configure` | `ctr-cli debug`: `events_configure` | `lotus_debug`: `events_configure` |
 | `fork` | `ctr-cli debug`: `fork` | `lotus_debug`: `fork` |
 | `gpu_configure` | `ctr-cli debug`: `gpu_configure` | `lotus_debug`: `gpu_configure` |
 | `gpu_draw` | `ctr-cli debug`: `gpu_draw` | `lotus_debug`: `gpu_draw` |

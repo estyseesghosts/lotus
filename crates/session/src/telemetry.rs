@@ -75,6 +75,10 @@ pub struct Telemetry {
     /// Last policy decision about this session: a refusal or a wait for a budget, with the
     /// reason (`crate::policy`). Empty when nothing was limited.
     pub policy_note: String,
+    /// Worker `status.transport`: reply/notification writer queue and loss counters (lotus#26).
+    pub transport: Option<Value>,
+    /// CITnLO `status.events`: subscribed and kept event categories, latest sequence, losses.
+    pub events: Option<Value>,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -113,6 +117,8 @@ impl Telemetry {
             input: InputMetrics::default(),
             preview: PreviewMetrics::default(),
             policy_note: String::new(),
+            transport: None,
+            events: None,
             started: Instant::now(),
             window: None,
         }
@@ -126,6 +132,8 @@ impl Telemetry {
         self.busy = false;
         self.epoch = epoch;
         self.audio_dropped = status["audio_dropped"].as_u64().unwrap_or(0);
+        self.transport = status.get("transport").cloned();
+        self.events = status.get("events").cloned();
         self.input_owner = status["input_owner"].as_str().unwrap_or("").to_string();
         self.buttons = status["buttons"]
             .as_u64()

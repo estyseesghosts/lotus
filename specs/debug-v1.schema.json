@@ -90,6 +90,41 @@
         }
       ]
     },
+    "EventCategory": {
+      "description": "Worker event categories (CITnLO `debug.h` `DebugTools::CATEGORIES`).",
+      "oneOf": [
+        {
+          "const": "stopped",
+          "description": "`stopped`: debug stops, including the per-run `frame` stop.",
+          "type": "string"
+        },
+        {
+          "const": "log",
+          "description": "`guest_log` (svcOutputDebugString), `hio_stdout`, `logpoint`.",
+          "type": "string"
+        },
+        {
+          "const": "native_log",
+          "description": "Emulator log entries that pass the log filter.",
+          "type": "string"
+        },
+        {
+          "const": "svc",
+          "description": "`svc_enter`/`svc_exit` while `trace` or an SVC predicate is active.",
+          "type": "string"
+        },
+        {
+          "const": "ipc",
+          "description": "`ipc` while `trace` is enabled.",
+          "type": "string"
+        },
+        {
+          "const": "pica",
+          "description": "`pica` while `gpu_configure` captures `events` or more.",
+          "type": "string"
+        }
+      ]
+    },
     "GpuCapture": {
       "description": "How much a GPU capture records per draw (CITnLO `debug_gpu.h`, lotus#24).",
       "oneOf": [
@@ -2323,6 +2358,38 @@
       "required": [
         "operation",
         "enabled"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Which event categories the worker pushes as notifications and keeps for `events`/`logs`\n(CITnLO, lotus#26). An omitted field keeps the worker's current set; stops are always\nkept. Unsubscribed categories are not built at all.",
+      "properties": {
+        "history": {
+          "items": {
+            "$ref": "#/$defs/EventCategory"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "notify": {
+          "items": {
+            "$ref": "#/$defs/EventCategory"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "operation": {
+          "const": "events_configure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation"
       ],
       "type": "object"
     }

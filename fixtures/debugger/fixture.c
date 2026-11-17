@@ -70,6 +70,11 @@ __attribute__((noinline)) static void output(const char* text, u32 length) {
     __asm__ volatile("svc 0x3d" : "+r"(r0), "+r"(r1) :: "r2", "r3", "memory");
 }
 
+/* mode 8: one svcOutputDebugString per (log_mask + 1) ticks, a guest_log flood at a rate set
+   by the host (lotus#26, tools/event_flood.py). */
+volatile u32 log_mask = 0;
+static const char flood_text[] = "lotus-flood:0123456789abcdef0123456789abcdef";
+
 volatile u32 thumb_counter;
 /* Thumb-state code for ARM/Thumb breakpoint and step checks (interworking via BLX). */
 __attribute__((noinline, target("thumb"))) void thumb_tick(void) {
@@ -94,6 +99,7 @@ __attribute__((noinline)) void tick(void) {
     if (mode == 5) { hio_write(); mode = 3; }
     if (mode == 6) deadlock_main();
     if (mode == 7) new3ds_race();
+    if (mode == 8 && (counter & log_mask) == 0) output(flood_text, sizeof(flood_text)-1);
 }
 
 __attribute__((noinline)) int main(void) {

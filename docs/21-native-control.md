@@ -40,6 +40,33 @@ in `ProcessPendingWork` services status/register/memory inspection there.
 Load/reset/stop and capture run outside nested RunLoop calls. No selected-core
 single-step precision is claimed.
 
+Replies and notifications go through one writer thread (`transport.h`
+`ControlWriter`, both branches, #26); the emulation thread only queues them.
+Replies and `stopped` notifications keep their order and are never dropped.
+Other notifications are best effort: at most 1024 queued, a newer one evicts the
+oldest, and each later notification carries `notifications_dropped`. A host that
+stops reading therefore no longer stops emulation (`tools/event_flood.py`
+slow reader). `status.transport` reports queue depth (`queued`, and
+`best_effort_queued` against `best_effort_limit`), `peak` (whole queue, so up to
+the limit plus queued replies and stops), and written, dropped and oversize
+(above 64 KiB) counts.
+
+CITnLO groups events into categories `stopped`, `log` (`guest_log`,
+`hio_stdout`, `logpoint`), `native_log`, `svc`, `ipc` and `pica`. `hello`
+takes `notifications` (bool) and optional `subscriptions` (categories to push;
+without it every category is pushed, as before) and `history` (categories kept
+in the 1024-event ring read by `events`/`logs`; default all). The debug
+operation `events_configure` changes `notify` and/or `history` later. A
+category that is neither pushed, kept, nor needed by the active `run_until`
+predicate is not built: no JSON, no ring entry, no pipe write. `stopped` is
+always kept. SVC, IPC and PICA events still need `trace` or `gpu_configure`.
+`status.events` lists the sets, the latest sequence and ring/pending loss, and
+`status.stop.sequence` is the sequence of the current stop, so a consumer that
+missed the notification recovers it from `status`. Lotus subscribes to
+`stopped` only; its GDB server is the only consumer of pushed events. The sets
+last for the worker process (load and reset keep them); closing the pipe ends
+the worker as before.
+
 ## Ownership and budgets
 
 Frames use three reusable file slots per screen under the private root. Each
