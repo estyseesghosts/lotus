@@ -34,6 +34,8 @@ pub const DEFAULT_MAX_SESSIONS: usize = 4;
 pub const MAX_SESSIONS_LIMIT: usize = 16;
 /// Per-worker stop deadline, including the wait for a session held by a stalled exchange.
 const CLOSE_DEADLINE: Duration = Duration::from_secs(3);
+/// Longest wait of a card copy for its primary's creation to commit or fail.
+const MOUNT_WAIT: Duration = Duration::from_secs(30);
 /// Frames a running primary may advance while waiting for its guest FS work to settle.
 const QUIESCE_FRAMES: u32 = 30;
 /// After terminating a worker's job, how long its in-flight exchange may take to fail.
@@ -1433,13 +1435,31 @@ impl Supervisor {
     /// another LOTUS process is refused, since its writes cannot be coordinated.
     async fn clone_card(&self, id: &str, card: &str) -> io::Result<PathBuf> {
         crate::card_store::validate_name(card)?;
-        let primary = {
-            let mut registry = lock(&self.registry);
-            let primary = registry.mounted.get(card).cloned();
-            if primary.is_none() {
-                *registry.cloning.entry(card.to_string()).or_default() += 1;
+        // A primary that reserved the card but has not committed its creation has no session
+        // yet: wait for it to commit (then copy through it) or fail (then copy the card),
+        // bounded by the worker's 30 s spawn exchange deadline.
+        let waiting = Instant::now();
+        let primary = loop {
+            {
+                let mut registry = lock(&self.registry);
+                match registry.mounted.get(card).cloned() {
+                    None => {
+                        *registry.cloning.entry(card.to_string()).or_default() += 1;
+                        break None;
+                    }
+                    Some(primary) if registry.sessions.contains_key(&primary) => {
+                        break Some(primary)
+                    }
+                    Some(_) => {}
+                }
             }
-            primary
+            if waiting.elapsed() > MOUNT_WAIT {
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    format!("card '{card}' is still being mounted by its primary; retry"),
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
         };
         let Some(primary) = primary else {
             let result = if self.cards.card_in_use(card)? {

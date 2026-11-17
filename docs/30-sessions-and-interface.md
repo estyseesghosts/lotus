@@ -42,6 +42,10 @@ could pair files from different moments: a state the guest never had. Now
    copy never exposes a root, and the next host removes `*.partial`.
 4. A primary that was playing resumes.
 
+A copy requested while the card's primary is still starting waits for that
+creation to commit or fail, at most 30 s (the worker spawn deadline), so a
+secondary created together with its primary succeeds
+(`native_process.rs` `supervisor_bounds_concurrent_sessions_and_retains_scoped_artifacts`).
 A card with no primary here is copied while new primaries on it are refused; a
 card locked by another LOTUS process is refused, since its writes cannot be
 paused from here. Workers without `flush_storage` are refused with
