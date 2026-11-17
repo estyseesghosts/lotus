@@ -40,6 +40,9 @@ PID after verified termination. The reusable `worker.lock` file is an OS-lock
 sentinel: its existence never means a worker is alive. Shutdown reports the
 number of closed sessions, and each one that did not stop cleanly, on stderr.
 
+`shader_seed` (default false) seeds new worker roots' shader caches from the
+last clean stop of the same worker binary ([30](30-sessions-and-interface.md#startup-cost-30)).
+
 Artifacts (#27, `crates/session/src/artifacts.rs`): a host-wide quota,
 `"artifacts": {"max_count": 512, "max_bytes": 536870912, "lease_seconds": 60}`
 by default, replaces the earlier lifetime cap of 128, which needed a restart

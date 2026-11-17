@@ -541,7 +541,63 @@ impl NativeSession {
     }
 }
 
+/// Length and timestamps that identify one version of a file for [`file_hash`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stamp {
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    created: Option<std::time::SystemTime>,
+}
+
+fn stamp(path: &Path) -> io::Result<Stamp> {
+    let metadata = fs::metadata(path)?;
+    Ok(Stamp {
+        len: metadata.len(),
+        modified: metadata.modified().ok(),
+        created: metadata.created().ok(),
+    })
+}
+
+type HashCache = std::sync::Mutex<std::collections::HashMap<PathBuf, (Stamp, String)>>;
+
+/// Worker binary hashes for this process, keyed by canonical path (#30). Every spawn of 4–16
+/// matching workers used to read the whole ~86 MB executable. An entry is reused only while
+/// length, modification and creation time are unchanged, and stored only if they did not
+/// change during hashing, so a rebuilt worker is always rehashed. A rewrite that keeps the
+/// length within one tick of the file system's timestamp resolution is not detected.
+fn hash_cache() -> &'static HashCache {
+    static CACHE: std::sync::OnceLock<HashCache> = std::sync::OnceLock::new();
+    CACHE.get_or_init(HashCache::default)
+}
+
+/// SHA-256 of a worker executable, cached per [`hash_cache`].
+pub(crate) fn worker_hash(path: &Path) -> io::Result<String> {
+    file_hash(path)
+}
+
 pub(crate) fn file_hash(path: &Path) -> io::Result<String> {
+    let canonical = path.canonicalize()?;
+    let before = stamp(&canonical)?;
+    if let Some((cached, hash)) = hash_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&canonical)
+    {
+        if *cached == before {
+            return Ok(hash.clone());
+        }
+    }
+    let hash = hash_file(&canonical)?;
+    if stamp(&canonical)? == before {
+        hash_cache()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(canonical, (before, hash.clone()));
+    }
+    Ok(hash)
+}
+
+fn hash_file(path: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut file = File::open(path)?;
     let mut hash = Sha256::new();
@@ -624,4 +680,27 @@ fn native_path(path: &Path) -> io::Result<PathBuf> {
         }
     }
     Ok(absolute)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cached_hashes_follow_rewrites_of_the_same_length() {
+        let path = std::env::temp_dir().join(format!(
+            "lotus-hash-{}.bin",
+            lotus_protocol::envelope::SessionUuid::generate()
+        ));
+        fs::write(&path, b"first build").expect("write");
+        let first = file_hash(&path).expect("hash");
+        assert_eq!(file_hash(&path).expect("cached"), first);
+        assert_eq!(first, hash_file(&path).expect("direct"));
+        std::thread::sleep(Duration::from_millis(50));
+        fs::write(&path, b"other build").expect("rebuild");
+        let second = file_hash(&path).expect("rehash");
+        assert_ne!(second, first);
+        assert_eq!(second, hash_file(&path).expect("direct"));
+        let _ = fs::remove_file(path);
+    }
 }

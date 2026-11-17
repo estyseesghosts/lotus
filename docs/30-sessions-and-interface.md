@@ -70,6 +70,33 @@ a frame boundary once showed generation 118 on disk while the guest had
 completed 117 (a write still on its host thread). Both workers answer
 `flush_storage` as specified (`runs/flush-probe-*`).
 
+### Startup cost (#30)
+
+`NativeSession::spawn` records the worker's SHA-256 in every manifest. It used
+to read the whole ~86 MB executable per spawn; hashes are now cached per
+process by canonical path and reused only while length, modification and
+creation time are unchanged, and stored only if they did not change while
+hashing, so a rebuilt worker is rehashed (`cached_hashes_follow_rewrites_of_the_same_length`).
+A same-length rewrite within one timestamp tick would go unnoticed.
+
+`"shader_seed": true` (host config, default off) seeds each new root without
+`shaders/` from `<storage>/shader-seed/<worker sha256>/shaders/`
+(`crates/session/src/shader_seed.rs`). Workers write only their private copy.
+After a clean stop the supervisor publishes the root's cache files into the
+seed, each through a temporary name and a rename, one stop at a time; a
+crashed worker never publishes. Azahar validates the Vulkan pipeline cache
+header against vendor and device before use and deletes an invalid copy
+(`PipelineCache::IsCacheValid`, `vk_pipeline_cache.cpp`). Homebrew has program
+ID 0, so different homebrew share cache file names, as they do in one stock
+Azahar user directory. Telemetry reports `shader_seed`
+(`seeded|cold|kept|off`) and `startup_ms`. `tests/test_mcp_shader_seed.py` on
+CITnLO Vulkan with t03: the first session starts `cold` and publishes the
+pipeline cache and four transferable caches; the next starts `seeded` and its
+log shows the cache loaded; killing a worker publishes nothing
+(`runs/seed-30-01`, **verified emulator**). Startup was 3364 then 816 ms on
+this busy host, which also includes the hash cache hit; the default stays off
+until `tools/bench_parallel.py --shader-seed` measures it on a quiet host.
+
 Copy-on-write was evaluated and not adopted: Windows block cloning
 (`FSCTL_DUPLICATE_EXTENTS_TO_FILE`) needs ReFS, and the default NTFS volume has
 none, so private copies remain. Clone latency and bytes for 2/4/8 forks are

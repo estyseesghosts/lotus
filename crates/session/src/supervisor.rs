@@ -69,6 +69,11 @@ pub struct HostConfig {
     /// Artifact count/byte quota, per-session floor and lease ([`crate::artifacts`]).
     #[serde(default)]
     pub artifacts: ArtifactQuota,
+    /// Seed each new worker root's `shaders/` from the last clean stop of the same worker
+    /// binary ([`crate::shader_seed`]). Off by default until measured; off for cold-start or
+    /// cache-sensitive benchmarks.
+    #[serde(default)]
+    pub shader_seed: bool,
 }
 
 fn default_prefer_vulkan() -> bool {
@@ -93,6 +98,7 @@ impl HostConfig {
             workers: BTreeMap::new(),
             prefer_vulkan: true,
             artifacts: ArtifactQuota::default(),
+            shader_seed: false,
         }
     }
 }
@@ -231,6 +237,8 @@ pub struct Supervisor {
     closing: AtomicBool,
     /// Loop cadence and latency reported by a windowed frontend; null when headless.
     frontend_metrics: Mutex<serde_json::Value>,
+    /// Serializes shader seed publication between concurrent clean stops.
+    shader_publish: tokio::sync::Mutex<()>,
 }
 
 impl Supervisor {
@@ -275,6 +283,7 @@ impl Supervisor {
             audio_focus: tokio::sync::Mutex::default(),
             closing: AtomicBool::new(false),
             frontend_metrics: Mutex::default(),
+            shader_publish: tokio::sync::Mutex::default(),
         })
     }
 
@@ -416,12 +425,17 @@ impl Supervisor {
             SessionKind::Secondary { parent: None } => self.cards.create_scratch(&id, None)?,
             SessionKind::Secondary { parent: Some(card) } => self.clone_card(&id, card).await?,
         };
+        let launch = Instant::now();
+        let executable = worker.unwrap_or(&self.config.worker);
+        let mut shader_state = "off";
         let started = async {
             if let Some((source, _)) = seed {
                 crate::card_store::copy_checkpoint_root(source, &root)?;
             }
-            let mut native =
-                NativeSession::spawn(worker.unwrap_or(&self.config.worker), &root).await?;
+            if self.config.shader_seed {
+                shader_state = self.seed_shaders(executable, &root).await?;
+            }
+            let mut native = NativeSession::spawn(executable, &root).await?;
             let profile = seed.map_or(&self.config.profile, |(_, profile)| profile);
             if let Err(error) = native.apply_profile(profile).await {
                 let _ = native.stop().await;
@@ -465,6 +479,8 @@ impl Supervisor {
         telemetry.state = native.state();
         telemetry.epoch = native.epoch();
         telemetry.pid = native.pid();
+        telemetry.startup_ms = launch.elapsed().as_secs_f64() * 1e3;
+        telemetry.shader_seed = shader_state.to_string();
         telemetry.record(actor, "create");
         let kill = native.kill_switch();
         let handle = Arc::new(SessionHandle {
@@ -672,7 +688,25 @@ impl Supervisor {
         } else {
             ScratchEnd::Abnormal
         };
+        let worker_sha = native.metadata()["identity"]["worker_sha256"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         drop(native);
+        // Only a clean exit has written complete caches (SaveDriverPipelineDiskCache runs at
+        // renderer shutdown); a crashed worker never publishes.
+        if self.config.shader_seed && end == ScratchEnd::Clean && !worker_sha.is_empty() {
+            let seeds = self.config.storage_root.join("shader-seed");
+            let root = handle.root.clone();
+            let _guard = self.shader_publish.lock().await;
+            let published = tokio::task::spawn_blocking(move || {
+                crate::shader_seed::publish(&seeds, &worker_sha, &root)
+            })
+            .await;
+            if let Ok(Err(error)) | Err(error) = published.map_err(io::Error::other) {
+                tracing::warn!("shader seed not published: {error}");
+            }
+        }
         // Both tasks observe `closed` at their next wake-up and never wait on another session.
         let tasks = std::mem::take(&mut *lock(&handle.tasks));
         for task in tasks {
@@ -1474,6 +1508,18 @@ impl Supervisor {
             }
         }
         result
+    }
+
+    /// Copy the shader seed of `executable` into a root that has no `shaders/` yet.
+    async fn seed_shaders(&self, executable: &Path, root: &Path) -> io::Result<&'static str> {
+        let seeds = self.config.storage_root.join("shader-seed");
+        let (executable, root) = (executable.to_path_buf(), root.to_path_buf());
+        tokio::task::spawn_blocking(move || {
+            let sha = crate::native_session::worker_hash(&executable)?;
+            crate::shader_seed::seed(&seeds, &sha, &root)
+        })
+        .await
+        .map_err(io::Error::other)?
     }
 
     /// Canonical file behind an approved handle, for identity comparisons and

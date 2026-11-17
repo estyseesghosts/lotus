@@ -60,6 +60,10 @@ pub struct Telemetry {
     /// Worker private working set, when the host reports it.
     pub memory_bytes: Option<u64>,
     pub uptime_ms: u64,
+    /// Host time from creation start to a running worker with content loaded.
+    pub startup_ms: f64,
+    /// `seeded`, `cold` (no seed yet), `kept` (root already had caches) or `off`.
+    pub shader_seed: String,
     pub last_actor: Actor,
     pub last_operation: String,
     /// This session's own supervision task ([`crate::supervisor`]).
@@ -96,6 +100,8 @@ impl Telemetry {
             pid: None,
             memory_bytes: None,
             uptime_ms: 0,
+            startup_ms: 0.0,
+            shader_seed: String::new(),
             last_actor: Actor::Host,
             last_operation: String::new(),
             supervision: SupervisionMetrics::default(),
