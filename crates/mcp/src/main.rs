@@ -4,8 +4,6 @@
 //! the client disconnects every session is stopped, so secondary data is
 //! discarded and primary cards are unlocked.
 
-use std::time::Duration;
-
 use lotus_mcp::LotusServer;
 use lotus_session::supervisor::HostConfig;
 use rmcp::ServiceExt;
@@ -18,20 +16,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         LotusServer::new()
     };
+    // Each session supervises itself (lotus_session::supervisor); there is no host pump.
     let host = server.host().cloned();
-    let pump = host.clone().map(|host| {
-        tokio::spawn(async move {
-            loop {
-                host.pump().await;
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-        })
-    });
     let service = server.serve(rmcp::transport::stdio()).await?;
     let result = service.waiting().await;
-    if let Some(pump) = pump {
-        pump.abort();
-    }
     if let Some(host) = host {
         let count = host.sessions().len();
         host.close().await;

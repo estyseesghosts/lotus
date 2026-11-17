@@ -552,10 +552,8 @@ impl LotusWindow {
         let Some(controller) = &self.controller else {
             return;
         };
-        if let Ok(mut inputs) = controller.input.lock() {
-            if self.sessions.iter().any(|s| s.info.id == self.selected) {
-                inputs.insert(self.selected.clone(), self.input);
-            }
+        if self.sessions.iter().any(|s| s.info.id == self.selected) {
+            controller.submit_input(&self.selected, self.input);
         }
     }
 

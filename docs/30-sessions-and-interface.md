@@ -34,11 +34,37 @@ status or preview. Creation reserves a slot (and the card) before the slow
 spawn, so concurrent creations respect `max_sessions` (default 4, the tested
 load; configurable to 16).
 
-The **pump** (every 100 ms in both frontends) polls each idle session's status,
-re-issues bounded `run` batches for sessions marked playing, and folds replies
-into telemetry. A session held by another command is skipped, not awaited. A
-batch that ended with `unsupported_applet` or `core_error` stops playback;
-`host_deadline` (slow batch) does not.
+Each session has its own **supervision task** and **input task**
+(`supervisor/supervision.rs`), started when its creation commits and ended when
+it stops. There is no host-wide pump or barrier: a worker whose pipe stalls
+delays only its own tasks (#19, #20).
+
+- Supervision polls status every 100 ms (1 s, without IPC, once the worker has
+  stopped or crashed), re-issues bounded `run` batches for a playing session,
+  and folds replies into telemetry. A session held by another command is
+  counted busy and skipped. The next poll is scheduled from completion, so a
+  slow exchange never causes catch-up bursts. A batch that ended with a
+  debugger stop, `unsupported_applet` or `core_error` stops playback;
+  `host_deadline` (slow batch) does not.
+- `submit_input` queues a complete input state and returns. The input task
+  waits for the session, then sends the newest state. A newer state replaces
+  the queued tail unless that would revert a button or touch transition the
+  tail carries, so a press and release shorter than one exchange both arrive;
+  at 8 queued states the tail is overwritten and counted. Load, reset, a
+  direct `input` call, an owner change and stop discard queued states.
+- Exchanges on one worker are serialized by its mutex, which is FIFO: a pause
+  or debugger command queued behind input waits for at most one exchange.
+- A timed-out exchange is never dropped mid-reply (the reply would reach the
+  next request); the worker's 30 s exchange deadline ends the connection.
+
+Per-session `telemetry.supervision` (polls, busy and late polls, lateness and
+status latency, failures, continuations) and `telemetry.input` (submitted,
+delivered, coalesced, kept and dropped transitions, cancelled, failed, pending,
+queue age, p95 and max delivery latency) appear in every session summary.
+`crates/session/tests/supervision.rs` checks against `lotus-mock-native` that a
+worker stalled for 3 s stops none of three siblings' polls, continuations or
+input (p95 under 500 ms, every tap delivered, no stuck key) and that a manual
+pause is never resumed (**verified compiled**, mock workers).
 
 ## Gauges
 
@@ -169,7 +195,7 @@ Paused registers at frame 25 were identical across two separate runs.
 
 **Observed speed**: on this host the software-rendered worker runs `t03.3dsx`
 at about 7 guest fps alone (60 frames in 8.7 host s via `run_until`, without
-the pump, whose status polls skip a session held by a run) and about 4–5 fps
+supervision polls, which skip a session held by a run) and about 4–5 fps
 each with three running. The speed gauge reports this (≈ 8 %). It is a property
 of the current software renderer, the motivation for ADR-009
 ([29](29-wave-3-plan.md)), not of this interface.

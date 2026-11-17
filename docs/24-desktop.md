@@ -6,9 +6,10 @@ worker. Session model, layout, gauges and the shared MCP surface are in
 
 `desktop_controller` owns the shared `Supervisor` ([30](30-sessions-and-interface.md))
 on a background Tokio runtime. UI commands have a 32-entry bound and each runs
-as its own task, so a slow worker never stalls another session. Complete input
-states coalesce separately (8 ms flush), so key/touch releases never depend on
-command-queue space. Only the selected session is previewed; the latest screen
+as its own task, so a slow worker never stalls another session. Every key or
+touch change submits the complete input state to that session's mailbox
+without waiting ([30](30-sessions-and-interface.md#shared-supervisor)), so
+releases never depend on command-queue space or another worker. Only the selected session is previewed; the latest screen
 pair replaces the previous one, and replaced images are dropped from GPUI's
 sprite atlas. Previews come from the worker's shared-memory ring and fall back to
 `capture` on workers without it ([21](21-native-control.md#ownership-and-budgets)).

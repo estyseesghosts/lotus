@@ -571,9 +571,6 @@ impl Connection {
                     self.last_stop = stop_reply(stop);
                     return Ok(self.last_stop.as_bytes().to_vec());
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                    self.host.pump().await;
-                }
                 byte = self.socket.read_u8() => {
                     match byte? { 3 => { self.debug(D::Pause).await?; self.last_stop = "S02".into(); return Ok(b"S02".to_vec()); }, b'+'|b'-' => {}, _ => return Err(bad()) }
                 }

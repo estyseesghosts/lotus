@@ -1,9 +1,10 @@
 //! Local host policy shared by the headless MCP server and the desktop.
 //!
 //! One `Supervisor` owns every session of a LOTUS process. Each session has its
-//! own async lock, so a long bounded run on one session never blocks commands,
-//! status or previews of another. The registry lock is never held across an
-//! await. Desktop and MCP call the same methods; there is one control model.
+//! own async lock and its own supervision and input tasks ([`supervision`]), so a
+//! slow or stalled worker never delays commands, status, input or continuation
+//! of another. The registry lock is never held across an await. Desktop and MCP
+//! call the same methods; there is one control model.
 //!
 //! Sessions are *primary* (mount a persistent card) or *secondary* (private
 //! scratch copy, discarded on end); see [`crate::card_store`].
@@ -15,16 +16,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use lotus_protocol::envelope::SessionUuid;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use tokio::task::JoinSet;
-
 use crate::card_store::{CardStore, ScratchEnd};
 use crate::native_session::{Frame, InputState, NativeSession};
 use crate::telemetry::{Actor, Telemetry};
 use crate::SessionState;
+use lotus_protocol::envelope::SessionUuid;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 mod experiments;
+mod supervision;
 
 /// Sessions per host unless the configuration raises it; four is the tested load.
 pub const DEFAULT_MAX_SESSIONS: usize = 4;
@@ -139,7 +139,7 @@ pub struct Artifact {
     pub mime_type: String,
 }
 
-/// A session's lock domain. Lock order: `native`, then `info` or `telemetry`.
+/// A session's lock domain. Lock order: `native`, then `info`, `mailbox`, `telemetry`.
 struct SessionHandle {
     info: Mutex<SessionInfo>,
     root: PathBuf,
@@ -150,6 +150,14 @@ struct SessionHandle {
     symbols: Mutex<Option<lotus_debugger::symbols::Symbols>>,
     /// (epoch, frames) of the last preview served while paused; see [`Supervisor::preview`].
     previewed: Mutex<Option<(u64, u64)>>,
+    /// Set once when the session starts stopping; ends its tasks.
+    closed: AtomicBool,
+    /// Wakes the supervision task early.
+    wake: tokio::sync::Notify,
+    /// Wakes the input task when the mailbox gains a state.
+    input_wake: tokio::sync::Notify,
+    mailbox: Mutex<supervision::Mailbox>,
+    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
 
 impl SessionHandle {
@@ -168,6 +176,33 @@ impl SessionHandle {
     }
     fn is_playing(&self) -> bool {
         self.playing.load(Ordering::Acquire)
+    }
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+    /// Start this session's supervision and input tasks. Requires a Tokio runtime.
+    fn start(self: &Arc<Self>) {
+        *lock(&self.tasks) = vec![
+            tokio::spawn(supervision::supervise(self.clone())),
+            tokio::spawn(supervision::deliver_input(self.clone())),
+        ];
+    }
+    /// Mark the session closing; false if it already was.
+    fn close(&self) -> bool {
+        if self.closed.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.wake.notify_one();
+        self.input_wake.notify_one();
+        self.cancel_input(true);
+        true
+    }
+    /// Drop pending live input (load, reset, direct input, stop).
+    fn cancel_input(&self, forget: bool) {
+        let mut mailbox = lock(&self.mailbox);
+        let mut telemetry = self.telemetry();
+        mailbox.cancel(&mut telemetry.input, forget);
+        telemetry.input.pending = 0;
     }
 }
 
@@ -428,7 +463,13 @@ impl Supervisor {
             lease: Mutex::new(None),
             symbols: Mutex::new(None),
             previewed: Mutex::new(None),
+            closed: AtomicBool::new(false),
+            wake: tokio::sync::Notify::new(),
+            input_wake: tokio::sync::Notify::new(),
+            mailbox: Mutex::default(),
+            tasks: Mutex::default(),
         });
+        handle.start();
         reservation.commit(handle);
         Ok(info)
     }
@@ -442,13 +483,14 @@ impl Supervisor {
         check_lease(&handle, actor_client(actor))?;
         handle.set_playing(false);
         pause_if_running(&mut native).await?;
+        handle.cancel_input(true);
         native.load(&content).await?;
         lock(&handle.info).asset = Some(asset.to_string());
         handle.record(actor, "load");
         Ok(handle.info())
     }
 
-    /// Run continuously: the pump re-issues bounded runs until paused.
+    /// Run continuously: the session's supervision task re-issues bounded runs until paused.
     pub async fn run(&self, id: &str, actor: Actor) -> io::Result<()> {
         self.require_control()?;
         let handle = self.handle(id)?;
@@ -500,6 +542,7 @@ impl Supervisor {
         handle.set_playing(false);
         pause_if_running(&mut native).await?;
         handle.record(actor, "reset");
+        handle.cancel_input(true);
         native.reset().await
     }
 
@@ -517,13 +560,51 @@ impl Supervisor {
         if actor != Actor::Desktop {
             handle.record(actor, "input");
         }
+        // A direct state supersedes anything still queued for this session.
+        handle.cancel_input(true);
         native.input(state, owner).await
+    }
+
+    /// Queue a complete live input state and return at once. The session's own input task
+    /// delivers the newest state after the previous exchange, keeping short press/release
+    /// transitions ([`supervision::Mailbox`]). Errors surface in telemetry, not here.
+    pub fn submit_input(
+        &self,
+        id: &str,
+        state: InputState,
+        owner: &str,
+        actor: Actor,
+    ) -> io::Result<()> {
+        self.require_control()?;
+        let handle = self.handle(id)?;
+        if handle.is_closed() {
+            return Err(io::Error::other("session is stopping"));
+        }
+        {
+            let mut mailbox = lock(&handle.mailbox);
+            let mut telemetry = handle.telemetry();
+            mailbox.submit(
+                supervision::Queued {
+                    state,
+                    owner: owner.to_string(),
+                    actor,
+                    submitted: Instant::now(),
+                },
+                &mut telemetry.input,
+            );
+            telemetry.input.pending = mailbox.len();
+        }
+        handle.input_wake.notify_one();
+        Ok(())
     }
 
     /// End a session. Secondary guest data is deleted; primary data persists.
     pub async fn stop(&self, id: &str, actor: Actor) -> io::Result<()> {
         self.require_control()?;
         let handle = self.handle(id)?;
+        if !handle.close() {
+            return Err(io::Error::other("session is already stopping"));
+        }
         handle.set_playing(false);
         handle.record(actor, "stop");
         let mut native = handle.native.lock().await;
@@ -547,6 +628,11 @@ impl Supervisor {
             ScratchEnd::Abnormal
         };
         drop(native);
+        // Both tasks observe `closed` at their next wake-up and never wait on another session.
+        let tasks = std::mem::take(&mut *lock(&handle.tasks));
+        for task in tasks {
+            let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
+        }
         {
             let mut registry = lock(&self.registry);
             registry.sessions.remove(id);
@@ -829,6 +915,13 @@ impl Supervisor {
             handle.set_playing(false);
             pause_if_running(&mut native).await?;
             handle.record(Actor::Host, client);
+            // Load and reset start new content; state loads, replays and input commands set
+            // worker input themselves, so later live states still apply but are never deduped.
+            if matches!(command, DebugCommand::Load { .. } | DebugCommand::Reset) {
+                handle.cancel_input(true);
+            } else {
+                lock(&handle.mailbox).forget();
+            }
         }
         match command {
             DebugCommand::Status => native.status().await,
@@ -1091,16 +1184,6 @@ impl Supervisor {
         lock(&self.focus_request).take()
     }
 
-    /// Refresh gauges of every idle session and keep playing sessions running.
-    /// Sessions held by another command are marked busy, never waited on.
-    pub async fn pump(&self) {
-        let mut tasks = JoinSet::new();
-        for handle in self.handles() {
-            tasks.spawn(pump_session(handle));
-        }
-        while tasks.join_next().await.is_some() {}
-    }
-
     /// Stop every session, bounding each stop; used when a frontend closes.
     pub async fn close(&self) {
         for id in self.sessions() {
@@ -1220,52 +1303,6 @@ impl Drop for Reservation<'_> {
         if let Some(card) = &self.card {
             registry.mounted.remove(card);
         }
-    }
-}
-
-async fn pump_session(handle: Arc<SessionHandle>) {
-    let Ok(mut native) = handle.native.try_lock() else {
-        handle.telemetry().busy = true;
-        return;
-    };
-    if !native.state().is_active() {
-        handle.set_playing(false);
-        let mut telemetry = handle.telemetry();
-        telemetry.state = native.state();
-        telemetry.fps = 0.0;
-        telemetry.speed = 0.0;
-        telemetry.memory_bytes = None;
-        return;
-    }
-    let status = match native.status().await {
-        Ok(status) => status,
-        Err(error) => {
-            handle.set_playing(false);
-            let mut telemetry = handle.telemetry();
-            telemetry.state = native.state();
-            telemetry.last_error = error.to_string();
-            return;
-        }
-    };
-    observe(&handle, &native, &status);
-    if !handle.is_playing() || native.state() != SessionState::Paused {
-        return;
-    }
-    // A bounded run ended. Resume unless the guest stopped for a reason a retry
-    // cannot fix; a host deadline only means the batch ran slowly.
-    let stop = status["stop"]["reason"].as_str().unwrap_or("");
-    if !matches!(stop, "" | "frame") {
-        handle.set_playing(false);
-        return;
-    }
-    let reason = status["last_error"].as_str().unwrap_or("");
-    if !matches!(reason, "" | "host_deadline") {
-        handle.set_playing(false);
-        return;
-    }
-    if let Err(error) = native.run().await {
-        handle.set_playing(false);
-        handle.telemetry().last_error = error.to_string();
     }
 }
 

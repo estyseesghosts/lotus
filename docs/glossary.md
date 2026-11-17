@@ -94,9 +94,9 @@ Shown nested under that card. [30](30-sessions-and-interface.md)
 `<storage>/cards/<name>/` holding Azahar's `sdmc/`, `nand/` and `sysdata/`.
 Not a *profile* (settings). [30](30-sessions-and-interface.md)
 
-**Pump** — the shared supervisor loop that refreshes gauges and re-issues
-bounded runs for sessions that are playing, skipping busy sessions.
-[30](30-sessions-and-interface.md)
+**Supervision task** — the per-session task that refreshes gauges and
+re-issues bounded runs while the session is playing, skipping it while busy.
+Replaced the host-wide pump in #19. [30](30-sessions-and-interface.md)
 
 **Headless / windowed** — the two ways to drive LOTUS: `lotus-mcp`, or
 `lotus-desktop` (optionally `--mcp`) with the same tools over the same

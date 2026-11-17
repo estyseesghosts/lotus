@@ -62,6 +62,10 @@ pub struct Telemetry {
     pub uptime_ms: u64,
     pub last_actor: Actor,
     pub last_operation: String,
+    /// This session's own supervision task ([`crate::supervisor`]).
+    pub supervision: SupervisionMetrics,
+    /// This session's live-input mailbox.
+    pub input: InputMetrics,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -94,6 +98,8 @@ impl Telemetry {
             uptime_ms: 0,
             last_actor: Actor::Host,
             last_operation: String::new(),
+            supervision: SupervisionMetrics::default(),
+            input: InputMetrics::default(),
             started: Instant::now(),
             window: None,
         }
@@ -163,6 +169,86 @@ impl Telemetry {
     pub fn record(&mut self, actor: Actor, operation: &str) {
         self.last_actor = actor;
         self.last_operation = operation.to_string();
+    }
+}
+
+/// Host-side counters of one session's supervision loop. Times are host milliseconds.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct SupervisionMetrics {
+    /// Status exchanges completed by the loop.
+    pub polls: u64,
+    /// Polls skipped because a command held the session.
+    pub busy_polls: u64,
+    /// Polls that started more than one period after they were due.
+    pub late_polls: u64,
+    /// How long after its due time the latest poll started.
+    pub lateness_ms: f64,
+    pub lateness_max_ms: f64,
+    /// Duration of the latest status exchange.
+    pub status_ms: f64,
+    pub status_max_ms: f64,
+    pub status_failures: u64,
+    /// Bounded runs re-issued after a `frame` stop or host deadline.
+    pub continuations: u64,
+}
+
+impl SupervisionMetrics {
+    /// Fold one completed poll that was due at `due` and started at `started`.
+    pub fn poll(&mut self, due: Instant, started: Instant, status: Duration, period: Duration) {
+        let late = started.saturating_duration_since(due);
+        self.polls += 1;
+        self.lateness_ms = late.as_secs_f64() * 1e3;
+        self.lateness_max_ms = self.lateness_max_ms.max(self.lateness_ms);
+        if late > period {
+            self.late_polls += 1;
+        }
+        self.status_ms = status.as_secs_f64() * 1e3;
+        self.status_max_ms = self.status_max_ms.max(self.status_ms);
+    }
+}
+
+/// Delivery counters of one session's live-input mailbox. Latency is host time from
+/// submission to the worker's reply, including the wait for the session.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct InputMetrics {
+    pub submitted: u64,
+    pub delivered: u64,
+    /// States replaced by a newer one before delivery.
+    pub coalesced: u64,
+    /// States kept queued because replacing them would lose a press.
+    pub edges_kept: u64,
+    /// Presses lost because the mailbox was full.
+    pub edges_dropped: u64,
+    /// Pending states discarded by stop, load, reset, direct input or an owner change.
+    pub cancelled: u64,
+    pub failed: u64,
+    pub pending: usize,
+    /// Queue age of the latest delivered state when its exchange started.
+    pub queue_age_ms: f64,
+    pub latency_p95_ms: f64,
+    pub latency_max_ms: f64,
+    #[serde(skip)]
+    latencies: VecDeque<f32>,
+}
+
+/// Deliveries kept for the p95.
+const LATENCY_WINDOW: usize = 64;
+
+impl InputMetrics {
+    pub fn delivered(&mut self, queue_age: Duration, latency: Duration) {
+        self.delivered += 1;
+        self.queue_age_ms = queue_age.as_secs_f64() * 1e3;
+        let latency = latency.as_secs_f64() * 1e3;
+        self.latency_max_ms = self.latency_max_ms.max(latency);
+        if self.latencies.len() == LATENCY_WINDOW {
+            self.latencies.pop_front();
+        }
+        self.latencies.push_back(latency as f32);
+        let mut sorted: Vec<f32> = self.latencies.iter().copied().collect();
+        sorted.sort_by(f32::total_cmp);
+        // Nearest-rank p95.
+        let rank = (sorted.len() * 95).div_ceil(100).max(1) - 1;
+        self.latency_p95_ms = f64::from(sorted[rank]);
     }
 }
 

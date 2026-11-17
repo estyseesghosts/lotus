@@ -24,3 +24,7 @@ windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Secu
 [[bin]]
 name = "lotus-mock-worker"
 path = "src/mock_worker.rs"
+
+[[bin]]
+name = "lotus-mock-native"
+path = "src/mock_native.rs"

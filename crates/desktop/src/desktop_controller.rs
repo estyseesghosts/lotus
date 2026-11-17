@@ -1,9 +1,9 @@
 //! Bridge between GPUI and the shared supervisor; no emulation on the UI thread.
 //!
-//! A background thread runs a Tokio runtime with four loops: UI commands (each
-//! its own task, so one slow worker never stalls the others), the shared pump
-//! (gauges and continuous running), coalesced live input, and the selected
-//! session's preview. With [`McpMode::Stdio`] the same runtime also serves the
+//! A background thread runs a Tokio runtime for UI commands (each its own task,
+//! so one slow worker never stalls the others) and the selected session's
+//! preview. Gauges, continuous running and live input belong to each session's
+//! own tasks in the supervisor; the window submits input without waiting. With [`McpMode::Stdio`] the same runtime also serves the
 //! MCP tools over stdio against the same supervisor, so an agent and the person
 //! at the window drive one set of sessions.
 use std::collections::BTreeMap;
@@ -113,7 +113,6 @@ pub struct Update {
 pub struct DesktopController {
     pub commands: SyncSender<Command>,
     pub latest: Arc<Mutex<Update>>,
-    pub input: Arc<Mutex<BTreeMap<String, InputState>>>,
     /// Fetch registers while paused only when the inspector is open.
     pub inspector: Arc<AtomicBool>,
     pub inspection_selection: Arc<Mutex<(Panel, u32)>>,
@@ -125,8 +124,6 @@ pub struct DesktopController {
 }
 
 const TICK: Duration = Duration::from_millis(33);
-const PUMP_PERIOD: Duration = Duration::from_millis(100);
-const INPUT_PERIOD: Duration = Duration::from_millis(8);
 const CATALOG_PERIOD: Duration = Duration::from_secs(1);
 
 impl DesktopController {
@@ -138,7 +135,6 @@ impl DesktopController {
             control: host.allows_control(),
             ..Update::default()
         }));
-        let input: Arc<Mutex<BTreeMap<String, InputState>>> = Arc::default();
         let inspector = Arc::new(AtomicBool::new(false));
         let inspection_selection = Arc::new(Mutex::new((Panel::Cpu, 0)));
         let shutdown = Arc::new(AtomicBool::new(false));
@@ -147,7 +143,6 @@ impl DesktopController {
             presence: presence.clone(),
             host: host.clone(),
             published: latest.clone(),
-            input: input.clone(),
             inspector: inspector.clone(),
             inspection_selection: inspection_selection.clone(),
             previous_draw: Arc::default(),
@@ -163,7 +158,6 @@ impl DesktopController {
         Ok(Self {
             commands: sender,
             latest,
-            input,
             inspector,
             inspection_selection,
             presence,
@@ -171,6 +165,13 @@ impl DesktopController {
             shutdown,
             thread: Some(thread),
         })
+    }
+
+    /// Queue a complete live input state for `session`; never waits on the worker.
+    pub fn submit_input(&self, session: &str, state: InputState) {
+        let _ = self
+            .host
+            .submit_input(session, state, "live", Actor::Desktop);
     }
 
     /// The supervisor shared with MCP, for tests and embedding.
@@ -194,7 +195,6 @@ struct Loops {
     host: Arc<Supervisor>,
     presence: Arc<Presence>,
     published: Arc<Mutex<Update>>,
-    input: Arc<Mutex<BTreeMap<String, InputState>>>,
     inspector: Arc<AtomicBool>,
     inspection_selection: Arc<Mutex<(Panel, u32)>>,
     previous_draw: Arc<Mutex<Option<(String, Value)>>>,
@@ -208,8 +208,6 @@ impl Loops {
         if mcp == McpMode::Stdio {
             background.push(tokio::spawn(self.clone().serve_mcp()));
         }
-        background.push(tokio::spawn(self.clone().pump_loop()));
-        background.push(tokio::spawn(self.clone().input_loop()));
         let mut sequence = 0u64;
         let mut audio_selected = String::new();
         let mut previewed_session = String::new();
@@ -468,24 +466,6 @@ impl Loops {
             Command::Abort(id) => host.abort(&id, actor).await?,
         }
         Ok(())
-    }
-
-    async fn pump_loop(self) {
-        loop {
-            self.host.pump().await;
-            tokio::time::sleep(PUMP_PERIOD).await;
-        }
-    }
-
-    /// Complete input states coalesce here, independent of the command bound.
-    async fn input_loop(self) {
-        loop {
-            let states = std::mem::take(&mut *lock(&self.input));
-            for (id, state) in states {
-                let _ = self.host.input(&id, state, "live", Actor::Desktop).await;
-            }
-            tokio::time::sleep(INPUT_PERIOD).await;
-        }
     }
 
     async fn serve_mcp(self) {

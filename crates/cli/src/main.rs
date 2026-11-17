@@ -130,13 +130,6 @@ fn main() -> Result<()> {
                 } else {
                     None
                 };
-                let pumping = host.clone();
-                let pump = tokio::spawn(async move {
-                    loop {
-                        pumping.pump().await;
-                        tokio::time::sleep(std::time::Duration::from_millis(16)).await;
-                    }
-                });
                 for line in std::io::stdin().lock().lines() {
                     let line = line?;
                     if line.trim() == "quit" {
@@ -152,7 +145,6 @@ fn main() -> Result<()> {
                         };
                     println!("{reply}");
                 }
-                pump.abort();
                 host.close().await;
                 Ok::<(), anyhow::Error>(())
             })?;
