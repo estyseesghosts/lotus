@@ -52,6 +52,9 @@ from native_debug_probe import Peer  # noqa: E402
 INIT_CLOCK_FIXED = 1  # Settings::InitClock::FixedTime; init_time keeps its default
 RENDERERS = {"software": 0, "vulkan": 2}  # Settings::GraphicsAPI values used by settings_set
 UNHIT = 0x0F000000  # execute breakpoints here are never reached by 3DSX homebrew (outside its code)
+# Memory::PROCESS_IMAGE_VADDR (src/core/memory.h), where the 3DSX loader puts .text; never written,
+# but an armed watchpoint switches CITnLO to instruction stepping ("execution_mode").
+TEXT_BASE = 0x00100000
 REWIND_FAST_LEVEL = 1  # zstd level for the *_fast rewind configs; default checkpoints use 3
 CONFIGS = {
     "off": [],
@@ -72,6 +75,7 @@ CONFIGS = {
        for n in (1, 2, 5, 10)},
     **{f"bp_execute_{n}": [("breakpoint_set", dict(address=UNHIT + 4 * i, kind="execute", length=4))
                            for i in range(n)] for n in (1, 8, 64)},
+    "watch_write_1": [("breakpoint_set", dict(address=TEXT_BASE, kind="write", length=4))],
 }
 CITNLO_ONLY = {name for name in CONFIGS if name != "off"}
 BUSY = 0.15  # whole-host CPU load above which timings are labelled not comparable

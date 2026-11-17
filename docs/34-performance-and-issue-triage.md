@@ -58,6 +58,17 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
 
 - #24 GPU capture levels (CITnLO `459d3662`). `gpu_configure` takes `capture`: `counters` (debug context stays detached, so the batched PICA path runs; new PicaCore `command_lists` and `draw_calls` counters), `events` (per-command events, draw metadata only), `draws` (register and shader snapshots of draws in `draw_range`, at most `max_draws`, resource bytes only with `resources: true`), `full` (every draw with resources; the default, so older clients keep their behaviour). A snapshot keeps raw copies; JSON, hex and the file are built only when `gpu_draw` asks for that draw, so no level writes a file per draw. Synchronous cost per snapshotted draw is the register/shader copy plus, with resources, `FlushRegion` and the copy of each texture/index/vertex range (4 MiB budget per draw, 8 draws retained). `tools/gpu_capture_modes.py` passes on software and Vulkan (`runs/gpu-modes-24-03`, verified emulator): counters keep `command_path: batched` and write no `gpu/` files; events write none either; `max_draws: 2` takes 2 snapshots and counts 778 skipped; draw 1 under `draws` + `draw_range [1,1]` + resources is byte-identical to `full`, and `full` is byte-identical to the v0.0.3 worker (103,380 bytes). `gpu_acceptance` and `pica_path_acceptance` pass unchanged (`runs/gpu-24-01`, `runs/pica-path-24-01`). Busy-host Vulkan times for 30 frames, not acceptance evidence: off 524 ms, counters 508, events 901, draws 807, full 799. `events` costs as much as `full`: the remaining per-event cost is building, buffering and notifying one JSON object per PICA event (`Record` in `src/ctr_worker/debug.h`), which is #26. Identical boots of t03 do not always reach draw 1 in the same guest state, on Vulkan and occasionally on software (`runs/gpu-repeat-24-01`, `runs/gpu-modes-24-02`), so the fidelity check repeats boots until a pair matches; that divergence is #29. Desktop GPU view: Count draws, Capture 8 draws, Full capture, Disable capture. Bench configs `gpu_counters`, `gpu_events`, `gpu_draws_8`; `pica_events` is `full`.
 
+- #19 supervision under load (`84c6326`). Each session already had its own supervision task (v0.0.3); the poll skipped a session whose lock was held, so `bench_parallel` probing one session back to back recorded 74 busy polls and no poll in 8 s while the run sat at its 600-frame budget. After 4 skipped polls the poll now queues on the session's FIFO lock, and while a run should reach its budget within one period the next poll is due 1 ms after it (at least 5 ms). Test `back_to_back_commands_do_not_starve_supervision` fails with the old poll (verified compiled).
+- #22 `tools/bench_parallel.py`: N sessions through the real `lotus-mcp` (or the desktop), any bench.py config, fixed-rate probes (registers, input, optionally capture), `--idle K` paused sessions, `--stall` (one suspended worker), seeded or cold shader cache, `--workload`, `--focus-priority`, `--reference` (bench.py single-worker row). Writes `report.json` (raw rounds, SHA-256 of every binary and ROM, build manifests, host and GPU driver), `summary.md` and `aggregate.svg`. CI runs a 2-session mock smoke and a stall smoke. Not measured: GPU memory and GPU wait time. The harness found three latency bugs, fixed in both workers (verified emulator):
+  - stdin was polled with a 1 ms sleep, which costs a whole 15.6 ms timer tick: `status` 15.4 ms → 0.1 ms (CITnLO `3537ccb7`, AZAHAR `7af07040`);
+  - the paused loop waited out its 10 ms deadline after a request arrived: back-to-back `run_until` of 1 frame, unthrottled Vulkan, 27.4 ms → 2.2 ms per call (CITnLO `f5abd961`, AZAHAR `24a33631`). bench.py's reference went from 333 fps to 1772, matching the 1-session supervisor row (1788);
+  - supervision starvation (#19 above).
+
+  Busy host, t03 Vulkan unthrottled, not acceptance evidence (`runs/bp-real-04`): aggregate 1788 / 3058 / 5075 fps at N = 1 / 2 / 4 (per session 1788 / 1529 / 1274), command p50 0.5–0.6 ms, no late polls, about 961 MiB working set per worker. Two paused sessions next to two running ones used 0.002–0.008 CPU s/s and 938 MiB each (`runs/bp-idle-01`). One armed write watchpoint (`watch_write_1`) puts CITnLO into instruction stepping: 0.4 fps per session.
+- #23 host policy (`crates/session/src/policy.rs`, docs/23): `interactive` (default) allows 2 rewind sessions, 2 GPU-capture sessions above `counters` and 2 concurrent full-state operations; `batch` has no budgets. New sessions need available RAM above `memory_reserve_mib` plus the largest worker working set. Optional above-normal priority for the focused session's worker. `tests/test_mcp_policy.py` passes against CITnLO (`runs/policy-01`, verified emulator).
+- #25 non-blocking Vulkan preview (CITnLO `58e00ed1`, AZAHAR `ed51b869`, Lotus `9f39e16`). A running preview never waits for the GPU: three staging slots per screen, the newest finished one is copied, a request that finds none ready repeats the last slot (`new_frame: false`). Only the selected session is previewed. `preview_acceptance` asserts `gpu_waits` does not move over 120 running previews (both workers, `runs/preview-wait-*-01`); max lag 2 frames.
+- #28 card copies (`995e988`): a secondary created together with its card's primary waits up to 30 s for the primary to commit, instead of failing with "still being mounted".
+
 ## Quiet-machine timing runs
 
 Use a Release build ([27](27-build-and-run.md) §4) on an otherwise idle host; `--require-idle` refuses to start above 15 % CPU load. ROM paths must be absolute. `<w>` is `build/native-<branch>/bin/Release/ctr-worker.exe`, or `runtimes/<backend>/ctr-worker.exe` in an unpacked portable ZIP.
@@ -72,9 +83,20 @@ python tools/bench.py --worker v001=<v0.0.1 citnlo w> --worker v003=<v0.0.3 citn
   --output runs/bench-rewind-ab-01 --renderer vulkan --renderer software --config off --config rewind_frames --require-idle
 python tools/reverse_acceptance.py <v0.0.3 citnlo w> C:\abs\debugger.3dsx runs/rev-v003-01
 # GPU capture levels (#24); add --worker v003=<v0.0.3 citnlo w> for the before figure
-python tools/bench.py --worker citnlo=<experimental w> --rom C:bs	03.3dsx --output runs/bench-gpu-01 `
+python tools/bench.py --worker citnlo=<experimental w> --rom C:\abs\t03.3dsx --output runs/bench-gpu-01 `
   --renderer vulkan --renderer software --config off --config gpu_counters --config gpu_events `
   --config gpu_draws_8 --config pica_events --require-idle
+# Parallel sessions (#22): CITnLO and AZAHAR, 1-16 sessions, with the bench.py reference
+python tools/bench_parallel.py --server target/release/lotus-mcp.exe --worker citnlo=<experimental w> `
+  --worker azahar=<integration w> --rom t03=C:\abs\t03.3dsx --output runs/bp-quiet-01 --workers 1 --workers 2 `
+  --workers 4 --workers 8 --workers 16 --reference --require-idle
+# Interference: debug configs, paused sessions, one stalled worker, screenshots, focus priority
+python tools/bench_parallel.py --server target/release/lotus-mcp.exe --worker citnlo=<experimental w> `
+  --rom t03=C:\abs\t03.3dsx --output runs/bp-quiet-02 --workers 4 --config off --config pica_events `
+  --config gpu_draws_8 --config rewind_interval_5 --config bp_execute_8 --config watch_write_1 --require-idle
+python tools/bench_parallel.py ... --workers 4 --idle 4 --output runs/bp-quiet-03 --require-idle
+python tools/bench_parallel.py ... --workers 4 --stall --capture --output runs/bp-quiet-04 --require-idle
+python tools/bench_parallel.py ... --workers 4 --focus-priority --output runs/bp-quiet-05 --require-idle
 # Headless against visible desktop, unthrottled (#6, #10)
 python tools/bench_frontends.py --mcp target/release/lotus-mcp.exe --desktop target/release/lotus-desktop.exe `
   --worker <experimental w> --rom C:\abs\t03.3dsx --output runs/frontends-quiet-01 --require-idle
