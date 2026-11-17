@@ -1,4 +1,4 @@
-Initial LOTUS developer release for Windows x64. Extract the portable ZIP and
+LOTUS developer release for Windows x64. Extract the portable ZIP and
 run `LOTUS.cmd` to select your own `.3dsx` homebrew. `LOTUS-AZAHAR.cmd` selects the
 upstream-tracking backend; the default launcher uses CITnLO.
 

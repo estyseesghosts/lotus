@@ -4,6 +4,37 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## v0.0.4 (2026-11-17)
+
+Changes since v0.0.3 (2026-11-16). Pins are unchanged: integration (AZAHAR)
+`b4b9f0c2`, experimental (CITnLO) `559f3f4d`.
+
+### Concurrent sessions
+
+- Each session is supervised on its own task with its own live-input queue,
+  and supervision continues under back-to-back commands.
+- A card copy at one guest instant, and a copy that waits for its primary to
+  finish starting.
+- Workers shut down concurrently within one deadline.
+- Worker requests no longer run inside the desktop's publication loop.
+- A host policy with interactive and batch budgets.
+- Artifacts are retained within a bounded quota with per-session floors.
+- Worker binary hashes are cached and shader caches are seeded per worker build.
+- GPU capture level is chosen per request.
+- The MCP server subscribes to stops only; event delivery is measured under a
+  log flood.
+- A concurrent-session benchmark runs through the real supervisor
+  (`tools/bench_parallel.py`, also run as a CI smoke with mock workers).
+- Find the first divergence between two sessions (#29).
+
+### Desktop
+
+- The last preview stays visible while a Vulkan worker has nothing newer.
+
+### Known limits
+
+- Unchanged from v0.0.3. No hardware accuracy is claimed.
+
 ## v0.0.3 (2026-11-16)
 
 Changes since v0.0.1 (2026-11-15). No v0.0.2 was published. Pins: integration
