@@ -23,6 +23,9 @@ pub enum Method {
     Capture,
     /// Live preview into the worker's shared-memory ring (`preview` in the hello reply).
     Preview,
+    /// Flush guest file buffers so the card on disk matches guest writes (paused worker,
+    /// no pending FS operation); `not_ready` with `reason` otherwise.
+    FlushStorage,
     Input,
     ReadMemory,
     Registers,

@@ -11,7 +11,7 @@ window a person is watching. Builds on [23](23-local-mcp.md) (MCP policy) and
 | | Primary | Secondary |
 | --- | --- | --- |
 | Worker root | `<storage>/cards/<card>/` | `<storage>/scratch/<session>/` |
-| Guest SD/NAND | the card's own `sdmc/`, `nand/`, `sysdata/`; real reads/writes that persist | empty, or a point-in-time host copy of one card's guest directories |
+| Guest SD/NAND | the card's own `sdmc/`, `nand/`, `sysdata/`; real reads/writes that persist | empty, or a copy of one card's guest directories at one guest instant |
 | On stop | card kept | root deleted; after a crash or failed stop only logs are kept |
 | Concurrency | one primary per card (registry check + the worker's `worker.lock`) | any number, limit permitting; several may copy one card |
 | Sidebar | top-level row | nested under the card it copied; a parentless secondary is top-level |
@@ -19,11 +19,61 @@ window a person is watching. Builds on [23](23-local-mcp.md) (MCP policy) and
 A card is created on first use; names are 1–32 of `a-z 0-9 - _`. The guest
 directory names are Azahar's (`SDMC_DIR`, `NAND_DIR`, `SYSDATA_DIR` in
 `src/common/common_paths.h`), selected by `FileUtil::SetUserPath(root)` in
-`ctr_worker/frontend.h`. A copy is taken while the parent may be running and is
-**not** coordinated with its guest writes; copies over 4 GiB, symlinks and
-junctions are refused. On start, a host discards guest data in any unlocked
-`scratch/` root left by a previous process. This is a private-copy design, as
+`ctr_worker/frontend.h`. Copies over 4 GiB, symlinks and junctions are refused.
+On start, a host discards guest data in any unlocked `scratch/` root left by a
+previous process. This is a private-copy design, as
 [10](10-multi-instance-and-storage.md) prefers over unproven copy-on-write.
+
+### Copying a card in use (#28)
+
+Before #28 a secondary copied a card while its primary kept running, so a copy
+could pair files from different moments: a state the guest never had. Now
+`Supervisor::clone_card` holds the primary's session for the whole copy:
+
+1. A running primary is paused.
+2. `flush_storage` ([21](21-native-control.md)) must succeed. Guest FS calls
+   run on host threads (`HLERequestContext::RunAsync`, `kernel/hle_ipc.h`) and
+   count as pending until the guest thread wakes; while one is pending, a
+   primary that was playing advances one frame and retries (at most 30). A
+   primary the user paused is never advanced; the copy is refused with
+   `ResourceBusy` ("paused mid-operation, run it briefly and retry").
+3. The guest directories are copied into `scratch/<id>.partial` off the async
+   runtime and renamed to `scratch/<id>` when complete; a failed or crashed
+   copy never exposes a root, and the next host removes `*.partial`.
+4. A primary that was playing resumes.
+
+A card with no primary here is copied while new primaries on it are refused; a
+card locked by another LOTUS process is refused, since its writes cannot be
+paused from here. Workers without `flush_storage` are refused with
+`Unsupported`. `fork` (CITnLO) also flushes after its savestate, so the copied
+card matches the checkpoint.
+
+The copy is one guest instant, not a transaction boundary: a guest that was
+mid-way through saving several files is copied mid-way, as a power cut would
+leave it. Guest `FSFILE_Write` reaches the OS when the call completes, since
+`Service::FS::File::Write` calls `GetSize`, whose seek flushes stdio
+(`src/common/file_util.cpp`, `GetSize(FILE*)`); the flush covers other stdio
+writers.
+
+Evidence. `crates/session/tests/card_clone.rs` (mock worker whose guest
+rewrites a pair of files): 50 direct reads of the running card produce torn
+pairs, 20 coordinated copies produce none and the primary keeps playing;
+pending FS work advances a playing primary three frames and refuses a paused
+one without advancing it; old workers and foreign-locked cards are refused
+(**verified compiled**). `tests/test_mcp_card_clone.py` with the owned
+filesystem fixture in churn mode (one file rewritten each 4 ms without
+`FS_WRITE_FLUSH`) on CITnLO software: a copy of the paused primary, five copies
+of the running primary and three forks each hold one whole generation; forks
+are byte-identical with identical guest counters; passed 4 of 4 runs
+(`runs/clone-28-01`..`04`, **verified emulator**). Reading the card directly at
+a frame boundary once showed generation 118 on disk while the guest had
+completed 117 (a write still on its host thread). Both workers answer
+`flush_storage` as specified (`runs/flush-probe-*`).
+
+Copy-on-write was evaluated and not adopted: Windows block cloning
+(`FSCTL_DUPLICATE_EXTENTS_TO_FILE`) needs ReFS, and the default NTFS volume has
+none, so private copies remain. Clone latency and bytes for 2/4/8 forks are
+measured by `tools/bench_parallel.py` ([34](34-performance-and-issue-triage.md)).
 
 ## Shared supervisor
 

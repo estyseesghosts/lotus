@@ -314,6 +314,30 @@ impl NativeSession {
         self.operation(Method::Reset, Value::Null).await
     }
 
+    /// Make the card on disk match the guest's writes; requires a paused worker. Fails with
+    /// `ResourceBusy` while a guest FS operation is pending on a host thread, and with
+    /// `Unsupported` on workers without `flush_storage`. An idle worker has no open guest files.
+    pub async fn flush_storage(&mut self) -> io::Result<()> {
+        if self.state() == SessionState::Idle {
+            return Ok(());
+        }
+        let reply = self
+            .worker
+            .command(Method::FlushStorage, Value::Null)
+            .await?;
+        match (reply.status, reply.data["reason"].as_str()) {
+            (Status::Ok, _) => Ok(()),
+            (Status::NotReady, Some(reason)) => Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                format!("guest storage is not quiescent: {reason}"),
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "worker cannot flush guest storage (flush_storage); update the worker",
+            )),
+        }
+    }
+
     pub async fn input(&mut self, state: InputState, owner: &str) -> io::Result<Value> {
         let mut params = serde_json::to_value(state).map_err(io::Error::other)?;
         params["owner"] = owner.into();

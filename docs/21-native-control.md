@@ -27,6 +27,7 @@ commands. IDs increase and are never retried after a transport failure.
 | reset | none | same content reloaded, paused, epoch incremented |
 | capture | none | two native screen leases copied from latest software output |
 | preview | none | two leases into the worker's shared-memory ring (CITnLO and AZAHAR on Windows); `unsupported` elsewhere |
+| flush_storage | none | paused worker with no guest FS call pending on a host thread: every stdio stream flushed; otherwise `not_ready` with `reason` `running` or `async_fs_pending` (both branches; #28) |
 | input | owner live/scenario, buttons, x/y, touch | complete input state installed |
 | registers | core 0–3, also checked against active core count | 16 registers/CPSR at safe point |
 | read_memory | address u32, length 1–4096 | mapped current-process bytes at safe point |

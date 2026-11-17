@@ -1,14 +1,54 @@
 //! Mock of the native worker's control surface for supervisor tests; never emulates a console.
 //!
-//! Answers `hello`, `status`, `load`, `reset`, `run`, `run_until`, `pause`, `input` and
-//! `stop` like `ctr_worker/control.h`: bounded runs advance `frames` at 600 per host second
-//! and pause with stop reason `frame` at their target. Fault injection, all through files in
-//! `LOTUS_STORAGE_ROOT` so a test can address one worker:
+//! Answers `hello`, `status`, `load`, `reset`, `run`, `run_until`, `pause`, `input`,
+//! `flush_storage` and `stop` like `ctr_worker/control.h`: `run` advances `frames` at 600 per
+//! host second and pauses with stop reason `frame` at its target; `run_until` completes before
+//! replying. With a `mock-guest` file in the root, a "guest" thread rewrites `sdmc/a.bin` then
+//! `sdmc/b.bin` with the same counter while running, so any instant on disk has `a == b` or
+//! `a == b + 1`; pausing joins it.
+//! Fault injection, all through files in `LOTUS_STORAGE_ROOT` so a test can address one worker:
 //! - `mock-stall-ms`: before the next reply, sleep that many milliseconds (file is consumed).
+//! - `mock-async-pending`: `flush_storage` answers `async_fs_pending` that many times.
+//! - `mock-no-flush`: `flush_storage` is unsupported, like a worker that predates it.
 //! - every accepted `input` is appended to `inputs.jsonl` as `{"buttons","x","y","touch","owner"}`.
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+/// The simulated guest's card writes while running.
+struct Guest {
+    stop: Arc<AtomicBool>,
+    thread: std::thread::JoinHandle<()>,
+}
+
+fn start_guest(root: &std::path::Path) -> Guest {
+    let stop = Arc::new(AtomicBool::new(false));
+    let sdmc = root.join("sdmc");
+    let _ = std::fs::create_dir_all(&sdmc);
+    let flag = stop.clone();
+    let thread = std::thread::spawn(move || {
+        let start = std::fs::read(sdmc.join("b.bin"))
+            .ok()
+            .and_then(|bytes| bytes.try_into().ok())
+            .map_or(0, u64::from_le_bytes);
+        let mut counter = start;
+        while !flag.load(Ordering::Acquire) {
+            counter += 1;
+            let _ = std::fs::write(sdmc.join("a.bin"), counter.to_le_bytes());
+            let _ = std::fs::write(sdmc.join("b.bin"), counter.to_le_bytes());
+        }
+    });
+    Guest { stop, thread }
+}
+
+fn stop_guest(guest: &mut Option<Guest>) {
+    if let Some(guest) = guest.take() {
+        guest.stop.store(true, Ordering::Release);
+        let _ = guest.thread.join();
+    }
+}
 
 use lotus_protocol::control::{self, Method, Reply, Request, Status};
 
@@ -24,6 +64,7 @@ struct Machine {
     owner: String,
     buttons: u64,
     touch: bool,
+    guest: Option<Guest>,
 }
 
 impl Machine {
@@ -36,6 +77,7 @@ impl Machine {
                 self.state = "paused";
                 self.run_started = None;
                 self.stop_reason = Some("frame");
+                stop_guest(&mut self.guest);
             }
         }
     }
@@ -76,7 +118,7 @@ impl Machine {
                 self.touch = false;
                 (Status::Ok, self.snapshot())
             }
-            Method::Run | Method::RunUntil => {
+            Method::Run => {
                 if self.state != "paused" {
                     return (Status::NotReady, serde_json::Value::Null);
                 }
@@ -85,13 +127,45 @@ impl Machine {
                 self.run_started = Some((Instant::now(), self.frames));
                 self.stop_reason = None;
                 self.state = "running";
+                if self.root.join("mock-guest").exists() {
+                    self.guest = Some(start_guest(&self.root));
+                }
+                (Status::Ok, self.snapshot())
+            }
+            Method::RunUntil => {
+                if self.state != "paused" {
+                    return (Status::NotReady, serde_json::Value::Null);
+                }
+                self.frames += request.params["frames"].as_u64().unwrap_or(1);
+                self.stop_reason = Some("frame");
                 (Status::Ok, self.snapshot())
             }
             Method::Pause => {
                 self.run_started = None;
                 self.state = "paused";
                 self.stop_reason = Some("manual");
+                stop_guest(&mut self.guest);
                 (Status::Ok, self.snapshot())
+            }
+            Method::FlushStorage => {
+                if self.state == "running" {
+                    return (Status::NotReady, serde_json::json!({"reason": "running"}));
+                }
+                if self.root.join("mock-no-flush").exists() {
+                    return (Status::Unsupported, serde_json::Value::Null);
+                }
+                let pending = self.root.join("mock-async-pending");
+                if let Ok(text) = std::fs::read_to_string(&pending) {
+                    let left: u32 = text.trim().parse().unwrap_or(0);
+                    if left > 0 {
+                        let _ = std::fs::write(&pending, (left - 1).to_string());
+                        return (
+                            Status::NotReady,
+                            serde_json::json!({"reason": "async_fs_pending"}),
+                        );
+                    }
+                }
+                (Status::Ok, serde_json::json!({"flushed": true}))
             }
             Method::Input => {
                 let owner = request.params["owner"].as_str().unwrap_or("");
@@ -113,6 +187,7 @@ impl Machine {
                 (Status::Ok, self.snapshot())
             }
             Method::Stop => {
+                stop_guest(&mut self.guest);
                 self.state = "stopped";
                 (Status::Ok, serde_json::Value::Null)
             }
@@ -135,6 +210,7 @@ fn main() -> io::Result<()> {
         owner: "live".into(),
         buttons: 0,
         touch: false,
+        guest: None,
     };
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();

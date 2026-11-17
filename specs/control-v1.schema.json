@@ -47,6 +47,8 @@
         "pause",
         "reset",
         "capture",
+        "preview",
+        "flush_storage",
         "input",
         "read_memory",
         "registers",

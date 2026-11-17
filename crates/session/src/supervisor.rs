@@ -34,6 +34,8 @@ pub const DEFAULT_MAX_SESSIONS: usize = 4;
 pub const MAX_SESSIONS_LIMIT: usize = 16;
 /// Per-worker stop deadline, including the wait for a session held by a stalled exchange.
 const CLOSE_DEADLINE: Duration = Duration::from_secs(3);
+/// Frames a running primary may advance while waiting for its guest FS work to settle.
+const QUIESCE_FRAMES: u32 = 30;
 /// After terminating a worker's job, how long its in-flight exchange may take to fail.
 const RELEASE_DEADLINE: Duration = Duration::from_secs(2);
 
@@ -211,6 +213,8 @@ struct Registry {
     pending: usize,
     /// Card name to mounting session (or pending creation) ID.
     mounted: BTreeMap<String, String>,
+    /// Cards being copied while no primary holds them; a primary waits for the copy.
+    cloning: BTreeMap<String, usize>,
 }
 
 /// No shell execution, arbitrary caller paths or remote listener.
@@ -409,9 +413,8 @@ impl Supervisor {
         let reservation = self.reserve(&id, &kind)?;
         let root = match &kind {
             SessionKind::Primary { card } => self.cards.primary_root(card)?,
-            SessionKind::Secondary { parent } => {
-                self.cards.create_scratch(&id, parent.as_deref())?
-            }
+            SessionKind::Secondary { parent: None } => self.cards.create_scratch(&id, None)?,
+            SessionKind::Secondary { parent: Some(card) } => self.clone_card(&id, card).await?,
         };
         let started = async {
             if let Some((source, _)) = seed {
@@ -840,6 +843,9 @@ impl Supervisor {
                     name: checkpoint.into(),
                 })
                 .await?;
+            // The savestate is taken with no FS operation pending (debug.h refuses otherwise);
+            // flush so the copied card matches it.
+            native.flush_storage().await?;
             let manifest: serde_json::Value =
                 serde_json::from_slice(&fs::read(handle.root.join("native-manifest.json"))?)
                     .map_err(io::Error::other)?;
@@ -1357,6 +1363,12 @@ impl Supervisor {
                         format!("card '{card}' already has a primary session"),
                     ));
                 }
+                if registry.cloning.contains_key(card) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::ResourceBusy,
+                        format!("card '{card}' is being copied for a secondary; retry"),
+                    ));
+                }
                 registry.mounted.insert(card.clone(), id.to_string());
                 Some(card.clone())
             }
@@ -1374,6 +1386,94 @@ impl Supervisor {
             card,
             committed: false,
         })
+    }
+
+    /// Copy `card` into a new scratch root at one guest timeline point (#28).
+    ///
+    /// With a live primary on this host, its session is held for the whole copy: a running
+    /// guest is paused, then `flush_storage` writes stdio buffers out. While a guest FS
+    /// operation is still pending on a host thread, a guest that was running advances one
+    /// frame and retries (up to [`QUIESCE_FRAMES`]); a guest the user paused is never advanced
+    /// and the copy is refused instead. The primary resumes afterwards if it was playing.
+    /// Without a primary the card is copied while primaries are refused; a card held by
+    /// another LOTUS process is refused, since its writes cannot be coordinated.
+    async fn clone_card(&self, id: &str, card: &str) -> io::Result<PathBuf> {
+        crate::card_store::validate_name(card)?;
+        let primary = {
+            let mut registry = lock(&self.registry);
+            let primary = registry.mounted.get(card).cloned();
+            if primary.is_none() {
+                *registry.cloning.entry(card.to_string()).or_default() += 1;
+            }
+            primary
+        };
+        let Some(primary) = primary else {
+            let result = if self.cards.card_in_use(card)? {
+                Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    format!("card '{card}' is mounted by another LOTUS process; its guest writes cannot be paused from here"),
+                ))
+            } else {
+                let cards = self.cards.clone();
+                let (id, card) = (id.to_string(), card.to_string());
+                tokio::task::spawn_blocking(move || cards.create_scratch(&id, Some(&card)))
+                    .await
+                    .map_err(io::Error::other)?
+            };
+            let mut registry = lock(&self.registry);
+            if let Some(count) = registry.cloning.get_mut(card) {
+                *count -= 1;
+                if *count == 0 {
+                    registry.cloning.remove(card);
+                }
+            }
+            return result;
+        };
+        let handle = self.handle(&primary).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                format!("card '{card}' is still being mounted by its primary; retry"),
+            )
+        })?;
+        let mut native = handle.native.lock().await;
+        let resume = handle.is_playing();
+        let result = async {
+            pause_if_running(&mut native).await?;
+            let mut frames = 0;
+            loop {
+                match native.flush_storage().await {
+                    Ok(()) => break,
+                    Err(error)
+                        if error.kind() == io::ErrorKind::ResourceBusy
+                            && resume
+                            && frames < QUIESCE_FRAMES =>
+                    {
+                        native.advance(1).await?;
+                        frames += 1;
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::ResourceBusy => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::ResourceBusy,
+                            format!("card '{card}': {error}; the primary is paused mid-operation, run it briefly and retry"),
+                        ))
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            let cards = self.cards.clone();
+            let (id, card) = (id.to_string(), card.to_string());
+            tokio::task::spawn_blocking(move || cards.create_scratch(&id, Some(&card)))
+                .await
+                .map_err(io::Error::other)?
+        }
+        .await;
+        if resume && native.state() == SessionState::Paused {
+            if let Err(error) = native.run().await {
+                handle.set_playing(false);
+                handle.telemetry().last_error = error.to_string();
+            }
+        }
+        result
     }
 
     /// Canonical file behind an approved handle, for identity comparisons and

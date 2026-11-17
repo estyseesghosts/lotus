@@ -3,9 +3,12 @@
 //! A primary session mounts `cards/<name>/` as its worker root, so Azahar's
 //! `sdmc/`, `nand/` and `sysdata/` (`common_paths.h`) persist between runs. A
 //! secondary session gets `scratch/<session>/`: empty, or a point-in-time host
-//! copy of one card's guest directories. The copy is not coordinated with a
-//! running parent's guest writes. Scratch guest data is deleted when the
-//! secondary ends; worker logs are kept only when it ended abnormally.
+//! copy of one card's guest directories. This module only copies; keeping the
+//! card still while it is copied is the supervisor's job (it pauses and flushes
+//! a mounted card's primary first). Copies are staged in `<session>.partial`
+//! and renamed when complete, so no partial root is ever exposed. Scratch guest
+//! data is deleted when the secondary ends; worker logs are kept only when it
+//! ended abnormally.
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -66,35 +69,50 @@ impl CardStore {
     }
 
     /// Create a scratch root, optionally seeded from a card's guest directories.
+    ///
+    /// The caller guarantees no worker of this host writes the card meanwhile. A card locked
+    /// by another LOTUS process is refused: its writes cannot be coordinated from here.
     pub fn create_scratch(&self, session: &str, parent: Option<&str>) -> io::Result<PathBuf> {
         let root = self.scratch.join(session);
-        fs::create_dir(&root)?;
         let Some(parent) = parent else {
+            fs::create_dir(&root)?;
             return Ok(root);
         };
+        validate_name(parent)?;
+        let source = self.cards.join(parent);
+        if !source.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("unknown card '{parent}'"),
+            ));
+        }
+        let staging = self.scratch.join(format!("{session}.partial"));
+        fs::create_dir(&staging)?;
         let result = (|| {
-            validate_name(parent)?;
-            let source = self.cards.join(parent);
-            if !source.is_dir() {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("unknown card '{parent}'"),
-                ));
-            }
             let mut budget = MAX_COPY_BYTES;
             for name in GUEST_DIRS {
                 let from = source.join(name);
                 if from.is_dir() {
-                    copy_tree(&from, &root.join(name), &mut budget)?;
+                    copy_tree(&from, &staging.join(name), &mut budget)?;
                 }
             }
-            Ok(())
+            fs::rename(&staging, &root)
         })();
         if let Err(error) = result {
-            let _ = fs::remove_dir_all(&root);
+            let _ = fs::remove_dir_all(&staging);
             return Err(error);
         }
         Ok(root)
+    }
+
+    /// Whether a worker of any LOTUS process holds this card.
+    pub fn card_in_use(&self, name: &str) -> io::Result<bool> {
+        validate_name(name)?;
+        let root = self.cards.join(name);
+        if !root.is_dir() {
+            return Ok(false);
+        }
+        is_locked(&root)
     }
 
     /// End a secondary. A clean end removes everything; otherwise logs remain.
@@ -108,11 +126,17 @@ impl CardStore {
         }
     }
 
-    /// Unlocked scratch roots belong to no live worker: drop their guest data.
+    /// Unlocked scratch roots belong to no live worker: drop their guest data. Staged copies
+    /// (`*.partial`) never had a worker and are removed whole.
     fn sweep(&self) -> io::Result<()> {
         for entry in fs::read_dir(&self.scratch)? {
             let root = entry?.path();
-            if root.is_dir() && !is_locked(&root)? {
+            if root
+                .extension()
+                .is_some_and(|extension| extension == "partial")
+            {
+                fs::remove_dir_all(&root)?;
+            } else if root.is_dir() && !is_locked(&root)? {
                 discard_guest_data(&root)?;
             }
         }
@@ -286,6 +310,30 @@ mod tests {
         assert!(store
             .discard_scratch(&base.join("cards"), ScratchEnd::Clean)
             .is_err());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn a_failed_copy_exposes_no_root_and_staging_is_swept() {
+        let (base, store) = store("staging");
+        let card = store.primary_root("dev").expect("card");
+        fs::create_dir_all(card.join("sdmc")).expect("sdmc");
+        fs::write(card.join("sdmc/a.bin"), b"a").expect("seed");
+        // A directory link inside the card makes the copy fail midway.
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_dir(&base, card.join("sdmc/link")).is_ok();
+        #[cfg(not(windows))]
+        let linked = std::os::unix::fs::symlink(&base, card.join("sdmc/link")).is_ok();
+        if linked {
+            assert!(store.create_scratch("s1", Some("dev")).is_err());
+            assert!(!base.join("scratch/s1").exists());
+            assert!(!base.join("scratch/s1.partial").exists());
+        }
+        // A staging directory left by a crashed host disappears on the next open.
+        fs::create_dir_all(base.join("scratch/s2.partial/sdmc")).expect("left over");
+        drop(store);
+        CardStore::open(&base).expect("reopen");
+        assert!(!base.join("scratch/s2.partial").exists());
         let _ = fs::remove_dir_all(base);
     }
 
