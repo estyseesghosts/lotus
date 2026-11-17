@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+pub use crate::artifacts::{Artifact, ArtifactQuota};
+use crate::artifacts::{ArtifactStore, NewArtifact};
 use crate::card_store::{CardStore, ScratchEnd};
 use crate::native_session::{Frame, InputState, NativeSession};
 use crate::telemetry::{Actor, Telemetry};
@@ -30,7 +32,6 @@ mod supervision;
 pub const DEFAULT_MAX_SESSIONS: usize = 4;
 /// Upper bound accepted for `max_sessions`.
 pub const MAX_SESSIONS_LIMIT: usize = 16;
-pub const MAX_ARTIFACTS: usize = 128;
 /// Per-worker stop deadline, including the wait for a session held by a stalled exchange.
 const CLOSE_DEADLINE: Duration = Duration::from_secs(3);
 /// After terminating a worker's job, how long its in-flight exchange may take to fail.
@@ -63,6 +64,9 @@ pub struct HostConfig {
     /// `profile.graphics_api` (0 software, 2 Vulkan) for reference or determinism runs.
     #[serde(default = "default_prefer_vulkan")]
     pub prefer_vulkan: bool,
+    /// Artifact count/byte quota, per-session floor and lease ([`crate::artifacts`]).
+    #[serde(default)]
+    pub artifacts: ArtifactQuota,
 }
 
 fn default_prefer_vulkan() -> bool {
@@ -86,6 +90,7 @@ impl HostConfig {
             profile: BTreeMap::new(),
             workers: BTreeMap::new(),
             prefer_vulkan: true,
+            artifacts: ArtifactQuota::default(),
         }
     }
 }
@@ -128,17 +133,6 @@ pub struct SessionSummary {
     #[serde(flatten)]
     pub info: SessionInfo,
     pub telemetry: Telemetry,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Artifact {
-    pub uri: String,
-    pub screen: String,
-    pub width: u32,
-    pub height: u32,
-    pub bytes: usize,
-    pub sha256: String,
-    pub mime_type: String,
 }
 
 /// A session's lock domain. Lock order: `native`, then `info`, `mailbox`, `telemetry`.
@@ -224,7 +218,7 @@ pub struct Supervisor {
     config: HostConfig,
     cards: CardStore,
     registry: Mutex<Registry>,
-    artifacts: Mutex<BTreeMap<String, (Artifact, PathBuf)>>,
+    artifacts: Mutex<ArtifactStore>,
     /// Content approved interactively by the desktop user.
     local_assets: Mutex<BTreeMap<String, PathBuf>>,
     focus_request: Mutex<Option<String>>,
@@ -262,11 +256,16 @@ impl Supervisor {
         fs::create_dir_all(&config.storage_root)?;
         config.storage_root = config.storage_root.canonicalize()?;
         let cards = CardStore::open(&config.storage_root)?;
+        let artifacts = ArtifactStore::open(
+            config.storage_root.join("artifacts"),
+            config.artifacts.clone(),
+            config.max_sessions,
+        )?;
         Ok(Self {
             config,
             cards,
             registry: Mutex::default(),
-            artifacts: Mutex::default(),
+            artifacts: Mutex::new(artifacts),
             local_assets: Mutex::default(),
             focus_request: Mutex::default(),
             audio_focus: tokio::sync::Mutex::default(),
@@ -807,7 +806,7 @@ impl Supervisor {
             };
             crate::assets::mount(&handle.root, &self.resolve_asset(asset)?, kind)?;
             let mut result = native.debug(command).await?;
-            self.import_debug_artifacts(&handle.root, &mut result)?;
+            self.import_debug_artifacts(id, &handle.root, &mut result)?;
             return Ok(result);
         }
         if let DebugCommand::LeaseAcquire { owner } = command {
@@ -985,7 +984,7 @@ impl Supervisor {
             DebugCommand::Advance { frames } => native.advance(*frames).await,
             _ => {
                 let mut result = native.debug(command).await?;
-                self.import_debug_artifacts(&handle.root, &mut result)?;
+                self.import_debug_artifacts(id, &handle.root, &mut result)?;
                 if let Some(symbols) = lock(&handle.symbols).as_ref() {
                     if let Some(frames) = result
                         .get_mut("frames")
@@ -1004,26 +1003,22 @@ impl Supervisor {
         }
     }
 
+    /// Publish files a debug command wrote below the session root (`gpu/`, `audio/`,
+    /// `movies/`, `content/`) as host artifacts, replacing `result.artifacts`.
     fn import_debug_artifacts(
         &self,
+        id: &str,
         root: &Path,
         result: &mut serde_json::Value,
     ) -> io::Result<()> {
         let Some(files) = result["artifacts"].as_array() else {
             return Ok(());
         };
-        if files.len() > 16 {
+        if files.len() > crate::artifacts::MAX_BATCH {
             return Err(io::Error::other("artifact batch exceeds budget"));
         }
         let root = root.canonicalize()?;
-        let mut catalog = lock(&self.artifacts);
-        if catalog.len() + files.len() > MAX_ARTIFACTS {
-            return Err(io::Error::other("artifact quota reached"));
-        }
-        let directory = self.config.storage_root.join("artifacts");
-        fs::create_dir_all(&directory)?;
-        let mut published = Vec::new();
-        let mut total: u64 = catalog.values().map(|(a, _)| a.bytes as u64).sum();
+        let mut batch = Vec::new();
         for file in files {
             let relative = Path::new(
                 file["path"]
@@ -1045,22 +1040,14 @@ impl Supervisor {
             if !path.starts_with(&root) {
                 return Err(io::Error::other("artifact escaped session root"));
             }
-            let size = fs::metadata(&path)?.len();
-            if size > 64 << 20 || total + size > 512 << 20 {
+            if fs::metadata(&path)?.len() > crate::artifacts::MAX_ARTIFACT_BYTES {
                 return Err(io::Error::other("artifact byte quota reached"));
             }
-            total += size;
-            let bytes = fs::read(&path)?;
-            let id = SessionUuid::generate().to_string();
-            let destination = directory.join(&id);
-            fs::write(&destination, &bytes)?;
-            let artifact = Artifact {
-                uri: format!("lotus://artifact/{id}"),
+            batch.push(NewArtifact {
+                bytes: fs::read(&path)?,
                 screen: file["format"].as_str().unwrap_or("capture").to_string(),
                 width: file["width"].as_u64().unwrap_or(0) as u32,
                 height: file["height"].as_u64().unwrap_or(0) as u32,
-                bytes: bytes.len(),
-                sha256: format!("{:x}", Sha256::digest(&bytes)),
                 mime_type: match file["format"].as_str() {
                     Some("json") => "application/json",
                     Some("wav") => "audio/wav",
@@ -1068,12 +1055,43 @@ impl Supervisor {
                     _ => "application/octet-stream",
                 }
                 .into(),
-            };
-            catalog.insert(artifact.uri.clone(), (artifact.clone(), destination));
-            published.push(artifact);
+                extension: "",
+            });
         }
+        let published = self.publish(id, batch)?;
         result["artifacts"] = serde_json::to_value(published).map_err(io::Error::other)?;
         Ok(())
+    }
+
+    /// Reserve room under the artifact quota, write unlocked, then catalogue atomically.
+    pub(crate) fn publish(
+        &self,
+        session: &str,
+        batch: Vec<NewArtifact>,
+    ) -> io::Result<Vec<Artifact>> {
+        if batch
+            .iter()
+            .any(|item| item.bytes.len() as u64 > crate::artifacts::MAX_ARTIFACT_BYTES)
+        {
+            return Err(io::Error::other("artifact byte quota reached"));
+        }
+        let live = self.sessions();
+        let total = batch.iter().map(|item| item.bytes.len() as u64).sum();
+        let (reservation, directory) = {
+            let mut store = lock(&self.artifacts);
+            let reservation = store.reserve(session, batch.len(), total, &live, Instant::now())?;
+            (reservation, store.directory().to_path_buf())
+        };
+        for path in &reservation.evicted {
+            let _ = fs::remove_file(path);
+        }
+        match crate::artifacts::write_batch(&directory, session, batch) {
+            Ok(written) => Ok(lock(&self.artifacts).commit(&reservation, written, Instant::now())),
+            Err(error) => {
+                lock(&self.artifacts).abandon(&reservation);
+                Err(error)
+            }
+        }
     }
 
     /// Host presentation policy; never pauses the guest or changes deterministic capture.
@@ -1161,60 +1179,66 @@ impl Supervisor {
         self.capture_scaled(id, 1).await
     }
     pub async fn capture_scaled(&self, id: &str, scale: u32) -> io::Result<Vec<Artifact>> {
-        if lock(&self.artifacts).len() + 2 > MAX_ARTIFACTS {
-            return Err(io::Error::other(
-                "artifact quota reached; restart host to reset catalog",
-            ));
-        }
         let handle = self.handle(id)?;
         let frames = handle.native.lock().await.capture_scaled(scale).await?;
-        let directory = self.config.storage_root.join("artifacts");
-        fs::create_dir_all(&directory)?;
-        let mut catalog = lock(&self.artifacts);
-        let total: usize = catalog.values().map(|(a, _)| a.bytes).sum();
-        let added: usize = frames.iter().map(|frame| frame.bgra.len()).sum();
-        if catalog.len() + frames.len() > MAX_ARTIFACTS || total + added > 512 << 20 {
-            return Err(io::Error::other("capture artifact quota reached"));
-        }
-        let mut artifacts = Vec::new();
-        for frame in frames {
-            let id = SessionUuid::generate().to_string();
-            let path = directory.join(format!("{id}.bgra"));
-            fs::write(&path, &frame.bgra)?;
-            let artifact = Artifact {
-                uri: format!("lotus://artifact/{id}"),
+        let batch = frames
+            .into_iter()
+            .map(|frame| NewArtifact {
+                bytes: frame.bgra,
                 screen: frame.lease.screen,
                 width: frame.lease.width,
                 height: frame.lease.height,
-                bytes: frame.bgra.len(),
-                sha256: format!("{:x}", Sha256::digest(&frame.bgra)),
                 mime_type: "application/octet-stream".into(),
-            };
-            catalog.insert(artifact.uri.clone(), (artifact.clone(), path));
-            artifacts.push(artifact);
-        }
-        Ok(artifacts)
+                extension: "bgra",
+            })
+            .collect();
+        self.publish(id, batch)
     }
 
     #[must_use]
     pub fn artifacts(&self) -> Vec<Artifact> {
-        lock(&self.artifacts)
-            .values()
-            .map(|(artifact, _)| artifact.clone())
-            .collect()
+        lock(&self.artifacts).list()
     }
 
-    /// Resolve only catalogued immutable captures, never interpret a URI as a path.
+    /// Resolve only catalogued immutable captures, never interpret a URI as a path. An
+    /// evicted or released URI fails with `NotFound` and says so.
     pub fn read_artifact(&self, uri: &str) -> io::Result<Vec<u8>> {
-        let (artifact, path) = lock(&self.artifacts).get(uri).cloned().ok_or_else(|| {
-            io::Error::new(io::ErrorKind::PermissionDenied, "unknown artifact resource")
+        let (artifact, path) = lock(&self.artifacts).open_artifact(uri)?;
+        let data = fs::read(path).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                io::Error::new(io::ErrorKind::NotFound, "artifact expired while being read")
+            } else {
+                error
+            }
         })?;
-        let data = fs::read(path)?;
         if data.len() != artifact.bytes || format!("{:x}", Sha256::digest(&data)) != artifact.sha256
         {
             return Err(io::Error::other("artifact identity mismatch"));
         }
         Ok(data)
+    }
+
+    /// Delete artifacts now. All URIs must be catalogued, or nothing is released.
+    pub fn release_artifacts(&self, uris: &[String]) -> io::Result<usize> {
+        self.require_control()?;
+        let files = lock(&self.artifacts).release(uris)?;
+        for path in &files {
+            let _ = fs::remove_file(path);
+        }
+        Ok(files.len())
+    }
+
+    /// Keep an artifact until released (or unpin it). Limited to the session's floor.
+    pub fn pin_artifact(&self, uri: &str, pinned: bool) -> io::Result<Artifact> {
+        self.require_control()?;
+        lock(&self.artifacts).pin(uri, pinned)
+    }
+
+    /// Catalogue usage against the quota, per session.
+    #[must_use]
+    pub fn artifact_usage(&self) -> crate::artifacts::Usage {
+        let live = self.sessions();
+        lock(&self.artifacts).usage(&live)
     }
 
     /// Ask a windowed frontend to show `id`. Headless hosts ignore it.
@@ -1561,6 +1585,56 @@ mod tests {
         assert!(host.stop("x", Actor::Mcp).await.is_err());
         assert!(host.status("x").await.is_err());
         assert!(host.read_artifact("lotus://artifact/../x").is_err());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn concurrent_publishers_stay_within_the_artifact_quota() {
+        let (base, first) = host("artifacts", true);
+        drop(first);
+        let mut config = HostConfig::new(std::env::current_exe().expect("exe"), base.join("store"));
+        config.allow_control = true;
+        config.artifacts = ArtifactQuota {
+            max_count: 16,
+            max_bytes: 1 << 20,
+            lease_seconds: 0,
+        };
+        let host = Arc::new(Supervisor::new(config).expect("host"));
+        let threads: Vec<_> = (0..4)
+            .map(|worker| {
+                let host = host.clone();
+                std::thread::spawn(move || {
+                    for round in 0..200u32 {
+                        let batch = (0..2)
+                            .map(|screen| NewArtifact {
+                                bytes: format!("{worker}-{round}-{screen}").into_bytes(),
+                                screen: "top".into(),
+                                width: 0,
+                                height: 0,
+                                mime_type: "application/octet-stream".into(),
+                                extension: "bgra",
+                            })
+                            .collect();
+                        host.publish(&format!("s{worker}"), batch).expect("publish");
+                    }
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("publisher");
+        }
+        let listed = host.artifacts();
+        assert!(listed.len() <= 16);
+        for artifact in &listed {
+            let bytes = host
+                .read_artifact(&artifact.uri)
+                .expect("catalogued file readable");
+            assert_eq!(bytes.len(), artifact.bytes);
+        }
+        let files = fs::read_dir(base.join("store/artifacts"))
+            .expect("dir")
+            .count();
+        assert_eq!(files, listed.len(), "no orphaned or temporary files");
         let _ = fs::remove_dir_all(base);
     }
 

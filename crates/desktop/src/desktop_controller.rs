@@ -109,6 +109,8 @@ pub struct Update {
     pub error: String,
     /// Worker operations of this window pending longer than one second.
     pub waiting: Vec<String>,
+    /// Artifact catalogue usage against the host quota; refreshed with the catalog.
+    pub artifacts: Option<lotus_session::artifacts::Usage>,
     pub mcp: McpLink,
     /// Commands still in flight.
     pub pending: usize,
@@ -279,9 +281,11 @@ impl Loops {
             if catalog_at.is_none_or(|at| at.elapsed() >= CATALOG_PERIOD) {
                 let cards = self.host.cards().unwrap_or_default();
                 let assets = self.host.assets();
+                let artifacts = self.host.artifact_usage();
                 let mut update = lock(&self.published);
                 update.cards = cards;
                 update.assets = assets;
+                update.artifacts = Some(artifacts);
                 catalog_at = Some(Instant::now());
             }
             let sessions = self.host.summaries();

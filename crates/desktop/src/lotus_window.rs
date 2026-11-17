@@ -162,6 +162,7 @@ pub struct LotusWindow {
     mcp: McpLink,
     pending: usize,
     waiting: Vec<String>,
+    artifacts: Option<lotus_session::artifacts::Usage>,
     focus: FocusHandle,
     input: InputState,
     bottom_rect: Arc<Mutex<Option<TouchTransform>>>,
@@ -242,6 +243,7 @@ impl LotusWindow {
             mcp: McpLink::Off,
             pending: 0,
             waiting: Vec::new(),
+            artifacts: None,
             focus,
             input: InputState::default(),
             bottom_rect: Arc::default(),
@@ -428,6 +430,7 @@ impl LotusWindow {
             self.mcp = update.mcp;
             self.pending = update.pending;
             self.waiting.clone_from(&update.waiting);
+            self.artifacts.clone_from(&update.artifacts);
             self.registers = update.registers.clone();
             self.inspection = update.inspection.clone();
             if update.error != self.error {
@@ -1279,6 +1282,17 @@ impl LotusWindow {
                     .child(div().font_family(theme::MONO).child(slots))
                     .child(self.preferences_button(cx)),
             )
+            .when_some(self.artifacts.as_ref(), |footer, usage| {
+                // Quota and retention at a glance; details per session in lotus_status.
+                let pinned: usize = usage.sessions.values().map(|s| s.pinned).sum();
+                footer.child(div().font_family(theme::MONO).truncate().child(format!(
+                    "artifacts {}/{} · {}/{} MiB · {pinned} pinned",
+                    usage.count,
+                    usage.max_count,
+                    usage.bytes >> 20,
+                    usage.max_bytes >> 20
+                )))
+            })
             .when(!self.control, |footer| footer.child("Read-only host"))
     }
 

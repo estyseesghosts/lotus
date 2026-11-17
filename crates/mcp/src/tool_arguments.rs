@@ -123,3 +123,18 @@ pub struct GdbArgs {
     #[serde(default)]
     pub port: u16,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReleaseArtifactsArgs {
+    /// `lotus://artifact/...` URIs; all must be catalogued or none is released.
+    pub uris: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PinArtifactArgs {
+    pub uri: String,
+    /// True keeps the artifact until released; false makes it evictable again.
+    pub pinned: bool,
+}

@@ -5,6 +5,7 @@
 //! their state. It never links against `Core::System` and it never lets a
 //! worker failure take down the application or a sibling instance.
 
+pub mod artifacts;
 mod assets;
 pub mod card_store;
 pub mod native_session;

@@ -27,7 +27,8 @@ use serde_json::Value;
 
 use crate::tool_arguments::{
     AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs, GdbOperation,
-    InputArgs, KindArg, LoadArgs, MemoryArgs, RegistersArgs, SessionArgs, ValidateScenarioArgs,
+    InputArgs, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs,
+    SessionArgs, ValidateScenarioArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -196,6 +197,7 @@ impl LotusServer {
             "max_sessions": host.map(Supervisor::max_sessions).unwrap_or(0),
             "guest_refresh_hz": GUEST_REFRESH_HZ,
             "frontend_metrics": host.map(Supervisor::frontend_metrics).unwrap_or_default(),
+            "artifacts": host.map(Supervisor::artifact_usage),
         })
         .to_string()
     }
@@ -416,6 +418,32 @@ impl LotusServer {
             ),
             Err(error) => tool_result(Err(error)),
         }
+    }
+
+    #[tool(
+        description = "Delete artifacts now and free their quota. Evicted or released URIs later read as expired. Requires control permission."
+    )]
+    pub async fn lotus_release_artifacts(
+        &self,
+        Parameters(args): Parameters<ReleaseArtifactsArgs>,
+    ) -> CallToolResult {
+        tool_result(self.require_host().and_then(|host| {
+            let released = host.release_artifacts(&args.uris)?;
+            Ok(serde_json::json!({"released": released, "usage": host.artifact_usage()}))
+        }))
+    }
+
+    #[tool(
+        description = "Pin an artifact so eviction never removes it (a session may pin up to its guaranteed share, see lotus_status.artifacts.floor_*), or unpin it. New artifacts are otherwise leased for lease_seconds, then evictable least-recently-used first. Requires control permission."
+    )]
+    pub async fn lotus_pin_artifact(
+        &self,
+        Parameters(args): Parameters<PinArtifactArgs>,
+    ) -> CallToolResult {
+        tool_result(
+            self.require_host()
+                .and_then(|host| json(&host.pin_artifact(&args.uri, args.pinned)?)),
+        )
     }
 
     #[tool(

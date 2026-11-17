@@ -160,35 +160,30 @@ impl Supervisor {
         let report = serde_json::json!({"profiles":rows,"comparisons":comparisons,
             "alignment":"presented guest frames; CPU state and screen hashes compared separately from host time",
             "source_session":id,"asset":asset,"evidence":"verified emulator run"});
-        let artifact = self.publish_json(&report)?;
+        let artifact = self.publish_json(id, &report)?;
         Ok(serde_json::json!({"report":report,"artifacts":[artifact]}))
     }
 
-    pub(super) fn publish_json(&self, value: &serde_json::Value) -> io::Result<Artifact> {
+    pub(super) fn publish_json(
+        &self,
+        session: &str,
+        value: &serde_json::Value,
+    ) -> io::Result<Artifact> {
         let bytes = serde_json::to_vec_pretty(value).map_err(io::Error::other)?;
-        let mut catalog = lock(&self.artifacts);
-        let total: usize = catalog.values().map(|(a, _)| a.bytes).sum();
-        if bytes.len() > 8 << 20
-            || catalog.len() >= MAX_ARTIFACTS
-            || total + bytes.len() > 512 << 20
-        {
-            return Err(io::Error::other("report artifact quota reached"));
+        if bytes.len() > 8 << 20 {
+            return Err(io::Error::other("report artifact exceeds 8 MiB"));
         }
-        let id = SessionUuid::generate().to_string();
-        let directory = self.config.storage_root.join("artifacts");
-        fs::create_dir_all(&directory)?;
-        let path = directory.join(format!("{id}.json"));
-        fs::write(&path, &bytes)?;
-        let artifact = Artifact {
-            uri: format!("lotus://artifact/{id}"),
-            screen: "report".into(),
-            width: 0,
-            height: 0,
-            bytes: bytes.len(),
-            sha256: format!("{:x}", Sha256::digest(&bytes)),
-            mime_type: "application/json".into(),
-        };
-        catalog.insert(artifact.uri.clone(), (artifact.clone(), path));
-        Ok(artifact)
+        let mut published = self.publish(
+            session,
+            vec![NewArtifact {
+                bytes,
+                screen: "report".into(),
+                width: 0,
+                height: 0,
+                mime_type: "application/json".into(),
+                extension: "json",
+            }],
+        )?;
+        Ok(published.remove(0))
     }
 }
