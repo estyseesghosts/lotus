@@ -28,7 +28,6 @@ import sys
 import threading
 import time
 
-from PIL import Image
 
 ctypes.windll.shcore.SetProcessDpiAwareness(2)
 user32 = ctypes.windll.user32
@@ -98,6 +97,7 @@ def capture(hwnd, path):
     header = (ctypes.c_uint32 * 10)(40, width, (-height) & 0xFFFFFFFF, 1 | (32 << 16), 0, 0, 0, 0, 0, 0)
     buffer = ctypes.create_string_buffer(width * height * 4)
     gdi32.GetDIBits(memory_dc, bitmap, 0, height, buffer, header, 0)
+    from PIL import Image  # lazy: headless callers (CI smoke) have no Pillow
     Image.frombuffer("RGBA", (width, height), buffer, "raw", "BGRA", 0, 1).convert("RGB").save(path)
     gdi32.DeleteObject(bitmap)
     gdi32.DeleteDC(memory_dc)
