@@ -122,6 +122,30 @@ async fn a_stalled_worker_delays_only_itself() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn back_to_back_commands_do_not_starve_supervision() {
+    let fixture = host("starve", 1);
+    let id = fixture.running(1).await.remove(0);
+    let start = Instant::now();
+    let mut commands = 0;
+    // The mock's 600-frame runs last one second each.
+    while start.elapsed() < Duration::from_millis(2500) {
+        fixture.host.registers(&id, 0).await.expect("registers");
+        commands += 1;
+    }
+    let status = telemetry(&fixture.host, &id);
+    assert!(commands > 100, "{commands} commands");
+    // A poll queues behind at most the command in flight after MAX_BUSY_POLLS skips.
+    assert!(status.supervision.polls >= 3, "{:?}", status.supervision);
+    assert!(
+        status.supervision.continuations >= 1,
+        "{:?}",
+        status.supervision
+    );
+    assert!(status.playing && status.frames > 600, "{}", status.frames);
+    fixture.host.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_manual_pause_is_never_resumed() {
     let fixture = host("pause", 1);
     let id = fixture.running(1).await.remove(0);

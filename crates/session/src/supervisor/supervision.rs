@@ -21,12 +21,20 @@ use crate::SessionState;
 pub(super) const POLL_PERIOD: Duration = Duration::from_millis(100);
 /// Cadence once the worker has stopped or crashed: no IPC, gauges only.
 const INACTIVE_PERIOD: Duration = Duration::from_secs(1);
+/// Polls skipped because a command held the session before the next poll queues for the
+/// session lock instead. Back-to-back client commands otherwise starve supervision: gauges go
+/// stale and a run that reached its budget is never continued (runs/bp-real-01, one session
+/// under continuous `lotus_registers`/`lotus_input`: 74 busy polls, 0 polls, 0 continuations).
+const MAX_BUSY_POLLS: u32 = 4;
+/// Earliest poll after a status exchange when a run is about to reach its budget.
+const MIN_POLL_GAP: Duration = Duration::from_millis(5);
 /// Queued live states per session before a newer state must overwrite the tail.
 pub(super) const MAILBOX: usize = 8;
 
 /// Supervise one session until it closes. Never issues `run` after a debugger stop.
 pub(super) async fn supervise(handle: Arc<SessionHandle>) {
     let mut due = Instant::now() + POLL_PERIOD;
+    let mut busy = 0;
     loop {
         tokio::select! {
             () = tokio::time::sleep_until(due.into()) => {}
@@ -36,21 +44,47 @@ pub(super) async fn supervise(handle: Arc<SessionHandle>) {
             return;
         }
         let started = Instant::now();
-        let active = poll(&handle, due, started).await;
+        let next = poll(&handle, due, started, busy >= MAX_BUSY_POLLS).await;
+        busy = if next == Next::Busy { busy + 1 } else { 0 };
         // Scheduled from completion: a slow exchange delays this session's next poll and
         // never causes a burst of catch-up polls.
-        due = Instant::now() + if active { POLL_PERIOD } else { INACTIVE_PERIOD };
+        due = Instant::now()
+            + match next {
+                Next::Busy | Next::Period => POLL_PERIOD,
+                Next::After(delay) => delay,
+                Next::Inactive => INACTIVE_PERIOD,
+            };
     }
 }
 
-/// One supervision pass; false when the worker is no longer active.
-async fn poll(handle: &SessionHandle, due: Instant, started: Instant) -> bool {
-    let Ok(mut native) = handle.native.try_lock() else {
-        let mut telemetry = handle.telemetry();
-        telemetry.busy = true;
-        telemetry.supervision.busy_polls += 1;
-        return true;
+/// When the next poll is due.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    /// A command held the session; nothing was observed.
+    Busy,
+    Period,
+    /// A run is expected to reach its budget sooner than one period.
+    After(Duration),
+    /// The worker is no longer active.
+    Inactive,
+}
+
+/// One supervision pass. With `wait`, queue for the session lock (FIFO, so behind at most
+/// the commands already waiting) instead of skipping a busy session.
+async fn poll(handle: &SessionHandle, due: Instant, started: Instant, wait: bool) -> Next {
+    let mut native = match handle.native.try_lock() {
+        Ok(native) => native,
+        Err(_) if wait => handle.native.lock().await,
+        Err(_) => {
+            let mut telemetry = handle.telemetry();
+            telemetry.busy = true;
+            telemetry.supervision.busy_polls += 1;
+            return Next::Busy;
+        }
     };
+    if handle.is_closed() {
+        return Next::Inactive;
+    }
     if !native.state().is_active() {
         handle.set_playing(false);
         let mut telemetry = handle.telemetry();
@@ -58,7 +92,7 @@ async fn poll(handle: &SessionHandle, due: Instant, started: Instant) -> bool {
         telemetry.fps = 0.0;
         telemetry.speed = 0.0;
         telemetry.memory_bytes = None;
-        return false;
+        return Next::Inactive;
     }
     let status = native.status().await;
     let elapsed = started.elapsed();
@@ -70,28 +104,38 @@ async fn poll(handle: &SessionHandle, due: Instant, started: Instant) -> bool {
             telemetry.state = native.state();
             telemetry.last_error = error.to_string();
             telemetry.supervision.status_failures += 1;
-            return native.state().is_active();
+            return if native.state().is_active() {
+                Next::Period
+            } else {
+                Next::Inactive
+            };
         }
     };
     observe(handle, &native, &status);
-    handle
-        .telemetry()
-        .supervision
-        .poll(due, started, elapsed, POLL_PERIOD);
-    if !handle.is_playing() || native.state() != SessionState::Paused {
-        return true;
+    let fps = {
+        let mut telemetry = handle.telemetry();
+        telemetry
+            .supervision
+            .poll(due, started, elapsed, POLL_PERIOD);
+        telemetry.fps
+    };
+    if !handle.is_playing() {
+        return Next::Period;
+    }
+    if native.state() != SessionState::Paused {
+        return until_budget(native.run_target(), status["frames"].as_u64(), fps);
     }
     // A bounded run ended. Resume unless the guest stopped for a reason a retry
     // cannot fix; a host deadline only means the batch ran slowly.
     let stop = status["stop"]["reason"].as_str().unwrap_or("");
     if !matches!(stop, "" | "frame") {
         handle.set_playing(false);
-        return true;
+        return Next::Period;
     }
     let reason = status["last_error"].as_str().unwrap_or("");
     if !matches!(reason, "" | "host_deadline") {
         handle.set_playing(false);
-        return true;
+        return Next::Period;
     }
     match native.run().await {
         Ok(_) => handle.telemetry().supervision.continuations += 1,
@@ -100,7 +144,26 @@ async fn poll(handle: &SessionHandle, due: Instant, started: Instant) -> bool {
             handle.telemetry().last_error = error.to_string();
         }
     }
-    true
+    Next::Period
+}
+
+/// Poll just after a running worker is expected to pause at its budget, so a fast
+/// (unthrottled) session does not idle for most of a period between runs. At 1,263 fps a
+/// 600-frame run lasts 475 ms, and waiting out the period after it ends cost up to 100 ms.
+fn until_budget(target: Option<u64>, frames: Option<u64>, fps: f64) -> Next {
+    let (Some(target), Some(frames)) = (target, frames) else {
+        return Next::Period;
+    };
+    if fps < 1.0 {
+        return Next::Period;
+    }
+    #[allow(clippy::cast_precision_loss)]
+    let eta = Duration::from_secs_f64(target.saturating_sub(frames) as f64 / fps);
+    if eta >= POLL_PERIOD {
+        Next::Period
+    } else {
+        Next::After((eta + Duration::from_millis(1)).max(MIN_POLL_GAP))
+    }
 }
 
 /// A complete input state waiting for delivery.
@@ -255,6 +318,24 @@ pub(super) async fn deliver_input(handle: Arc<SessionHandle>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn polls_follow_the_end_of_a_short_run() {
+        // 50 frames left at 1,000 fps: poll 1 ms after the expected pause.
+        assert_eq!(
+            until_budget(Some(1050), Some(1000), 1000.0),
+            Next::After(Duration::from_millis(51))
+        );
+        // At or past the target: as soon as allowed.
+        assert_eq!(
+            until_budget(Some(1000), Some(1000), 1000.0),
+            Next::After(MIN_POLL_GAP)
+        );
+        // Ends later than one period, unknown target or no rate yet: the normal cadence.
+        assert_eq!(until_budget(Some(1600), Some(1000), 60.0), Next::Period);
+        assert_eq!(until_budget(None, Some(1000), 1000.0), Next::Period);
+        assert_eq!(until_budget(Some(1050), Some(1000), 0.0), Next::Period);
+    }
 
     fn state(buttons: u32, touch: bool, x: u16) -> InputState {
         InputState {

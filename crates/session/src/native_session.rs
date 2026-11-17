@@ -68,7 +68,14 @@ pub struct NativeSession {
     preview_ring: Option<crate::preview_ring::Mapping>,
     /// Shared with the supervisor; follows the process across a Vulkan fallback replacement.
     kill: std::sync::Arc<std::sync::Mutex<crate::controlled_worker::KillSwitch>>,
+    /// Frame count at which the current `run` pauses itself, from its reply.
+    run_target: Option<u64>,
 }
+
+/// Frames one `run` advances before the worker pauses itself (`run` accepts 1-600,
+/// `ctr_worker/control.h`). Bounded runs keep a host that stops supervising from leaving a
+/// worker running; the supervision task continues them.
+pub const RUN_BUDGET: u64 = 600;
 
 impl NativeSession {
     pub async fn spawn(executable: &Path, root: &Path) -> io::Result<Self> {
@@ -107,6 +114,7 @@ impl NativeSession {
             shared_preview: reply.data["preview"] == "shared_memory_v1",
             preview_ring: None,
             kill: std::sync::Arc::default(),
+            run_target: None,
         };
         *session
             .kill
@@ -302,8 +310,17 @@ impl NativeSession {
     }
 
     pub async fn run(&mut self) -> io::Result<Value> {
-        self.operation(Method::Run, serde_json::json!({"frames": 600}))
-            .await
+        let reply = self
+            .operation(Method::Run, serde_json::json!({"frames": RUN_BUDGET}))
+            .await?;
+        self.run_target = reply["frames"].as_u64().map(|frames| frames + RUN_BUDGET);
+        Ok(reply)
+    }
+
+    /// Frame count at which the last `run` pauses itself, if its reply reported frames.
+    #[must_use]
+    pub fn run_target(&self) -> Option<u64> {
+        self.run_target
     }
 
     pub async fn pause(&mut self) -> io::Result<Value> {

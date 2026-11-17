@@ -1,7 +1,8 @@
 //! Mock of the native worker's control surface for supervisor tests; never emulates a console.
 //!
 //! Answers `hello`, `status`, `load`, `reset`, `run`, `run_until`, `pause`, `input`,
-//! `flush_storage` and `stop` like `ctr_worker/control.h`: `run` advances `frames` at 600 per
+//! `flush_storage`, `registers` (only `guest_ticks`, 4,481,136 per frame as in
+//! [`crate::telemetry::GUEST_REFRESH_HZ`]) and `stop` like `ctr_worker/control.h`: `run` advances `frames` at 600 per
 //! host second and pauses with stop reason `frame` at its target; `run_until` completes before
 //! replying. With a `mock-guest` file in the root, a "guest" thread rewrites `sdmc/a.bin` then
 //! `sdmc/b.bin` with the same counter while running, so any instant on disk has `a == b` or
@@ -186,6 +187,10 @@ impl Machine {
                 }
                 (Status::Ok, self.snapshot())
             }
+            Method::Registers => (
+                Status::Ok,
+                serde_json::json!({"core": request.params["core"], "guest_ticks": self.frames * 4_481_136}),
+            ),
             Method::Stop => {
                 stop_guest(&mut self.guest);
                 self.state = "stopped";

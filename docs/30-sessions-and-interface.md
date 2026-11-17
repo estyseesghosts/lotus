@@ -119,8 +119,15 @@ delays only its own tasks (#19, #20).
 - Supervision polls status every 100 ms (1 s, without IPC, once the worker has
   stopped or crashed), re-issues bounded `run` batches for a playing session,
   and folds replies into telemetry. A session held by another command is
-  counted busy and skipped. The next poll is scheduled from completion, so a
-  slow exchange never causes catch-up bursts. A batch that ended with a
+  counted busy and skipped, but after 4 skips in a row the poll queues for the
+  session lock. Without that, back-to-back client commands on one session
+  starved it: 0 polls and 0 continuations in 8 s, so its run sat paused at the
+  600-frame budget (`tools/bench_parallel.py`, `runs/bp-real-01`). When a
+  running batch is expected to reach its budget within one period, the next
+  poll is due 1 ms after that (at least 5 ms), so an unthrottled session does
+  not idle up to 100 ms per batch. The next poll is scheduled from
+  completion, so a slow exchange never causes catch-up bursts. A batch that
+  ended with a
   debugger stop, `unsupported_applet` or `core_error` stops playback;
   `host_deadline` (slow batch) does not.
 - `submit_input` queues a complete input state and returns. The input task
@@ -140,8 +147,10 @@ delivered, coalesced, kept and dropped transitions, cancelled, failed, pending,
 queue age, p95 and max delivery latency) appear in every session summary.
 `crates/session/tests/supervision.rs` checks against `lotus-mock-native` that a
 worker stalled for 3 s stops none of three siblings' polls, continuations or
-input (p95 under 500 ms, every tap delivered, no stuck key) and that a manual
-pause is never resumed (**verified compiled**, mock workers).
+input (p95 under 500 ms, every tap delivered, no stuck key), that a manual
+pause is never resumed, and that 2.5 s of back-to-back commands on one session
+still leaves at least 3 polls and a continuation (fails with the skip-only
+poll) (**verified compiled**, mock workers).
 
 ### Stopping and shutdown
 
