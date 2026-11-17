@@ -1,5 +1,6 @@
 //! The desktop loop stays responsive while one worker stalls (#21), against
-//! `lotus-mock-native` child processes (built by `cargo build -p lotus-session`).
+//! `lotus-mock-native` child processes, found next to this test's profile directory
+//! (`cargo test --workspace` builds it) or at `LOTUS_MOCK_NATIVE`.
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -10,10 +11,15 @@ use lotus_protocol::envelope::SessionUuid;
 use lotus_session::supervisor::{HostConfig, SessionKind};
 
 fn mock_worker() -> PathBuf {
+    // target/<profile>/deps/<test>.exe -> target/<profile>/lotus-mock-native.exe
     let path = std::env::var_os("LOTUS_MOCK_NATIVE").map_or_else(
         || {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../target/debug/lotus-mock-native.exe")
+            std::env::current_exe()
+                .expect("test executable")
+                .parent()
+                .and_then(std::path::Path::parent)
+                .expect("profile directory")
+                .join(format!("lotus-mock-native{}", std::env::consts::EXE_SUFFIX))
         },
         PathBuf::from,
     );
