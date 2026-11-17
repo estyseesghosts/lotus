@@ -76,6 +76,10 @@ pub struct HostConfig {
     /// cache-sensitive benchmarks.
     #[serde(default)]
     pub shader_seed: bool,
+    /// Interactive or batch workload, expensive-tool budgets and memory admission
+    /// ([`crate::policy`]).
+    #[serde(default)]
+    pub policy: crate::policy::Policy,
 }
 
 fn default_prefer_vulkan() -> bool {
@@ -101,6 +105,7 @@ impl HostConfig {
             prefer_vulkan: true,
             artifacts: ArtifactQuota::default(),
             shader_seed: false,
+            policy: crate::policy::Policy::default(),
         }
     }
 }
@@ -241,6 +246,10 @@ pub struct Supervisor {
     frontend_metrics: Mutex<serde_json::Value>,
     /// Serializes shader seed publication between concurrent clean stops.
     shader_publish: tokio::sync::Mutex<()>,
+    /// Holders of the expensive-tool budgets and the snapshot slots.
+    budgets: crate::policy::Budgets,
+    /// Session whose worker runs at raised priority (`policy.focus_priority`).
+    focused: Mutex<Option<String>>,
 }
 
 impl Supervisor {
@@ -275,6 +284,7 @@ impl Supervisor {
             config.artifacts.clone(),
             config.max_sessions,
         )?;
+        let policy = config.policy.clone();
         Ok(Self {
             config,
             cards,
@@ -286,6 +296,8 @@ impl Supervisor {
             closing: AtomicBool::new(false),
             frontend_metrics: Mutex::default(),
             shader_publish: tokio::sync::Mutex::default(),
+            budgets: crate::policy::Budgets::new(policy),
+            focused: Mutex::default(),
         })
     }
 
@@ -421,11 +433,15 @@ impl Supervisor {
         self.require_control()?;
         let content = asset.map(|handle| self.resolve_asset(handle)).transpose()?;
         let id = SessionUuid::generate().to_string();
+        self.host_memory().admit()?;
         let reservation = self.reserve(&id, &kind)?;
         let root = match &kind {
             SessionKind::Primary { card } => self.cards.primary_root(card)?,
             SessionKind::Secondary { parent: None } => self.cards.create_scratch(&id, None)?,
-            SessionKind::Secondary { parent: Some(card) } => self.clone_card(&id, card).await?,
+            SessionKind::Secondary { parent: Some(card) } => {
+                let _slot = self.budgets.snapshot("card copy").await?;
+                self.clone_card(&id, card).await?
+            }
         };
         let launch = Instant::now();
         let executable = worker.unwrap_or(&self.config.worker);
@@ -725,6 +741,55 @@ impl Supervisor {
         let mut registry = lock(&self.registry);
         registry.sessions.remove(id);
         registry.mounted.retain(|_, owner| owner != id);
+        drop(registry);
+        self.budgets.release(id);
+        let mut focused = lock(&self.focused);
+        if focused.as_deref() == Some(id) {
+            *focused = None;
+        }
+    }
+
+    /// Host memory as admission sees it: the largest worker working set as the estimate.
+    #[must_use]
+    pub fn host_memory(&self) -> crate::policy::Memory {
+        let largest = self
+            .summaries()
+            .iter()
+            .filter_map(|summary| summary.telemetry.memory_bytes)
+            .max();
+        crate::policy::Memory::measure(self.config.policy.memory_reserve_mib, largest)
+    }
+
+    /// Workload policy, budget holders, snapshot queue and memory for `lotus_status`.
+    #[must_use]
+    pub fn policy_status(&self) -> serde_json::Value {
+        self.budgets.status(&self.host_memory())
+    }
+
+    /// The session a person is looking at (desktop selection, `lotus_focus_session`). With
+    /// `policy.focus_priority` its worker runs in the above-normal priority class and the
+    /// previously focused worker returns to normal. Nothing changes otherwise.
+    pub fn set_focus(&self, id: &str) {
+        if !self.config.policy.focus_priority {
+            return;
+        }
+        let previous = lock(&self.focused).replace(id.to_string());
+        if previous.as_deref() == Some(id) {
+            return;
+        }
+        for (session, raised) in previous
+            .iter()
+            .map(|p| (p.as_str(), false))
+            .chain([(id, true)])
+        {
+            let Some(pid) = self.summary(session).ok().and_then(|s| s.telemetry.pid) else {
+                continue;
+            };
+            // The supervisor holds the child's process handle, so this PID is not reused.
+            if let Err(error) = crate::policy::set_priority(pid, raised) {
+                tracing::warn!("worker {pid} priority not changed: {error}");
+            }
+        }
     }
 
     /// Failure injection and emergency termination, limited to this session's job.
@@ -770,8 +835,51 @@ impl Supervisor {
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
     ) -> io::Result<serde_json::Value> {
+        use crate::policy::Tool;
+        use lotus_protocol::debug::{DebugCommand, GpuCapture};
         let handle = self.handle(id)?;
+        // Host-wide budgets (crate::policy). Session-long tools are checked before and
+        // recorded after the worker accepted; one-shot full-state work holds a slot.
+        let tool = match command {
+            DebugCommand::RewindConfigure { enabled, .. } => Some((Tool::Rewind, *enabled)),
+            DebugCommand::GpuConfigure {
+                enabled, capture, ..
+            } => Some((
+                Tool::GpuCapture,
+                *enabled && *capture != Some(GpuCapture::Counters),
+            )),
+            _ => None,
+        };
+        if let Some((tool, true)) = tool {
+            if let Err(error) = self.budgets.admit(tool, id) {
+                handle.telemetry().policy_note = error.to_string();
+                return Err(error);
+            }
+        }
+        let slot = match command {
+            DebugCommand::SaveState { .. }
+            | DebugCommand::LoadState { .. }
+            | DebugCommand::Fork { .. }
+            | DebugCommand::Matrix { .. } => {
+                let slot = self.budgets.snapshot(command_name(command)).await;
+                handle.telemetry().policy_note = match &slot {
+                    Ok(slot) if !slot.waited.is_zero() => format!(
+                        "{} waited {} ms for a snapshot slot",
+                        command_name(command),
+                        slot.waited.as_millis()
+                    ),
+                    Ok(_) => String::new(),
+                    Err(error) => error.to_string(),
+                };
+                Some(slot?)
+            }
+            _ => None,
+        };
         let mut result = self.debug_inner(id, command, client).await?;
+        drop(slot);
+        if let Some((tool, active)) = tool {
+            self.budgets.set(tool, id, active);
+        }
         handle.native.lock().await.decorate(&mut result);
         Ok(result)
     }
@@ -1289,6 +1397,7 @@ impl Supervisor {
     /// Ask a windowed frontend to show `id`. Headless hosts ignore it.
     pub fn request_focus(&self, id: &str) -> io::Result<()> {
         self.handle(id)?;
+        self.set_focus(id);
         *lock(&self.focus_request) = Some(id.to_string());
         Ok(())
     }
@@ -1613,6 +1722,18 @@ fn observe(handle: &SessionHandle, native: &NativeSession, status: &serde_json::
     telemetry.observe(status, native.state(), native.epoch(), Instant::now());
     telemetry.pid = native.pid();
     telemetry.memory_bytes = native.working_set();
+}
+
+/// Operation name of a debug command, as in its JSON `operation` tag.
+fn command_name(command: &lotus_protocol::debug::DebugCommand) -> &'static str {
+    use lotus_protocol::debug::DebugCommand;
+    match command {
+        DebugCommand::SaveState { .. } => "save_state",
+        DebugCommand::LoadState { .. } => "load_state",
+        DebugCommand::Fork { .. } => "fork",
+        DebugCommand::Matrix { .. } => "matrix",
+        _ => "debug command",
+    }
 }
 
 async fn pause_if_running(native: &mut NativeSession) -> io::Result<()> {

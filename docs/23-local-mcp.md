@@ -66,6 +66,36 @@ where one fills the store with leased artifacts and the others still get their
 floors, the pin limit, a failure in the second file of a batch, and orphan
 removal (**verified compiled**).
 
+Policy (#23, `crates/session/src/policy.rs`), `"policy": {...}` in the host
+config, defaults shown:
+`{"workload": "interactive", "rewind_sessions": null, "gpu_capture_sessions": null,
+"snapshot_slots": null, "snapshot_wait_ms": 10000, "memory_reserve_mib": 1024,
+"focus_priority": false}`. Unset budgets are 2 under `interactive` and unlimited
+under `batch`; 0 means unlimited. Normal emulation is never gated:
+
+- `rewind_sessions`: sessions recording rewind checkpoints at once. Enabling a
+  third is refused with `ResourceBusy` naming the holders; disabling or ending a
+  holder frees its place. docs/34 measured 142 MiB (Old 3DS) and 274 MiB (New 3DS)
+  serialized per checkpoint.
+- `gpu_capture_sessions`: sessions with `gpu_configure` above `counters`.
+- `snapshot_slots`: one-shot full-state work host-wide (`save_state`,
+  `load_state`, `fork`, `matrix`, copying a card for a secondary). Extra requests
+  wait up to `snapshot_wait_ms`, then fail with the reason.
+- `memory_reserve_mib`: a new session is refused while available physical
+  memory is below the reserve plus the largest current worker working set
+  (1 GiB with none running; a t03 Vulkan worker measured 962 MiB). VRAM is not
+  measured.
+- `focus_priority`: the focused session's worker (desktop selection,
+  `lotus_focus_session`) runs in the above-normal priority class. Off until
+  `tools/bench_parallel.py --focus-priority` shows a gain on a quiet host.
+
+`lotus_status.policy` lists limits, holders, slots in use and queued, refusals
+and memory (available, reserve, estimate, pressure); a session's
+`telemetry.policy_note` holds its last refusal or wait. The desktop previews only
+the selected session (`desktop_controller.rs` `preview_loop`), so hidden sessions
+cost no readbacks under either workload. `tests/test_mcp_policy.py` checks the
+budgets, batch mode and memory admission against a CITnLO worker.
+
 Tools: status/list (sessions, cards), create (primary/secondary), load an
 approved asset, run/run_until, pause/reset/stop, input, session status with
 gauges, registers, bounded mapped-memory reads, capture and focus. Scenario

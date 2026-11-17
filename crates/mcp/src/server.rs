@@ -198,6 +198,7 @@ impl LotusServer {
             "guest_refresh_hz": GUEST_REFRESH_HZ,
             "frontend_metrics": host.map(Supervisor::frontend_metrics).unwrap_or_default(),
             "artifacts": host.map(Supervisor::artifact_usage),
+            "policy": host.map(Supervisor::policy_status),
         })
         .to_string()
     }

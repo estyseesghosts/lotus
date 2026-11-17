@@ -9,6 +9,7 @@ pub mod artifacts;
 mod assets;
 pub mod card_store;
 pub mod native_session;
+pub mod policy;
 pub mod preview_ring;
 #[cfg(windows)]
 mod process_job;

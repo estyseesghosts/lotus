@@ -72,6 +72,9 @@ pub struct Telemetry {
     pub input: InputMetrics,
     /// This session's live preview.
     pub preview: PreviewMetrics,
+    /// Last policy decision about this session: a refusal or a wait for a budget, with the
+    /// reason (`crate::policy`). Empty when nothing was limited.
+    pub policy_note: String,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -109,6 +112,7 @@ impl Telemetry {
             supervision: SupervisionMetrics::default(),
             input: InputMetrics::default(),
             preview: PreviewMetrics::default(),
+            policy_note: String::new(),
             started: Instant::now(),
             window: None,
         }

@@ -314,7 +314,7 @@ impl Loops {
                 update.waiting = waiting;
                 update.selected.clone()
             };
-            self.selected.send_if_modified(|current| {
+            let changed = self.selected.send_if_modified(|current| {
                 let changed = *current != selected;
                 if changed {
                     current.clone_from(&selected);
@@ -322,6 +322,9 @@ impl Loops {
                 }
                 changed
             });
+            if changed && !selected.is_empty() {
+                self.host.set_focus(&selected);
+            }
             let now = Instant::now();
             if let Some(previous) = published_at {
                 let interval = now.duration_since(previous).as_secs_f64() * 1e3;
