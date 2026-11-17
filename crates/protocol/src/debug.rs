@@ -326,6 +326,18 @@ pub enum DebugCommand {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         history: Option<Vec<EventCategory>>,
     },
+    /// Hashes of physical memory, per-core context and ticks, and (when no async HLE work is
+    /// pending) each `System::serialize` section, for finding where two sessions diverge
+    /// (CITnLO, lotus#29). Paused only. `dump` also writes the serialized bytes and section
+    /// offsets to `<root>/state-dumps/<dump>.bin` and `.json`.
+    StateHash {
+        #[serde(default = "state_hash_chunk_kib")]
+        chunk_kib: u32,
+        #[serde(default = "default_true")]
+        sections: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dump: Option<String>,
+    },
 }
 
 /// Worker event categories (CITnLO `debug.h` `DebugTools::CATEGORIES`).
@@ -470,6 +482,14 @@ pub struct PeripheralInput {
 
 fn settings_page_size() -> u32 {
     32
+}
+
+fn state_hash_chunk_kib() -> u32 {
+    1024
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl DebugCommand {
@@ -762,6 +782,21 @@ impl DebugCommand {
             } if !notify.contains(&EventCategory::Stopped) => {
                 Err("notify must include stopped; Lotus's debugger waits for it")
             }
+            Self::StateHash { chunk_kib, .. }
+                if !(4..=65536).contains(chunk_kib) || !chunk_kib.is_power_of_two() =>
+            {
+                Err("chunk_kib must be a power of two, 4..65536")
+            }
+            Self::StateHash {
+                dump: Some(name), ..
+            } if name.is_empty()
+                || name.len() > 32
+                || !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-') =>
+            {
+                Err("dump name must be 1..32 letters, digits, '_' or '-'")
+            }
             _ => Ok(()),
         }
     }
@@ -819,6 +854,7 @@ impl DebugCommand {
                 | Self::SaveState { .. }
                 | Self::Trace { .. }
                 | Self::EventsConfigure { .. }
+                | Self::StateHash { dump: Some(_), .. }
                 | Self::Continue
                 | Self::Pause
                 | Self::Advance { .. }
@@ -922,5 +958,31 @@ mod tests {
             serde_json::json!({"operation": "events_configure", "notify": ["gpu"]})
         )
         .is_err());
+    }
+
+    #[test]
+    fn state_hash_defaults_bounds_and_dump_mutation() {
+        let parse = |value| serde_json::from_value::<DebugCommand>(value).expect("parse");
+        let plain = parse(serde_json::json!({"operation": "state_hash"}));
+        assert!(matches!(
+            plain,
+            DebugCommand::StateHash {
+                chunk_kib: 1024,
+                sections: true,
+                dump: None
+            }
+        ));
+        assert!(plain.validate().is_ok() && !plain.mutates());
+        for chunk_kib in [0, 2, 1000, 131072] {
+            let command =
+                parse(serde_json::json!({"operation": "state_hash", "chunk_kib": chunk_kib}));
+            assert!(command.validate().is_err(), "{chunk_kib}");
+        }
+        let dump = parse(serde_json::json!({"operation": "state_hash", "dump": "run-0"}));
+        assert!(dump.validate().is_ok() && dump.mutates());
+        for name in ["", "../x", "a b"] {
+            let command = parse(serde_json::json!({"operation": "state_hash", "dump": name}));
+            assert!(command.validate().is_err(), "{name:?}");
+        }
     }
 }

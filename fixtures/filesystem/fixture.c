@@ -13,6 +13,22 @@ volatile u32 payload_size=0;
 volatile u32 churn=0,generation=0,generation_done=0,churn_result=0;
 static u32 churn_words[256];
 static u32 churn_file=0;
+/* Spin (#29): when `spin` is set, main starts a lowest-priority thread that counts while main
+ * sleeps or waits on FS IPC. With host-timed async HLE (hle_ipc.h RunAsync,
+ * deterministic_async_operations off) the write completes at whatever guest tick the spinner
+ * reached when the host thread finished, so `spin_count` at each completion depends on host
+ * timing. svcCreateThread register layout: 3DBrew SVC 0x08 / libctru svc.s (r0 priority,
+ * r1 entry, r2 arg, r3 stack top, r4 processor; r1 handle out). */
+volatile u32 spin=0,spin_count=0,spin_result=~0u,spin_at_done=0;
+static unsigned long long spin_stack[512];
+static void spinner(u32 arg) {(void)arg;for(;;)++spin_count;}
+static u32 start_spinner(void) {
+    register u32 r0 __asm__("r0")=0x3f;                       /* lowest priority */
+    register u32 r1 __asm__("r1")=(u32)spinner,r2 __asm__("r2")=0;
+    register u32 r3 __asm__("r3")=(u32)(spin_stack+512),r4 __asm__("r4")=0;  /* core 0, with main */
+    __asm__ volatile("svc 0x08":"+r"(r0),"+r"(r1),"+r"(r2),"+r"(r3),"+r"(r4)::"memory");
+    return r0;
+}
 volatile char path[256]="/lotus-fs.txt";
 volatile char payload[256];
 static const char empty[1]="";
@@ -84,7 +100,7 @@ static void churn_once(u32 fs) {
     c[0]=0x8030102;c[1]=0;c[2]=0;c[3]=sizeof(churn_words);c[4]=0;  /* no FS_WRITE_FLUSH */
     c[5]=(sizeof(churn_words)<<4)|0x8|2;c[6]=(u32)churn_words;
     churn_result=request_ipc(churn_file);
-    if(!churn_result)generation_done=next;
+    if(!churn_result){generation_done=next;spin_at_done=spin_count;}
 }
 __attribute__((noinline)) int main(void) {
     volatile u32* c=command();u32 srv=connect();
@@ -93,6 +109,7 @@ __attribute__((noinline)) int main(void) {
     c[0]=0x8010002;c[1]=0x20;c[2]=0;send(fs);stage=2;
     for(;;) {
         if(request!=done){write_file(fs);done=request;}
+        if(spin&&spin_result==~0u)spin_result=start_spinner();
         if(churn)churn_once(fs);
         sleep_ms(4);
     }

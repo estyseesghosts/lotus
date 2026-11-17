@@ -79,6 +79,7 @@ This table records reachability, not native-backend acceptance.
 | `settings_list` | `ctr-cli debug`: `settings_list` | `lotus_debug`: `settings_list` |
 | `settings_set` | `ctr-cli debug`: `settings_set` | `lotus_debug`: `settings_set` |
 | `shader_trace` | `ctr-cli debug`: `shader_trace` | `lotus_debug`: `shader_trace` |
+| `state_hash` | `ctr-cli debug`: `state_hash` | `lotus_debug`: `state_hash` |
 | `states` | `ctr-cli debug`: `states` | `lotus_debug`: `states` |
 | `status` | `ctr-cli debug`: `status` | `lotus_debug`: `status` |
 | `step` | `ctr-cli debug`: `step` | `lotus_debug`: `step` |

@@ -78,6 +78,14 @@ CONFIGS = {
     "watch_write_1": [("breakpoint_set", dict(address=TEXT_BASE, kind="write", length=4))],
 }
 CITNLO_ONLY = {name for name in CONFIGS if name != "off"}
+# Settings the workers accept only before load (settings_bindings.h "boot"), applied with settings_set
+# before `load`. Both workers bind them. deterministic_async runs HLE async sections on the emulation
+# thread, so the guest wake tick does not depend on host thread timing (lotus#29); CITnLO's
+# DefaultProfile turns it on, AZAHAR keeps the upstream default (off).
+BOOT_CONFIGS = {
+    "deterministic_async": [("deterministic_async_operations", True)],
+    "host_async": [("deterministic_async_operations", False)],
+}
 BUSY = 0.15  # whole-host CPU load above which timings are labelled not comparable
 
 
@@ -173,12 +181,32 @@ def build_differences(workers_meta):
     return differing
 
 
-def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capture_every, shaders=None):
+# A fresh root gets a random MAC (cfg.cpp GenerateRandomMAC, also in the guest's shared page)
+# and console unique ID (GenerateConsoleUniqueId) at first load (lotus#29). Trials copy one
+# template's copies so every trial boots the same console.
+IDENTITY = ("sysdata", "nand")
+
+
+def identity_template(worker, rom, root, new_3ds):
+    peer = Peer(worker, root)
+    try:
+        peer.call("hello")
+        peer.debug("settings_set", name="is_new_3ds", value=new_3ds)
+        peer.call("load", {"path": str(rom)})
+    finally:
+        peer.close()
+    return root
+
+
+def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capture_every, shaders=None,
+          identity=None, pokes=(), reads=(), boot=(), frame_limit=None):
     spawned = time.perf_counter()
     peer = Peer(worker, root)
     try:
         if shaders:  # warm disk shader cache; it is read at load, so copying before load is enough
             shutil.copytree(shaders, root / "shaders")
+        for name in IDENTITY if identity else ():  # also read at load
+            shutil.copytree(identity / name, root / name, dirs_exist_ok=True)
         hello = peer.call("hello")
         startup_seconds = time.perf_counter() - spawned
         peer.debug("settings_set", name="graphics_api", value=RENDERERS[renderer])
@@ -186,9 +214,15 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
         # SystemTime seeds the guest date/time from the host clock (shared_page.cpp:40-58), so
         # trials booted at different host seconds can diverge with identical guest ticks.
         peer.debug("settings_set", name="init_clock", value=INIT_CLOCK_FIXED)
+        if frame_limit is not None:
+            peer.debug("settings_set", name="frame_limit", value=frame_limit)
+        for setting, value in boot:
+            peer.debug("settings_set", name=setting, value=value)
         loading = time.perf_counter()
         peer.call("load", {"path": str(rom)})
         load_seconds = time.perf_counter() - loading
+        for address, value in pokes:  # guest workload switches, set before warm-up
+            peer.debug("write_memory", address=address, bytes=list(value.to_bytes(4, "little")))
         peer.call("run_until", {"frames": warmup})
         for operation, params in operations:
             reply = peer.debug(operation, **params)
@@ -212,6 +246,8 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
         seconds = time.perf_counter() - start
         after = process_usage(peer.process)
         ticks = peer.debug("registers", core=0)["guest_ticks"]
+        guest = {name: int.from_bytes(bytes(peer.debug("read_memory", address=address, length=4)["bytes"]),
+                                      "little") for name, address in reads}
         capture = peer.call("capture")
         screens = {lease["screen"]: hashlib.sha256((root / lease["path"]).read_bytes()[32:]).hexdigest()
                    for lease in capture["frames"]}
@@ -227,7 +263,7 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
         return dict(status="ok", host_seconds=seconds, fps=frames / seconds, guest_ticks=ticks,
                     screens=screens, usage=usage, source=hello.get("source"),
                     backend_name=hello.get("backend_name"), startup_seconds=startup_seconds,
-                    load_seconds=load_seconds, rewind=rewind)
+                    load_seconds=load_seconds, rewind=rewind, guest=guest)
     finally:
         peer.close()
 
@@ -321,7 +357,7 @@ def main():
     parser.add_argument("--rom", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--renderer", action="append", choices=sorted(RENDERERS))
-    parser.add_argument("--config", action="append", choices=sorted(CONFIGS))
+    parser.add_argument("--config", action="append", choices=sorted(CONFIGS | BOOT_CONFIGS))
     parser.add_argument("--new-3ds", action="store_true")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--warmup", type=int, default=60)
@@ -330,13 +366,24 @@ def main():
     parser.add_argument("--shader-cache", choices=["cold", "warm"], default="cold")
     parser.add_argument("--require-idle", action="store_true", help="refuse to run on a busy host")
     parser.add_argument("--allow-debug-build", action="store_true")
+    parser.add_argument("--frame-limit", type=int, help="percent, 0 unthrottled; default keeps the worker's 100")
+    parser.add_argument("--poke", action="append", default=[], metavar="SYMBOL=VALUE",
+                        help="write a u32 guest variable (from <rom>.elf) after load, e.g. churn=1")
+    parser.add_argument("--read", action="append", default=[], metavar="SYMBOL",
+                        help="record a u32 guest variable after the window, e.g. generation_done")
     args = parser.parse_args()
     workers = [(spec.split("=", 1)[0], Path(spec.split("=", 1)[1]).resolve()) for spec in args.worker]
     rom = args.rom.resolve()
+    pokes, reads = [], []
+    if args.poke or args.read:
+        from debugger_acceptance import symbols
+        table = symbols(rom.with_suffix(".elf"))
+        pokes = [(table[name], int(value, 0)) for name, value in (p.split("=", 1) for p in args.poke)]
+        reads = [(name, table[name]) for name in args.read]
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
     renderers = args.renderer or ["software", "vulkan"]
-    configs = args.config or list(CONFIGS)
+    configs = args.config or list(CONFIGS)  # boot configs only when named
     load_before = system_load()
     if args.require_idle and load_before is not None and load_before > BUSY:
         raise SystemExit(f"host CPU load {load_before:.0%} > {BUSY:.0%}; refusing (--require-idle)")
@@ -353,16 +400,19 @@ def main():
         rom=dict(path=str(rom), sha256=hashlib.sha256(rom.read_bytes()).hexdigest()),
         fixed=dict(new_3ds=args.new_3ds, warmup_frames=args.warmup, frames=args.frames,
                    repeats=args.repeats, capture_every=args.capture_every, shader_cache=args.shader_cache,
-                   profile="worker DefaultProfile plus graphics_api/is_new_3ds/init_clock=FixedTime via settings_set"),
+                   pokes=args.poke, reads=args.read, frame_limit=args.frame_limit,
+                   profile="worker DefaultProfile plus graphics_api/is_new_3ds/init_clock=FixedTime via settings_set; "
+                           "sysdata and nand copied from one template boot (same MAC and console ID)"),
         workers=workers_meta,
         not_covered=["Qt Azahar frontend", "allocation counts", "GPU wait time",
                      "frontends (tools/bench_frontends.py)"],
         results={})
+    console = identity_template(workers[0][1], rom, out / "identity", args.new_3ds)
     primed = {}
     if args.shader_cache == "warm" and "vulkan" in renderers:
         for name, worker in workers:
             root = out / "prime" / name
-            trial(worker, rom, root, "vulkan", args.new_3ds, [], args.warmup, args.frames, 0)
+            trial(worker, rom, root, "vulkan", args.new_3ds, [], args.warmup, args.frames, 0, identity=console)
             primed[name] = root / "shaders"
     for renderer in renderers:
         for name, worker in workers:
@@ -372,9 +422,11 @@ def main():
                 for index in range(args.repeats):
                     root = out / renderer / name / config / str(index)
                     try:
-                        runs.append(trial(worker, rom, root, renderer, args.new_3ds, CONFIGS[config],
+                        runs.append(trial(worker, rom, root, renderer, args.new_3ds, CONFIGS.get(config, []),
                                           args.warmup, args.frames, args.capture_every,
-                                          primed.get(name) if renderer == "vulkan" else None))
+                                          primed.get(name) if renderer == "vulkan" else None,
+                                          console, pokes, reads, BOOT_CONFIGS.get(config, ()),
+                                          args.frame_limit))
                     except AssertionError as error:  # typed refusal, e.g. CITnLO-only operation
                         skipped = str(error)[:300]
                         break
@@ -433,7 +485,7 @@ def main():
     lines += ["", f"Shader cache: {args.shader_cache} (Vulkan only). A CITnLO worker's `off` has the "
                   "debugger attached with every feature disabled (the passive-debugger case).", "",
               f"ROM {report['rom']['sha256'][:16]}, {'New' if args.new_3ds else 'Old'} 3DS, "
-              f"warm-up {args.warmup}, {args.frames} frames x {args.repeats}, capture every {args.capture_every or '-'}", "",
+              f"warm-up {args.warmup}, {args.frames} frames x {args.repeats}, capture every {args.capture_every or '-'}, frame limit {'worker default' if args.frame_limit is None else f'{args.frame_limit} %'}", "",
               f"| renderer | worker | config | median s | fps | spread s | ratio vs off | ratio vs {reference} "
               "| guest identical | startup s |",
               "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]

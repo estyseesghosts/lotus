@@ -2392,6 +2392,36 @@
         "operation"
       ],
       "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Hashes of physical memory, per-core context and ticks, and (when no async HLE work is\npending) each `System::serialize` section, for finding where two sessions diverge\n(CITnLO, lotus#29). Paused only. `dump` also writes the serialized bytes and section\noffsets to `<root>/state-dumps/<dump>.bin` and `.json`.",
+      "properties": {
+        "chunk_kib": {
+          "default": 1024,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "dump": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "const": "state_hash",
+          "type": "string"
+        },
+        "sections": {
+          "default": true,
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "type": "object"
     }
   ],
   "title": "DebugCommand"

@@ -67,6 +67,32 @@ missed the notification recovers it from `status`. Lotus subscribes to
 last for the worker process (load and reset keep them); closing the pipe ends
 the worker as before.
 
+Determinism (#29). Both workers' `DefaultProfile` (`src/ctr_worker/debug.h`)
+fixes the boot tick count (`init_ticks` 0) and the guest clock (`FixedTime`,
+2000-01-01). CITnLO's also turns on `deterministic_async_operations`: HLE
+async sections (`hle_ipc.h` `RunAsync`, `RunOnThreadWorker`) run on the
+emulation thread and wake the guest after their emulated delay, instead of on a
+host thread whose finish time sets the wake tick. AZAHAR keeps the stock value
+(off) under ADR-010; proposed ADR-012 in [34](34-performance-and-issue-triage.md)
+#29. `settings_set deterministic_async_operations` before `load` changes it
+per session on either worker (a boot setting, `settings_bindings.h`). The console identity is per root: CFG writes a random MAC (also in the
+shared page) and console unique ID into `sysdata`/`nand` on the first load, so
+two fresh roots differ in those bytes. Copying one root's `sysdata` and `nand`
+into another before load gives both the same console (`tools/bench.py` and
+`tools/divergence.py --same-identity` do this).
+
+CITnLO debug operation `state_hash` (paused only; `chunk_kib` power of two
+4–65536, default 1024; `sections` default true; optional `dump` name) returns
+`guest_ticks`, per core `pc`, `thread`, `ticks`, `idle_ticks` and a `context`
+hash, XXH3 hashes of FCRAM, VRAM, DSP RAM and N3DS extra RAM in `chunk_kib`
+chunks, `async_pending`, and, when no async HLE work is pending, the size and
+hash of each top-level `System::serialize` section (`system`, `timing`,
+`cpu0`–`cpu3`, `services`, `archives`, `dsp`, `memory`, `kernel`, `gpu`,
+`movie`, `cheats`) plus `serialized_hash`. `dump` also writes the serialized
+bytes and section offsets to `<root>/state-dumps/<dump>.bin` and `.json`.
+`tools/divergence.py` steps several workers in lockstep, compares their hashes
+and prints the first differing bytes with context.
+
 ## Ownership and budgets
 
 Frames use three reusable file slots per screen under the private root. Each
