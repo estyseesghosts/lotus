@@ -78,6 +78,16 @@ impl ProcessJob {
     }
 }
 
+impl ProcessJob {
+    /// End every process in the job now; also used without the worker's session lock.
+    pub(crate) fn terminate(&self) {
+        // SAFETY: this live owned handle refers to our job; only its members are ended.
+        unsafe {
+            JobObjects::TerminateJobObject(self.handle.as_raw_handle(), 1);
+        }
+    }
+}
+
 impl Drop for ProcessJob {
     fn drop(&mut self) {
         // SAFETY: this live owned handle refers to our job. Termination is limited

@@ -66,6 +66,8 @@ pub struct NativeSession {
     shared_preview: bool,
     /// The mapped ring, reopened whenever the worker reports a different section.
     preview_ring: Option<crate::preview_ring::Mapping>,
+    /// Shared with the supervisor; follows the process across a Vulkan fallback replacement.
+    kill: std::sync::Arc<std::sync::Mutex<crate::controlled_worker::KillSwitch>>,
 }
 
 impl NativeSession {
@@ -104,7 +106,12 @@ impl NativeSession {
             applied: std::collections::BTreeMap::new(),
             shared_preview: reply.data["preview"] == "shared_memory_v1",
             preview_ring: None,
+            kill: std::sync::Arc::default(),
         };
+        *session
+            .kill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = session.worker.kill_switch();
         if reply.data["debug_api"] == true {
             session.refresh_profile().await?;
         }
@@ -276,6 +283,11 @@ impl NativeSession {
             let _ = replacement.stop().await;
             return Err(error);
         }
+        *self
+            .kill
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = replacement.worker.kill_switch();
+        replacement.kill = self.kill.clone();
         *self = replacement;
         self.operation(Method::Load, params).await
     }
@@ -437,6 +449,14 @@ impl NativeSession {
             path,
             serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?,
         )
+    }
+
+    /// Terminates whichever process currently backs this session, without its lock.
+    #[must_use]
+    pub fn kill_switch(
+        &self,
+    ) -> std::sync::Arc<std::sync::Mutex<crate::controlled_worker::KillSwitch>> {
+        self.kill.clone()
     }
 
     #[must_use]

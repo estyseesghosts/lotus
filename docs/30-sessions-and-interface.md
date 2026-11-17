@@ -66,6 +66,26 @@ worker stalled for 3 s stops none of three siblings' polls, continuations or
 input (p95 under 500 ms, every tap delivered, no stuck key) and that a manual
 pause is never resumed (**verified compiled**, mock workers).
 
+### Stopping and shutdown
+
+`stop` marks the session closing (a second stop is refused), then waits at
+most 3 s for the session lock and the worker's clean exit. If a stalled
+exchange or command still holds the session, the supervisor terminates the
+worker's job through a kill switch that needs no lock (`KillSwitch` in
+`controlled_worker.rs`, a weak reference to the job). The in-flight exchange
+then fails on the closed pipe within the 2 s release deadline, and the stop
+reports `TimedOut`. A secondary that ended abnormally keeps only its logs.
+
+`close` (every frontend on exit) refuses new sessions and stops all sessions
+concurrently, each with its own deadline, so shutdown takes one worker's
+deadline rather than one per session; a stop still unfinished after 6 s is
+abandoned and reported. It returns every session's outcome; `lotus-mcp` prints
+the failures. `close_is_bounded_by_one_deadline_with_hung_workers` stops 16
+mock workers, 8 of them hung in a status reply, in 3.03 s on this host, and
+checks that no worker process survives, hung roots keep only logs and clean
+roots are removed (**verified compiled**, #31). Off Windows the kill switch
+does nothing (untested platform).
+
 ## Gauges
 
 Per session, from status replies (worker fields in [21](21-native-control.md)):

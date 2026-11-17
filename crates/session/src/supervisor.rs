@@ -31,8 +31,10 @@ pub const DEFAULT_MAX_SESSIONS: usize = 4;
 /// Upper bound accepted for `max_sessions`.
 pub const MAX_SESSIONS_LIMIT: usize = 16;
 pub const MAX_ARTIFACTS: usize = 128;
-/// Stop deadline per worker when the host closes.
+/// Per-worker stop deadline, including the wait for a session held by a stalled exchange.
 const CLOSE_DEADLINE: Duration = Duration::from_secs(3);
+/// After terminating a worker's job, how long its in-flight exchange may take to fail.
+const RELEASE_DEADLINE: Duration = Duration::from_secs(2);
 
 /// Host configuration, never accepted as a tool-call argument.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +160,8 @@ struct SessionHandle {
     input_wake: tokio::sync::Notify,
     mailbox: Mutex<supervision::Mailbox>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
+    /// Ends the worker process without `native`, for a stop that cannot get the lock.
+    kill: Arc<Mutex<crate::controlled_worker::KillSwitch>>,
 }
 
 impl SessionHandle {
@@ -225,6 +229,8 @@ pub struct Supervisor {
     local_assets: Mutex<BTreeMap<String, PathBuf>>,
     focus_request: Mutex<Option<String>>,
     audio_focus: tokio::sync::Mutex<Option<String>>,
+    /// Set by [`Supervisor::close`]; refuses new sessions.
+    closing: AtomicBool,
 }
 
 impl Supervisor {
@@ -262,6 +268,7 @@ impl Supervisor {
             local_assets: Mutex::default(),
             focus_request: Mutex::default(),
             audio_focus: tokio::sync::Mutex::default(),
+            closing: AtomicBool::new(false),
         })
     }
 
@@ -454,6 +461,7 @@ impl Supervisor {
         telemetry.epoch = native.epoch();
         telemetry.pid = native.pid();
         telemetry.record(actor, "create");
+        let kill = native.kill_switch();
         let handle = Arc::new(SessionHandle {
             info: Mutex::new(info.clone()),
             root,
@@ -468,6 +476,7 @@ impl Supervisor {
             input_wake: tokio::sync::Notify::new(),
             mailbox: Mutex::default(),
             tasks: Mutex::default(),
+            kill,
         });
         handle.start();
         reservation.commit(handle);
@@ -599,26 +608,57 @@ impl Supervisor {
     }
 
     /// End a session. Secondary guest data is deleted; primary data persists.
+    ///
+    /// Bounded by [`CLOSE_DEADLINE`]: if a stalled exchange or a slow command still holds the
+    /// session then, its worker's job is terminated through the kill switch, which fails the
+    /// exchange and releases the session. The result is then `TimedOut`.
     pub async fn stop(&self, id: &str, actor: Actor) -> io::Result<()> {
         self.require_control()?;
+        self.stop_session(id, actor).await
+    }
+
+    async fn stop_session(&self, id: &str, actor: Actor) -> io::Result<()> {
         let handle = self.handle(id)?;
         if !handle.close() {
             return Err(io::Error::other("session is already stopping"));
         }
         handle.set_playing(false);
         handle.record(actor, "stop");
-        let mut native = handle.native.lock().await;
+        let started = Instant::now();
+        let terminated =
+            || io::Error::new(io::ErrorKind::TimedOut, "worker stop deadline; terminated");
+        let mut forced = false;
+        let mut native = match tokio::time::timeout(CLOSE_DEADLINE, handle.native.lock()).await {
+            Ok(native) => native,
+            Err(_) => {
+                forced = lock(&handle.kill).terminate();
+                match tokio::time::timeout(RELEASE_DEADLINE, handle.native.lock()).await {
+                    Ok(native) => native,
+                    Err(_) => {
+                        // A host-side operation (not an exchange) still holds the session.
+                        // Its worker is gone; the handle and root lock go when it returns.
+                        self.unregister(id);
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "session held by a host operation; worker terminated, cleanup deferred",
+                        ));
+                    }
+                }
+            }
+        };
+        let remaining = CLOSE_DEADLINE
+            .saturating_sub(started.elapsed())
+            .max(Duration::from_millis(250));
         let result = if native.state().is_active() {
-            match tokio::time::timeout(CLOSE_DEADLINE, native.stop()).await {
+            match tokio::time::timeout(remaining, native.stop()).await {
                 Ok(result) => result,
                 Err(_) => {
                     native.abort().await;
-                    Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "worker stop deadline; terminated",
-                    ))
+                    Err(terminated())
                 }
             }
+        } else if forced {
+            Err(terminated())
         } else {
             Ok(())
         };
@@ -633,15 +673,17 @@ impl Supervisor {
         for task in tasks {
             let _ = tokio::time::timeout(Duration::from_secs(1), task).await;
         }
-        {
-            let mut registry = lock(&self.registry);
-            registry.sessions.remove(id);
-            registry.mounted.retain(|_, owner| owner != id);
-        }
+        self.unregister(id);
         if matches!(lock(&handle.info).kind, SessionKind::Secondary { .. }) {
             self.cards.discard_scratch(&handle.root, end)?;
         }
         result
+    }
+
+    fn unregister(&self, id: &str) {
+        let mut registry = lock(&self.registry);
+        registry.sessions.remove(id);
+        registry.mounted.retain(|_, owner| owner != id);
     }
 
     /// Failure injection and emergency termination, limited to this session's job.
@@ -1184,11 +1226,61 @@ impl Supervisor {
         lock(&self.focus_request).take()
     }
 
-    /// Stop every session, bounding each stop; used when a frontend closes.
-    pub async fn close(&self) {
-        for id in self.sessions() {
-            let _ = self.stop(&id, Actor::Host).await;
+    /// Stop every session concurrently and refuse new ones; used when a frontend closes.
+    ///
+    /// Each stop has its own deadline and forced termination ([`Self::stop`]), so the whole
+    /// close is bounded by one worker's deadline, not by the session count. Returns each
+    /// session's outcome; a stop still unfinished at the host deadline is abandoned and
+    /// reported (its worker was already terminated).
+    pub async fn close(self: &Arc<Self>) -> Vec<(String, io::Result<()>)> {
+        self.closing.store(true, Ordering::Release);
+        let mut stops = tokio::task::JoinSet::new();
+        let mut waiting: std::collections::BTreeSet<String> = self.sessions().into_iter().collect();
+        for id in &waiting {
+            let host = self.clone();
+            let id = id.clone();
+            stops.spawn(async move {
+                let result = host.stop_session(&id, Actor::Host).await;
+                (id, result)
+            });
         }
+        let deadline = tokio::time::Instant::now()
+            + CLOSE_DEADLINE
+            + RELEASE_DEADLINE
+            + Duration::from_secs(1);
+        let mut outcomes = Vec::new();
+        loop {
+            match tokio::time::timeout_at(deadline, stops.join_next()).await {
+                Ok(Some(Ok((id, result)))) => {
+                    waiting.remove(&id);
+                    outcomes.push((id, result));
+                }
+                Ok(Some(Err(error))) => {
+                    outcomes.push((String::new(), Err(io::Error::other(error))));
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    stops.abort_all();
+                    break;
+                }
+            }
+        }
+        for id in waiting {
+            outcomes.push((
+                id,
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "host shutdown deadline reached before this stop finished",
+                )),
+            ));
+        }
+        outcomes
+    }
+
+    /// Whether [`Self::close`] has started.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        self.closing.load(Ordering::Acquire)
     }
 
     fn handles(&self) -> Vec<Arc<SessionHandle>> {
@@ -1210,6 +1302,9 @@ impl Supervisor {
 
     fn reserve(&self, id: &str, kind: &SessionKind) -> io::Result<Reservation<'_>> {
         let mut registry = lock(&self.registry);
+        if self.is_closing() {
+            return Err(io::Error::other("host is shutting down"));
+        }
         if registry.sessions.len() + registry.pending >= self.config.max_sessions {
             return Err(io::Error::new(
                 io::ErrorKind::QuotaExceeded,

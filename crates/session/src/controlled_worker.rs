@@ -30,7 +30,29 @@ pub struct ControlledWorker {
     timeout: Duration,
     root_lock: Option<File>,
     #[cfg(windows)]
-    job: Option<crate::process_job::ProcessJob>,
+    job: Option<std::sync::Arc<crate::process_job::ProcessJob>>,
+}
+
+/// Terminates one worker's job without the exchange lock, e.g. while a stalled exchange
+/// holds it. Holds no strong reference: once the worker releases its job this does nothing.
+#[derive(Debug, Clone, Default)]
+pub struct KillSwitch {
+    #[cfg(windows)]
+    job: std::sync::Weak<crate::process_job::ProcessJob>,
+}
+
+impl KillSwitch {
+    /// End the worker and its contained descendants; false if it was already released.
+    /// The in-flight exchange then fails on the closed pipe and the connection is marked
+    /// crashed. Not available off Windows, where this returns false.
+    pub fn terminate(&self) -> bool {
+        #[cfg(windows)]
+        if let Some(job) = self.job.upgrade() {
+            job.terminate();
+            return true;
+        }
+        false
+    }
 }
 
 impl ControlledWorker {
@@ -131,7 +153,7 @@ impl ControlledWorker {
             timeout,
             root_lock: Some(root_lock),
             #[cfg(windows)]
-            job: Some(job),
+            job: Some(std::sync::Arc::new(job)),
         };
         let hello = worker
             .command(Method::Hello, serde_json::json!({"notifications": true}))
@@ -164,6 +186,18 @@ impl ControlledWorker {
     #[must_use]
     pub fn working_set(&self) -> Option<u64> {
         crate::process_memory::working_set(&self.child)
+    }
+
+    #[must_use]
+    pub fn kill_switch(&self) -> KillSwitch {
+        KillSwitch {
+            #[cfg(windows)]
+            job: self
+                .job
+                .as_ref()
+                .map(std::sync::Arc::downgrade)
+                .unwrap_or_default(),
+        }
     }
 
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<serde_json::Value> {

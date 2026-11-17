@@ -21,9 +21,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let service = server.serve(rmcp::transport::stdio()).await?;
     let result = service.waiting().await;
     if let Some(host) = host {
-        let count = host.sessions().len();
-        host.close().await;
-        eprintln!("LOTUS closed {count} session(s); primary cards retained, secondary guest data discarded. Session handles expire with this server.");
+        let outcomes = host.close().await;
+        let failed: Vec<String> = outcomes
+            .iter()
+            .filter_map(|(id, result)| result.as_ref().err().map(|e| format!("{id}: {e}")))
+            .collect();
+        eprintln!(
+            "LOTUS closed {} session(s), {} not cleanly; primary cards retained, secondary guest data discarded. Session handles expire with this server.",
+            outcomes.len(),
+            failed.len()
+        );
+        for line in failed {
+            eprintln!("  {line}");
+        }
     }
     result?;
     Ok(())

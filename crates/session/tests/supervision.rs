@@ -222,3 +222,76 @@ async fn reset_cancels_pending_input_and_stop_ends_tasks() {
         .submit_input(&id, InputState::default(), "live", Actor::Desktop)
         .is_err());
 }
+
+fn process_alive(pid: u32) -> bool {
+    let output = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .expect("tasklist");
+    String::from_utf8_lossy(&output.stdout).contains(&format!("\"{pid}\""))
+}
+
+#[cfg(windows)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_is_bounded_by_one_deadline_with_hung_workers() {
+    let fixture = host("close", 16);
+    let ids = fixture.running(16).await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let pids: Vec<u32> = ids
+        .iter()
+        .map(|id| telemetry(&fixture.host, id).pid.expect("pid"))
+        .collect();
+    // Half the workers hang their next reply for a minute: a status exchange holds each.
+    for id in ids.iter().step_by(2) {
+        fixture.stall(id, 60_000);
+    }
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    let started = Instant::now();
+    let outcomes = fixture.host.close().await;
+    let elapsed = started.elapsed();
+    eprintln!("close of 16 workers, 8 hung: {elapsed:?}");
+    // Sequential stops would take 8 x 3 s; concurrent ones one deadline plus termination.
+    assert!(elapsed < Duration::from_secs(7), "close took {elapsed:?}");
+    assert_eq!(outcomes.len(), 16);
+    for (index, id) in ids.iter().enumerate() {
+        let (_, result) = outcomes
+            .iter()
+            .find(|(outcome, _)| outcome == id)
+            .expect("every session reported");
+        let root = fixture.root(id);
+        if index % 2 == 0 {
+            let error = result.as_ref().expect_err("hung worker is forced");
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
+            // Abnormal end keeps the logs only.
+            assert!(root.join("worker.stderr.log").is_file());
+            assert!(!root.join("worker.lock").exists());
+        } else {
+            result.as_ref().expect("healthy worker stops cleanly");
+            assert!(!root.exists(), "clean secondary root removed");
+        }
+    }
+    for pid in pids {
+        assert!(!process_alive(pid), "worker {pid} survived close");
+    }
+    assert!(fixture.host.sessions().is_empty());
+    let refused = fixture
+        .host
+        .create(SessionKind::Secondary { parent: None }, None, Actor::Host)
+        .await;
+    assert!(
+        refused.is_err(),
+        "no new sessions while the host is closing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_second_stop_of_one_session_is_refused_not_doubled() {
+    let fixture = host("double", 1);
+    let id = fixture.running(1).await.remove(0);
+    let (first, second) = tokio::join!(
+        fixture.host.stop(&id, Actor::Host),
+        fixture.host.stop(&id, Actor::Host)
+    );
+    assert!(first.is_ok() != second.is_ok(), "{first:?} {second:?}");
+    assert!(fixture.host.sessions().is_empty());
+}
