@@ -51,6 +51,9 @@ pub struct Telemetry {
     pub buttons: u32,
     pub touch_down: bool,
     pub last_error: String,
+    /// Why the worker connection failed: `cause` (crate::failure::Cause), path-free
+    /// `summary`, `renderer` (known renderer failure). Null while healthy.
+    pub failure: Option<Value>,
     pub backend_name: String,
     /// Effective renderer: `software`, `opengl`, `vulkan`, or empty before the profile is read.
     pub renderer: String,
@@ -103,6 +106,7 @@ impl Telemetry {
             buttons: 0,
             touch_down: false,
             last_error: String::new(),
+            failure: None,
             backend_name: String::new(),
             renderer: String::new(),
             renderer_fallback: String::new(),

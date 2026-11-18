@@ -11,6 +11,7 @@
 //! - `mock-stall-ms`: before the next reply, sleep that many milliseconds (file is consumed).
 //! - `mock-async-pending`: `flush_storage` answers `async_fs_pending` that many times.
 //! - `mock-no-flush`: `flush_storage` is unsupported, like a worker that predates it.
+//! - `mock-exit-code`: on the next request, exit with that code without replying.
 //! - `mock-reject-debug`: `debug` answers `unsupported`; otherwise `rewind_configure` and
 //!   `gpu_configure` are accepted.
 //! - every accepted `input` is appended to `inputs.jsonl` as `{"buttons","x","y","touch","owner"}`.
@@ -236,6 +237,9 @@ fn main() -> io::Result<()> {
         if let Ok(text) = std::fs::read_to_string(&stall) {
             let _ = std::fs::remove_file(&stall);
             std::thread::sleep(Duration::from_millis(text.trim().parse().unwrap_or(0)));
+        }
+        if let Ok(text) = std::fs::read_to_string(root.join("mock-exit-code")) {
+            std::process::exit(text.trim().parse().unwrap_or(1));
         }
         let (status, data) = machine.handle(&request);
         let reply = Reply {

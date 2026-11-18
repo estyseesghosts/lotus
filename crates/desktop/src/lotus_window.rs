@@ -554,6 +554,24 @@ impl LotusWindow {
         .detach();
     }
 
+    /// Put the full local failure report (with log tails) on the clipboard. Local only.
+    fn copy_failure_report(&mut self, session: String, cx: &mut Context<Self>) {
+        let Some(controller) = &self.controller else {
+            return;
+        };
+        let host = controller.host().clone();
+        cx.spawn(async move |_, cx| {
+            // tokio::sync::Mutex needs no Tokio runtime to be awaited.
+            let text = match host.failure_report(&session).await {
+                Ok(Some(report)) => report,
+                Ok(None) => "no failure recorded for this session".to_string(),
+                Err(error) => format!("failure report unavailable: {error}"),
+            };
+            let _ = cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)));
+        })
+        .detach();
+    }
+
     fn publish_input(&mut self) {
         let Some(controller) = &self.controller else {
             return;
@@ -1726,11 +1744,40 @@ impl LotusWindow {
             return state.into_any_element();
         };
         if summary.telemetry.state == SessionState::Crashed {
+            let known = summary
+                .telemetry
+                .failure
+                .as_ref()
+                .is_some_and(|failure| failure["renderer"] == true);
+            let session = summary.info.id.clone();
             return empty_state(
                 "Worker crashed",
                 format!(
-                    "{} Logs are kept in the session root. Stop the session to release its slot.",
+                    "{} {} Logs and failure.json are kept in the session root. Stop the session \
+                     to release its slot.",
+                    if known {
+                        "Known renderer error."
+                    } else if summary.telemetry.failure.is_some() {
+                        "Not a known renderer error."
+                    } else {
+                        "Cause unknown."
+                    },
                     summary.telemetry.last_error
+                ),
+            )
+            .child(
+                div().mt_2().child(
+                    button(
+                        "copy-crash-report",
+                        "Copy local crash report",
+                        Tone::Plain,
+                        true,
+                    )
+                    .on_click(cx.listener(
+                        move |view, _: &ClickEvent, _, cx| {
+                            view.copy_failure_report(session.clone(), cx);
+                        },
+                    )),
                 ),
             )
             .into_any_element();

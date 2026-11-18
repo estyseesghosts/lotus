@@ -524,6 +524,11 @@ impl NativeSession {
     }
 
     #[must_use]
+    pub fn failure(&self) -> Option<&crate::failure::FailureReport> {
+        self.worker.failure()
+    }
+
+    #[must_use]
     pub fn state(&self) -> SessionState {
         self.worker.state()
     }

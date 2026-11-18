@@ -89,6 +89,13 @@ async fn poll(handle: &SessionHandle, due: Instant, started: Instant, wait: bool
         handle.set_playing(false);
         let mut telemetry = handle.telemetry();
         telemetry.state = native.state();
+        if let Some(report) = native.failure() {
+            // A failure seen by a command rather than by this task.
+            if telemetry.failure.is_none() {
+                telemetry.last_error = report.summary();
+            }
+            telemetry.failure = Some(super::failure_value(report));
+        }
         telemetry.fps = 0.0;
         telemetry.speed = 0.0;
         telemetry.memory_bytes = None;
@@ -103,6 +110,7 @@ async fn poll(handle: &SessionHandle, due: Instant, started: Instant, wait: bool
             let mut telemetry = handle.telemetry();
             telemetry.state = native.state();
             telemetry.last_error = error.to_string();
+            telemetry.failure = native.failure().map(super::failure_value);
             telemetry.supervision.status_failures += 1;
             return if native.state().is_active() {
                 Next::Period

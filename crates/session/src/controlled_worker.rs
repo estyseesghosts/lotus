@@ -2,8 +2,10 @@
 //!
 //! All exchanges are serialized by mutable ownership. A failed or timed-out
 //! exchange destroys the connection: a possibly committed request is never retried.
+//! The failure is then recorded as a [`crate::failure::FailureReport`].
 use std::fs::{self, File};
 use std::io;
+use std::path::PathBuf;
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -31,6 +33,10 @@ pub struct ControlledWorker {
     root_lock: Option<File>,
     #[cfg(windows)]
     job: Option<std::sync::Arc<crate::process_job::ProcessJob>>,
+    /// Worker storage root: holds `worker.stderr.log`, `log/` and `failure.json`.
+    root: PathBuf,
+    last_method: Option<Method>,
+    failure: Option<crate::failure::FailureReport>,
 }
 
 /// Terminates one worker's job without the exchange lock, e.g. while a stalled exchange
@@ -154,6 +160,9 @@ impl ControlledWorker {
             root_lock: Some(root_lock),
             #[cfg(windows)]
             job: Some(std::sync::Arc::new(job)),
+            root: spec.storage_root.clone(),
+            last_method: None,
+            failure: None,
         };
         let hello = worker
             // Only stops are pushed: the GDB server is the one consumer (crates/gdb
@@ -224,11 +233,64 @@ impl ControlledWorker {
                 self.release_resources();
                 Ok(())
             }
-            _ => {
-                self.fail().await;
-                Err(io::Error::other("worker failed to exit cleanly"))
-            }
+            _ => Err(self
+                .fail_with(io::Error::other("worker failed to exit cleanly"))
+                .await),
         }
+    }
+
+    /// Why the connection failed, once it has.
+    #[must_use]
+    pub fn failure(&self) -> Option<&crate::failure::FailureReport> {
+        self.failure.as_ref()
+    }
+
+    /// End the connection after `error` and record why. Logs are read after the process
+    /// exited, bounded, off the async runtime. Returns `error` with the cause appended.
+    async fn fail_with(&mut self, error: io::Error) -> io::Error {
+        let pid = self.child.id();
+        self.state = SessionState::Crashed;
+        let _ = self.child.kill().await;
+        let exit_code = self
+            .child
+            .wait()
+            .await
+            .ok()
+            .and_then(|status| status.code());
+        self.release_resources();
+        let root = self.root.clone();
+        let (log_tail, stderr_tail) = tokio::task::spawn_blocking(move || {
+            (
+                crate::failure::tail(&root.join("log").join("azahar_log.txt")).unwrap_or_default(),
+                crate::failure::tail(&root.join("worker.stderr.log")).unwrap_or_default(),
+            )
+        })
+        .await
+        .unwrap_or_default();
+        let (cause, marker) =
+            crate::failure::classify(&log_tail, &stderr_tail, exit_code, error.kind());
+        let report = crate::failure::FailureReport {
+            cause,
+            marker,
+            transport_error: error.to_string(),
+            exit_code,
+            pid,
+            connection: self.session.clone(),
+            last_method: self.last_method.map(|method| format!("{method:?}")),
+            last_request_id: self.next_request.saturating_sub(1),
+            epoch: self.epoch,
+            host_time_unix_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |time| time.as_millis() as u64),
+            stderr_tail,
+            log_tail,
+        };
+        if let Ok(json) = serde_json::to_vec_pretty(&report) {
+            let _ = fs::write(self.root.join("failure.json"), json);
+        }
+        let summary = report.summary();
+        self.failure = Some(report);
+        io::Error::new(error.kind(), format!("{error}; {summary}"))
     }
 
     async fn fail(&mut self) {
@@ -275,19 +337,18 @@ impl ControlledWorker {
             .next_request
             .checked_add(1)
             .ok_or_else(|| io::Error::other("request ID exhausted"))?;
+        self.last_method = Some(method);
         let result = tokio::time::timeout(self.timeout, self.exchange(&request)).await;
         let reply = match result {
             Ok(Ok(reply)) => reply,
-            Ok(Err(error)) => {
-                self.fail().await;
-                return Err(error);
-            }
+            Ok(Err(error)) => return Err(self.fail_with(error).await),
             Err(_) => {
-                self.fail().await;
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "worker exchange deadline exceeded; result unknown",
-                ));
+                return Err(self
+                    .fail_with(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "worker exchange deadline exceeded; result unknown",
+                    ))
+                    .await);
             }
         };
         if !lotus_protocol::is_compatible(reply.version_major, reply.version_minor)
@@ -315,11 +376,12 @@ impl ControlledWorker {
                 "idle" | "running" | "paused" | "stopped"
             )
         {
-            self.fail().await;
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid worker reply identity, epoch, status or state",
-            ));
+            return Err(self
+                .fail_with(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "invalid worker reply identity, epoch, status or state",
+                ))
+                .await);
         }
         self.epoch = reply.epoch;
         self.state = match reply.state.as_str() {

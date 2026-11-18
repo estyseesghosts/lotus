@@ -18,7 +18,12 @@ pub const GUEST_DIRS: [&str; 3] = ["sdmc", "nand", "sysdata"];
 /// Largest parent copy accepted for one secondary.
 pub const MAX_COPY_BYTES: u64 = 4 << 30;
 /// Host diagnostics retained after an abnormal end.
-const RETAINED: [&str; 3] = ["worker.stderr.log", "log", "native-manifest.json"];
+const RETAINED: [&str; 4] = [
+    "worker.stderr.log",
+    "log",
+    "native-manifest.json",
+    "failure.json",
+];
 
 /// Owns the `cards/` and `scratch/` directories of one storage root.
 #[derive(Debug, Clone)]

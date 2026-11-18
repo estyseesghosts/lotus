@@ -413,6 +413,17 @@ impl Supervisor {
             .collect()
     }
 
+    /// Full local failure report of a session's worker, including log tails. For the local
+    /// desktop user only; never exposed through MCP. Waits for the session lock.
+    pub async fn failure_report(&self, id: &str) -> io::Result<Option<String>> {
+        let handle = self.handle(id)?;
+        let native = handle.native.lock().await;
+        native
+            .failure()
+            .map(|report| serde_json::to_string_pretty(report).map_err(io::Error::other))
+            .transpose()
+    }
+
     /// Approve a file chosen by the local desktop user. Never reachable from MCP.
     pub fn approve_local_asset(&self, path: &Path) -> io::Result<String> {
         let path = path.canonicalize()?;
@@ -1730,6 +1741,16 @@ impl Supervisor {
             "unknown asset handle",
         ))
     }
+}
+
+/// Path-free failure summary for telemetry (lotus#47).
+pub(crate) fn failure_value(report: &crate::failure::FailureReport) -> serde_json::Value {
+    serde_json::json!({
+        "cause": report.cause,
+        "summary": report.summary(),
+        "renderer": report.cause.is_renderer(),
+        "exit_code": report.exit_code,
+    })
 }
 
 /// `path.canonicalize()` with an error naming the host configuration key and path.

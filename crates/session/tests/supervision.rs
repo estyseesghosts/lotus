@@ -454,3 +454,79 @@ async fn an_owner_change_during_a_stalled_input_is_delivered() {
     assert_eq!(inputs(&root), vec![1, 1]);
     assert_eq!(telemetry(&fixture.host, id).input.owner_handoffs, 1);
 }
+
+/// lotus#47: a worker that logs a critical line and exits is reported with that line and a
+/// cause, while a sibling keeps running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_crashed_worker_reports_its_logged_cause() {
+    let fixture = host("crash", 3);
+    let ids = fixture.running(3).await;
+    let cases: [(&[u8], &str); 3] = [
+        (
+            b"[ 305.918224] Render.Vulkan <Critical> video_core/renderer_vulkan/vk_texture_runtime.cpp:Create:224: Failed allocating image with error -2\n",
+            "vulkan_out_of_memory",
+        ),
+        (b"\xff\xfe invalid utf-8 only\n", "abort"),
+        (b"", "abort"),
+    ];
+    for ((log, _), id) in cases.iter().zip(&ids) {
+        let root = fixture.root(id);
+        std::fs::create_dir_all(root.join("log")).expect("log dir");
+        if !log.is_empty() {
+            std::fs::write(root.join("log/azahar_log.txt"), log).expect("log");
+        }
+    }
+    // Crash the first two; the third keeps running until its turn.
+    for id in &ids[..2] {
+        std::fs::write(fixture.root(id).join("mock-exit-code"), "3").expect("exit");
+    }
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while ids[..2]
+        .iter()
+        .any(|id| telemetry(&fixture.host, id).failure.is_none())
+    {
+        assert!(Instant::now() < deadline, "failures not reported");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let sibling = telemetry(&fixture.host, &ids[2]);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        telemetry(&fixture.host, &ids[2]).frames > sibling.frames,
+        "sibling progresses"
+    );
+    for ((_, cause), id) in cases.iter().zip(&ids).take(2) {
+        let failure = telemetry(&fixture.host, id).failure.expect("failure");
+        assert_eq!(failure["cause"], *cause, "{failure}");
+        assert_eq!(failure["exit_code"], 3);
+        let summary = failure["summary"].as_str().unwrap();
+        assert!(!summary.contains(":\\"), "path leaked: {summary}");
+        assert!(fixture.root(id).join("failure.json").is_file());
+    }
+    let first = telemetry(&fixture.host, &ids[0]);
+    assert!(
+        first
+            .last_error
+            .contains("Failed allocating image with error -2"),
+        "{}",
+        first.last_error
+    );
+    assert!(first.failure.unwrap()["renderer"] == true);
+    let report = fixture
+        .host
+        .failure_report(&ids[0])
+        .await
+        .expect("report")
+        .expect("some");
+    assert!(report.contains("log_tail"));
+    // No log, killed from outside: an abort by exit code only, still path-free.
+    std::fs::write(fixture.root(&ids[2]).join("mock-exit-code"), "1").expect("exit");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while telemetry(&fixture.host, &ids[2]).failure.is_none() {
+        assert!(Instant::now() < deadline);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        telemetry(&fixture.host, &ids[2]).failure.unwrap()["cause"],
+        "abort"
+    );
+}
