@@ -1,4 +1,6 @@
-/# lotus
+## lotus
+
+![lotus](lotus.png)
 
 powered by CITnLO (CITra n LOtus), an experimental azahar fork
 
