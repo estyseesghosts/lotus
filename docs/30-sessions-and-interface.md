@@ -406,6 +406,55 @@ FPS 0.0, while B's kept updating at 60 fps. Physical controllers were not
 connected, so `PAD` was only seen as `none`; connected and remembered pads are
 covered by the unit test alone.
 
+### Drag tiling (#68)
+
+`tiling.rs` holds every drag decision as pure functions; the window draws the
+preview and commits the operation from the same `Target`, so what is shown is
+what is dropped.
+
+- Sources: a sidebar row (loaded, running sessions only) or a tile header.
+  Dragging starts after GPUI's 2 px threshold and shows a ghost with the
+  session label. The revision at drag start travels with it and the drop is
+  sent as `update_workspace(op, Some(revision))`, so a drop over a layout an
+  agent changed meanwhile is rejected instead of applied to the wrong tiles.
+  A drop for a session that no longer exists is ignored.
+- Stage targets: the stage's diagonals split it into left, right, top and
+  bottom edges with no dead zones. A row onto an empty stage shows it alone; a
+  row onto a single view tiles it on the dropped edge (left/right horizontal,
+  top/bottom vertical); a row onto a split replaces only the tile under the
+  pointer, and the displaced session keeps running in the sidebar. A tile onto
+  an edge reorders or reorients; a drop that matches the drawn layout commits
+  nothing, so `auto` is kept. The preview is a bordered half (or tile) at 12%
+  fill.
+- Sidebar target: dropping a tile on the sidebar ("Return to sidebar (keeps
+  running)") untiles and keeps the other session. Workers are never stopped or
+  paused by any drag.
+- Divider: replaces the gap between tiles. Dragging it previews the ratio
+  locally (clamped 0.2–0.8) and commits one `SetRatio` on release;
+  double-click sets 0.5.
+- Cancel: Escape or a drop outside a target ends the drag with no operation.
+- Keyboard, in a split: Ctrl+Shift+H left/right, Ctrl+Shift+V top/bottom,
+  Ctrl+Shift+R swap, Ctrl+Shift+W untile (keeps the keyboard-focused tile and
+  selects it), Ctrl+Shift+Left/Up and Right/Down move the ratio by 0.05,
+  Ctrl+Shift+D resets it to 0.5. Entering a split without a pointer uses the
+  row's tile button. X/E/U/S/0 were tried first and dropped: on the test
+  machine Ctrl+Shift with those keys never reached the window.
+
+Drag evidence: `tiling.rs` tests check that every stage point maps to the edge
+its preview draws, row-onto-single and row-onto-split results, swap/reorder/
+reorient without no-op commits, and the divider ratio round trip and bounds
+(**verified compiled**). Release build, two CITnLO `t03` sessions, synthetic
+mouse and key input (**emulator**): dragging B's row to the left edge previewed
+the left half and tiled B left; Escape during a tile drag left the revision
+unchanged; dragging the divider set the ratio to about 0.3; dragging the first
+tile to the bottom edge gave top/bottom with B on the bottom; dragging a tile
+to the sidebar left single A with both workers playing. Shortcuts, read back
+through `lotus_status`: R swapped (revision 2→3, focus followed A), Left twice
+gave 0.45 then 0.40, D gave 0.5, W left single A. Touch input, DPI scaling
+other than 100%, mouse capture loss mid-drag and macOS were not tested; one
+tile-header drag failed to start on the first attempt and worked on retry,
+likely an artefact of the driver's synthetic input.
+
 ## Live input state (#60)
 
 `native_session::InputState` is the one fast input state for the desktop,

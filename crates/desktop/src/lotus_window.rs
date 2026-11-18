@@ -15,11 +15,11 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, uniform_list, AnyElement, AppContext, ClickEvent, Context, Div, FocusHandle,
-    FontWeight, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions, Render,
-    RenderImage, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled, StyledImage,
-    Window,
+    div, px, relative, uniform_list, AnyElement, AppContext, ClickEvent, Context, Div,
+    DragMoveEvent, FocusHandle, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
+    PathPromptOptions, Render, RenderImage, Rgba, SharedString, Stateful,
+    StatefulInteractiveElement, Styled, StyledImage, Window,
 };
 use image::{Frame, RgbaImage};
 use lotus_session::supervisor::{HostConfig, SessionKind, SessionSummary};
@@ -36,6 +36,7 @@ use crate::preferences::{self, Store};
 use crate::screen_geometry::TouchTransform;
 use crate::session_tree::{self, TreeNode};
 use crate::theme;
+use crate::tiling::{self, DividerDrag, SessionDrag, Source, Target};
 use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 const TOOLBAR_HEIGHT: f32 = 52.0;
@@ -174,6 +175,11 @@ pub struct LotusWindow {
     /// preferences is never changed by a split.
     overlay_width: f32,
     overlay_drag: bool,
+    /// Where the session being dragged would land, with its snap preview as fractions of
+    /// the stage (lotus#68). Cleared whenever no drag is active.
+    drop_target: Option<(Target, (f32, f32, f32, f32))>,
+    /// Split ratio while the divider is dragged; committed on release.
+    ratio_drag: Option<f32>,
     /// Last split plan, so `Auto` holds its choice near a crossover (lotus#69).
     split_held: Cell<Option<SplitPlan>>,
     /// Last resolved layout handed to the supervisor, to report only changes.
@@ -278,6 +284,8 @@ impl LotusWindow {
             inspect_tile: None,
             overlay_width: layout::INSPECTOR_DEFAULT,
             overlay_drag: false,
+            drop_target: None,
+            ratio_drag: None,
             split_held: Cell::new(None),
             resolved_sent: Cell::new(None),
             registers: None,
@@ -760,6 +768,13 @@ impl LotusWindow {
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
+        eprintln!(
+            "KEYDBG {:?} ctrl={} shift={} alt={}",
+            key, modifiers.control, modifiers.shift, modifiers.alt
+        );
+        if modifiers.control && modifiers.shift && self.split() && self.split_shortcut(key) {
+            return;
+        }
         if modifiers.control {
             match key {
                 "b" => self.toggle_pane(Pane::Sessions, window),
@@ -795,6 +810,12 @@ impl LotusWindow {
                 return;
             }
             "escape" => {
+                // Cancels a drag-and-drop or divider drag without committing it.
+                if cx.stop_active_drag(window) {
+                    self.drop_target = None;
+                    self.ratio_drag = None;
+                    cx.notify();
+                }
                 self.menu = Menu::Closed;
                 window.focus(&self.focus, cx);
                 return;
@@ -1239,6 +1260,262 @@ impl LotusWindow {
         })
     }
 
+    /// Split orientation and ratio as drawn, for drop zones and the divider (lotus#68).
+    fn drawn_split(&self) -> (bool, f32) {
+        let vertical = self.split_held.get().is_some_and(|plan| plan.vertical);
+        let ratio = match &self.workspace.layout {
+            Layout::Split { ratio, .. } => self.ratio_drag.unwrap_or(*ratio),
+            _ => workspace::RATIO_DEFAULT,
+        };
+        (vertical, ratio)
+    }
+
+    fn session_drag(&self, session: &str, source: Source) -> SessionDrag {
+        SessionDrag {
+            session: session.to_string(),
+            label: format!(
+                "{} {}",
+                self.session_name(session),
+                session_tree::short_id(session)
+            ),
+            source,
+            revision: self.workspace.revision,
+        }
+    }
+
+    /// Commit a dropped session at the target its preview showed. The operation carries
+    /// the revision the drag started on, so a layout changed meanwhile refuses it.
+    fn drop_session(&mut self, drag: &SessionDrag) {
+        let Some((target, _)) = self.drop_target.take() else {
+            return;
+        };
+        // Ended while it was being dragged.
+        if !self.sessions.iter().any(|s| s.info.id == drag.session) {
+            return;
+        }
+        let (vertical, _) = self.drawn_split();
+        let Some(operation) = tiling::operation(drag, target, &self.workspace.layout, vertical)
+        else {
+            return;
+        };
+        // Outside a split the window shows the selection; select what stays.
+        match &operation {
+            Operation::Untile {
+                keep: Some(session),
+            }
+            | Operation::Single { session } => self.select(session.clone()),
+            _ => {}
+        }
+        self.send(Command::WorkspaceAt(operation, drag.revision));
+    }
+
+    /// Track a session drag over the stage: the target under the pointer and its preview.
+    fn drag_over_stage(&mut self, event: &DragMoveEvent<SessionDrag>, cx: &mut Context<Self>) {
+        let (bounds, at) = (event.bounds, event.event.position);
+        let target = if bounds.contains(&at) {
+            let (vertical, ratio) = self.drawn_split();
+            let (x, y) = (
+                f32::from(at.x - bounds.origin.x),
+                f32::from(at.y - bounds.origin.y),
+            );
+            let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
+            let size = if vertical { h } else { w };
+            let split = tiling::split_point(size, CONTENT_PADDING, TILE_GAP, ratio) / size.max(1.0);
+            tiling::stage_target(
+                event.drag(cx),
+                &self.workspace.layout,
+                (x, y, w, h),
+                vertical,
+                ratio,
+                (CONTENT_PADDING, TILE_GAP),
+            )
+            .map(|target| (target, tiling::preview(target, vertical, split)))
+        } else if self
+            .drop_target
+            .is_some_and(|(target, _)| target == Target::Sidebar)
+        {
+            return;
+        } else {
+            None
+        };
+        if self.drop_target != target {
+            self.drop_target = target;
+            cx.notify();
+        }
+    }
+
+    /// Track a session drag over the sidebar: a tile dropped there returns to it.
+    fn drag_over_sidebar(&mut self, event: &DragMoveEvent<SessionDrag>, cx: &mut Context<Self>) {
+        let inside = event.bounds.contains(&event.event.position);
+        let target = if inside {
+            let (vertical, _) = self.drawn_split();
+            tiling::operation(
+                event.drag(cx),
+                Target::Sidebar,
+                &self.workspace.layout,
+                vertical,
+            )
+            .map(|_| (Target::Sidebar, (0.0, 0.0, 1.0, 1.0)))
+        } else if self
+            .drop_target
+            .is_some_and(|(target, _)| target == Target::Sidebar)
+        {
+            None
+        } else {
+            return;
+        };
+        if self.drop_target != target {
+            self.drop_target = target;
+            cx.notify();
+        }
+    }
+
+    /// Keyboard equivalents of the drag actions in a split (lotus#68): Ctrl+Shift+H/V
+    /// left/right or top/bottom, R swap, W return the unfocused tile to the sidebar,
+    /// Left/Up and Right/Down move the divider by 5%, D equalizes it. Shifted symbols are
+    /// avoided: GPUI on Windows reports Ctrl+Shift+, as "<" without shift.
+    fn split_shortcut(&mut self, key: &str) -> bool {
+        let Layout::Split {
+            first,
+            second,
+            ratio,
+            ..
+        } = &self.workspace.layout
+        else {
+            return false;
+        };
+        let keep = match self.workspace.focused_viewport {
+            Viewport::First => first.clone(),
+            Viewport::Second => second.clone(),
+        };
+        let step = |delta: f32| Operation::SetRatio {
+            ratio: (ratio + delta).clamp(workspace::RATIO_MIN, workspace::RATIO_MAX),
+        };
+        let operation = match key.to_ascii_lowercase().as_str() {
+            "h" => Operation::SetAxis {
+                axis: Axis::Horizontal,
+            },
+            "v" => Operation::SetAxis {
+                axis: Axis::Vertical,
+            },
+            "r" => Operation::Swap,
+            "w" => {
+                self.select(keep.clone());
+                Operation::Untile { keep: Some(keep) }
+            }
+            "left" | "up" => step(-0.05),
+            "right" | "down" => step(0.05),
+            "d" => Operation::SetRatio {
+                ratio: workspace::RATIO_DEFAULT,
+            },
+            _ => return false,
+        };
+        self.send(Command::Workspace(operation));
+        true
+    }
+
+    /// The stage as a drop target for sessions and the divider, with the snap preview.
+    fn render_drop_stage(&self, stage: AnyElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let preview = self
+            .drop_target
+            .filter(|(target, _)| *target != Target::Sidebar)
+            .map(|(_, rect)| rect);
+        div()
+            .id("drop-stage")
+            .relative()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .child(stage)
+            .on_drag_move(
+                cx.listener(|view, event: &DragMoveEvent<SessionDrag>, _, cx| {
+                    view.drag_over_stage(event, cx)
+                }),
+            )
+            .on_drag_move(
+                cx.listener(|view, event: &DragMoveEvent<DividerDrag>, _, cx| {
+                    let (vertical, _) = view.drawn_split();
+                    let (bounds, at) = (event.bounds, event.event.position);
+                    let (pos, size) = if vertical {
+                        (at.y - bounds.origin.y, bounds.size.height)
+                    } else {
+                        (at.x - bounds.origin.x, bounds.size.width)
+                    };
+                    let ratio = tiling::ratio_at(
+                        f32::from(pos),
+                        f32::from(size),
+                        CONTENT_PADDING,
+                        TILE_GAP,
+                    );
+                    if view.ratio_drag != Some(ratio) {
+                        view.ratio_drag = Some(ratio);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_drop(cx.listener(|view, drag: &SessionDrag, _, cx| {
+                view.drop_session(drag);
+                cx.notify();
+            }))
+            .children(preview.map(|(x, y, w, h)| {
+                div()
+                    .absolute()
+                    .left(relative(x))
+                    .top(relative(y))
+                    .w(relative(w))
+                    .h(relative(h))
+                    .p_2()
+                    .child(
+                        div()
+                            .size_full()
+                            .rounded(px(8.0))
+                            .border_2()
+                            .border_color(theme::info())
+                            .bg(theme::info().opacity(0.12)),
+                    )
+            }))
+    }
+
+    /// The sidebar as a drop target: a tile dragged here leaves the split, still running.
+    fn render_drop_sidebar(&self, sidebar: AnyElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self
+            .drop_target
+            .is_some_and(|(target, _)| target == Target::Sidebar);
+        div()
+            .id("drop-sidebar")
+            .relative()
+            .flex()
+            .flex_none()
+            .h_full()
+            .child(sidebar)
+            .on_drag_move(
+                cx.listener(|view, event: &DragMoveEvent<SessionDrag>, _, cx| {
+                    view.drag_over_sidebar(event, cx)
+                }),
+            )
+            .on_drop(cx.listener(|view, drag: &SessionDrag, _, cx| {
+                view.drop_session(drag);
+                cx.notify();
+            }))
+            .when(active, |sidebar| {
+                sidebar.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(8.0))
+                        .border_2()
+                        .border_color(theme::info())
+                        .bg(theme::info().opacity(0.12))
+                        .text_color(theme::text())
+                        .child("Return to sidebar (keeps running)"),
+                )
+            })
+    }
+
     fn session_row(
         &self,
         summary: &SessionSummary,
@@ -1254,6 +1531,9 @@ impl LotusWindow {
             _ => None,
         };
         let label = session_tree::session_label(&summary.info);
+        // Running, loaded sessions can be dragged onto the stage (lotus#68).
+        let draggable = summary.info.asset.is_some() && summary.telemetry.state.is_active();
+        let drag = self.session_drag(&id, Source::Row);
         let mut name = div()
             .flex()
             .items_center()
@@ -1376,6 +1656,11 @@ impl LotusWindow {
                     .child(row_meta(summary)),
             )
             .child(div().absolute().right(px(4.0)).child(actions))
+            .when(draggable, |row| {
+                row.on_drag(drag, |drag: &SessionDrag, _, _, cx| {
+                    cx.new(|_| DragGhost(drag.label.clone().into()))
+                })
+            })
             .on_click(cx.listener(move |view, _: &ClickEvent, _, _| view.select(id.clone())))
     }
 
@@ -2235,14 +2520,8 @@ impl LotusWindow {
         };
         let width = plan.main - 2.0 * CONTENT_PADDING;
         let height = viewport_height - TOOLBAR_HEIGHT - gauge_height - 2.0 * CONTENT_PADDING;
-        let split = split_plan(
-            width,
-            height,
-            *axis,
-            *ratio,
-            *screens,
-            self.split_held.get(),
-        );
+        let ratio = self.ratio_drag.unwrap_or(*ratio);
+        let split = split_plan(width, height, *axis, ratio, *screens, self.split_held.get());
         self.split_held.set(Some(split));
         let scale = split.tiles.map(|tile| match self.zoom {
             Zoom::Native => 1.0,
@@ -2277,26 +2556,68 @@ impl LotusWindow {
                 div()
                     .flex()
                     .flex_none()
-                    .gap(px(TILE_GAP))
                     .when(split.vertical, |row| row.flex_col())
-                    .children(tiles.into_iter().map(|(viewport, session, other, tile)| {
-                        let gauges =
-                            self.render_tile_gauges(viewport, session, split.vertical, tile);
-                        let tile = self.render_tile(viewport, session, other, tile, *axis, cx);
-                        // Gauges sit on the outer edge: before the first tile, after the second.
-                        let (lead, trail) = match viewport {
-                            Viewport::First => (gauges, tile),
-                            Viewport::Second => (tile, gauges),
-                        };
-                        div()
-                            .flex()
-                            .flex_none()
-                            .gap(px(GAUGE_GAP))
-                            .when(split.vertical, |slot| slot.flex_col())
-                            .child(lead)
-                            .child(trail)
-                    })),
+                    .children(tiles.into_iter().enumerate().flat_map(
+                        |(index, (viewport, session, other, tile))| {
+                            let gauges =
+                                self.render_tile_gauges(viewport, session, split.vertical, tile);
+                            let tile = self.render_tile(viewport, session, other, tile, *axis, cx);
+                            // Gauges sit on the outer edge: before the first tile, after the second.
+                            let (lead, trail) = match viewport {
+                                Viewport::First => (gauges, tile),
+                                Viewport::Second => (tile, gauges),
+                            };
+                            let slot = div()
+                                .flex()
+                                .flex_none()
+                                .gap(px(GAUGE_GAP))
+                                .when(split.vertical, |slot| slot.flex_col())
+                                .child(lead)
+                                .child(trail)
+                                .into_any_element();
+                            // The gap between the tiles is the divider (lotus#68).
+                            let divider =
+                                (index == 0).then(|| self.render_split_divider(split.vertical, cx));
+                            std::iter::once(slot).chain(divider)
+                        },
+                    )),
             )
+            .into_any_element()
+    }
+
+    /// Drag to resize the split; double-click returns it to an even split.
+    fn render_split_divider(&self, vertical: bool, cx: &mut Context<Self>) -> AnyElement {
+        div()
+            .id("split-divider")
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.0))
+            .when(vertical, |divider| {
+                divider.h(px(TILE_GAP)).cursor_row_resize()
+            })
+            .when(!vertical, |divider| {
+                divider.w(px(TILE_GAP)).cursor_col_resize()
+            })
+            .hover(|style| style.bg(theme::surface_hover()))
+            .child(
+                div()
+                    .rounded(px(1.0))
+                    .bg(theme::border_strong())
+                    .when(vertical, |grip| grip.w(px(32.0)).h(px(2.0)))
+                    .when(!vertical, |grip| grip.w(px(2.0)).h(px(32.0))),
+            )
+            .on_drag(DividerDrag, |_: &DividerDrag, _, _, cx| {
+                cx.new(|_| DragGhost(SharedString::default()))
+            })
+            .on_click(cx.listener(|view, event: &ClickEvent, _, _| {
+                if event.click_count() >= 2 {
+                    view.send(Command::Workspace(Operation::SetRatio {
+                        ratio: workspace::RATIO_DEFAULT,
+                    }));
+                }
+            }))
             .into_any_element()
     }
 
@@ -2598,6 +2919,11 @@ impl LotusWindow {
         );
         let keep = other.to_string();
         let mut header = div()
+            .id(SharedString::from(format!("tile-header-{index}")))
+            .on_drag(
+                self.session_drag(session, Source::Tile),
+                |drag: &SessionDrag, _, _, cx| cx.new(|_| DragGhost(drag.label.clone().into())),
+            )
             .flex()
             .flex_none()
             .items_center()
@@ -3510,6 +3836,11 @@ impl Render for LotusWindow {
         if let Some(controller) = &self.controller {
             controller.ui.rendered();
         }
+        if !cx.has_active_drag() {
+            // A drag released outside every drop target, or cancelled.
+            self.drop_target = None;
+            self.ratio_drag = None;
+        }
         let plan = self.plan(window);
         let viewport_height = f32::from(window.viewport_size().height);
         let density = layout::toolbar_density(plan.main);
@@ -3537,7 +3868,7 @@ impl Render for LotusWindow {
             .h_full()
             .child(self.render_toolbar(density, cx))
             .children(self.render_error(cx))
-            .child(stage)
+            .child(self.render_drop_stage(stage, cx))
             .children(gauges)
             .when(self.menu == Menu::Load, |main| {
                 main.child(self.render_load_menu(cx))
@@ -3557,6 +3888,11 @@ impl Render for LotusWindow {
             .text_sm()
             .track_focus(&self.focus)
             .when(self.drag.is_some(), |root| root.cursor_col_resize())
+            .on_drop(cx.listener(|view, _: &DividerDrag, _, _| {
+                if let (Some(ratio), true) = (view.ratio_drag.take(), view.split()) {
+                    view.send(Command::Workspace(Operation::SetRatio { ratio }));
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, _, window, cx| window.focus(&view.focus, cx)),
@@ -3604,7 +3940,10 @@ impl Render for LotusWindow {
             .on_key_up(cx.listener(|view, event: &KeyUpEvent, _, _| {
                 view.button(&event.keystroke.key, false)
             }))
-            .child(self.render_sidebar(&plan, cx))
+            .child({
+                let sidebar = self.render_sidebar(&plan, cx);
+                self.render_drop_sidebar(sidebar, cx)
+            })
             .child(main)
             .when_some(plan.inspector, |root, width| {
                 root.child(self.render_inspector(width, true, cx))
@@ -4060,6 +4399,28 @@ fn rail_button(
         })
         .when(!enabled, |button| button.opacity(0.4));
     with_tooltip(button, description)
+}
+
+/// What follows the pointer during a drag: the session's name, or nothing for the divider.
+struct DragGhost(SharedString);
+
+impl Render for DragGhost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        if self.0.is_empty() {
+            return div();
+        }
+        div()
+            .px_2()
+            .py_1()
+            .rounded(px(4.0))
+            .bg(theme::panel())
+            .border_1()
+            .border_color(theme::info())
+            .font_family(theme::FONT)
+            .text_xs()
+            .text_color(theme::text())
+            .child(self.0.clone())
+    }
 }
 
 /// Small text tooltip; GPUI tooltips are views.

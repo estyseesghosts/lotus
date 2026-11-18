@@ -71,6 +71,9 @@ pub enum Command {
     Abort(String),
     /// A layout change through the shared workspace (lotus#67), committed before it returns.
     Workspace(lotus_session::workspace::Operation),
+    /// As [`Command::Workspace`], refused if the workspace is no longer at this revision
+    /// (a drag-and-drop started on an older layout, lotus#68).
+    WorkspaceAt(lotus_session::workspace::Operation, u64),
     /// How the window resolved `Auto` for a split (lotus#69); display only.
     WorkspaceResolved(lotus_session::workspace::Resolved),
 }
@@ -935,6 +938,10 @@ impl Loops {
             Command::Abort(id) => host.abort(&id, actor).await?,
             Command::Workspace(operation) => {
                 let snapshot = host.update_workspace(&operation, None, actor)?;
+                lock(&self.published).workspace = snapshot;
+            }
+            Command::WorkspaceAt(operation, revision) => {
+                let snapshot = host.update_workspace(&operation, Some(revision), actor)?;
                 lock(&self.published).workspace = snapshot;
             }
             Command::WorkspaceResolved(resolved) => host.report_workspace_resolved(resolved),
