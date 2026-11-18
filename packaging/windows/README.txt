@@ -21,8 +21,9 @@ and use the same sessions the agent drives. For a portable MCP command:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File <folder>/launch.ps1 -Mode WindowedMCP -Fixture <homebrew.3dsx>
 No network listener.
 
-This initial developer release is unsigned. Software rendering only; audio is
-muted. No ROMs, Nintendo firmware, DSP dump, keys or user captures are included.
+This developer release is unsigned. Sessions use Vulkan and fall back to
+software rendering when the worker refuses Vulkan setup; audio is muted.
+Full user guide: docs/37-user-guide.md in the source ZIP or on GitHub. No ROMs, Nintendo firmware, DSP dump, keys or user captures are included.
 Visible rendering and mouse/keyboard input were checked by screenshot on one
 100% scale display; actual two-DPI acceptance remains unverified. Automated
 native lifecycle, isolation, protocol, CLI and MCP checks are documented in docs/.

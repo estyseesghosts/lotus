@@ -1,6 +1,8 @@
 # Lotus — documentation index
 
-Start here. **New agent?** Read `AGENTS.md`, this page,
+Start here. **Using LOTUS?** Read the [37 — user guide](37-user-guide.md):
+install, the window, controllers, settings, MCP, CLI and troubleshooting.
+**New agent?** Read `AGENTS.md`, this page,
 [33 — Wave 3 retrospective and handoff](33-wave-3-retrospective.md) (current
 state, open items), [34 — performance and issue triage](34-performance-and-issue-triage.md)
 (post-Wave 3 fixes and measurements), [35 — release notes](35-release-notes.md) (what each release changed) and [27 — build and run](27-build-and-run.md) (build,
@@ -107,7 +109,7 @@ Opt-in native tests: [21, reproduction](21-native-control.md).
 
 | Group | Documents |
 | --- | --- |
-| Start | [index](index.md) · [glossary](glossary.md) |
+| Start | [index](index.md) · [glossary](glossary.md) · [37](37-user-guide.md) user guide |
 | Product | [01](01-product-contract.md) contract · [15](15-implementation-tickets.md) tickets · [29](29-wave-3-plan.md) Wave 3 plan |
 | Architecture | [02](02-system-architecture.md) system · [04](04-azahar-native-worker.md) worker · [05](05-gpui-desktop.md) GPUI · [06](06-ipc-and-session-contract.md) IPC · [10](10-multi-instance-and-storage.md) instances |
 | Backend | [03](03-azahar-branches.md) branches · [16](16-azahar-patch-blueprint.md) patches · [20](20-native-baseline.md) baseline |
@@ -118,7 +120,7 @@ Opt-in native tests: [21, reproduction](21-native-control.md).
 
 ## Documentation rules
 
-- Numbers `01`–`35` are stable identifiers; never renumber, never duplicate
+- Numbers `01`–`37` are stable identifiers; never renumber, never duplicate
   another document's content — link to it or to the glossary.
 - New documents get the next number and a row in the map above, plus any new
   terms in the glossary.
