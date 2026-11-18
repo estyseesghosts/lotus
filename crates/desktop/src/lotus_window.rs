@@ -225,6 +225,12 @@ impl LotusWindow {
                 .inspector
                 .store(preferences.values.inspector_open, Ordering::Release);
             controller.presence.configure(&preferences.values);
+            controller
+                .host()
+                .enable_workspace(lotus_session::workspace::SplitDefaults {
+                    axis: preferences.values.split_axis,
+                    ratio: preferences.values.split_ratio,
+                });
         }
         Self {
             controller,
@@ -436,6 +442,15 @@ impl LotusWindow {
             self.artifacts.clone_from(&update.artifacts);
             self.registers = update.registers.clone();
             self.inspection = update.inspection.clone();
+            if let lotus_session::workspace::Layout::Split { axis, ratio, .. } =
+                update.workspace.layout
+            {
+                let values = &mut self.preferences.values;
+                if (values.split_axis, values.split_ratio) != (axis, ratio) {
+                    (values.split_axis, values.split_ratio) = (axis, ratio);
+                    self.preferences.save();
+                }
+            }
             if update.error != self.error {
                 self.error = update.error.clone();
             }

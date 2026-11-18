@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::layout::{INSPECTOR_DEFAULT, SESSION_DEFAULT};
+use lotus_session::workspace::{Axis, RATIO_DEFAULT};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -28,6 +29,11 @@ pub struct Preferences {
     /// Overrides the built-in Discord application ID
     /// (`presence::DEFAULT_APPLICATION_ID`).
     pub discord_application_id: Option<String>,
+    /// Split axis and first-tile ratio for a `tile` that leaves them out (lotus#67). The
+    /// tiled sessions themselves are not saved: session IDs do not outlive the host, and
+    /// restoring tiles must never start a worker.
+    pub split_axis: Axis,
+    pub split_ratio: f32,
 }
 
 impl Default for Preferences {
@@ -40,6 +46,8 @@ impl Default for Preferences {
             discord_presence: false,
             discord_hide_titles: false,
             discord_application_id: None,
+            split_axis: Axis::Auto,
+            split_ratio: RATIO_DEFAULT,
         }
     }
 }

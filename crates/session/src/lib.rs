@@ -20,6 +20,7 @@ pub mod storage;
 pub mod supervisor;
 pub mod telemetry;
 pub mod worker;
+pub mod workspace;
 
 pub use storage::StorageLayout;
 pub use worker::{WorkerFlavor, WorkerLaunchError, WorkerProcess, WorkerSpec};

@@ -740,3 +740,73 @@ async fn requests_needing_unadvertised_features_are_refused() {
         serde_json::json!(["flush_storage", "gpu_capture_levels"])
     );
 }
+
+/// lotus#67: the workspace is refused headless, needs control from MCP, never touches a
+/// worker, and collapses to the sibling when a tiled session stops.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workspace_arranges_without_touching_workers() {
+    use lotus_session::workspace::{Layout, Operation, SplitDefaults};
+    let fixture = host("workspace", 2);
+    let ids = fixture.running(2).await;
+    let tile = Operation::Tile {
+        first: ids[0].clone(),
+        second: ids[1].clone(),
+        axis: None,
+        ratio: None,
+        screens: None,
+    };
+    let headless = fixture.host.update_workspace(&tile, None, Actor::Mcp);
+    assert_eq!(
+        headless.unwrap_err().kind(),
+        std::io::ErrorKind::Unsupported
+    );
+    assert!(!fixture.host.workspace().available);
+
+    fixture.host.enable_workspace(SplitDefaults::default());
+    let frames = |id: &str| telemetry(&fixture.host, id);
+    let before: Vec<_> = ids.iter().map(|id| frames(id).state).collect();
+    let committed = fixture
+        .host
+        .update_workspace(&tile, Some(0), Actor::Mcp)
+        .unwrap();
+    assert_eq!(committed.revision, 1);
+    fixture
+        .host
+        .update_workspace(&Operation::Swap, None, Actor::Desktop)
+        .unwrap();
+    let stale = fixture.host.update_workspace(&tile, Some(1), Actor::Mcp);
+    assert_eq!(stale.unwrap_err().kind(), std::io::ErrorKind::ResourceBusy);
+    let after: Vec<_> = ids.iter().map(|id| frames(id).state).collect();
+    assert_eq!(before, after);
+
+    fixture.host.stop(&ids[0], Actor::Host).await.unwrap();
+    let status = fixture.host.workspace();
+    assert!(
+        matches!(&status.snapshot.layout, Layout::Single { session, .. } if *session == ids[1])
+    );
+    assert_eq!(status.snapshot.revision, 3);
+    assert!(frames(&ids[1]).state.is_active());
+    let gone = fixture.host.update_workspace(
+        &Operation::Single {
+            session: ids[0].clone(),
+        },
+        None,
+        Actor::Desktop,
+    );
+    assert_eq!(gone.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workspace_writes_from_mcp_need_control() {
+    use lotus_session::workspace::{Operation, SplitDefaults};
+    let fixture = host_with("workspace-ro", 1, |config| config.allow_control = false);
+    fixture.host.enable_workspace(SplitDefaults::default());
+    let refused = fixture
+        .host
+        .update_workspace(&Operation::Swap, None, Actor::Mcp);
+    assert_eq!(
+        refused.unwrap_err().kind(),
+        std::io::ErrorKind::PermissionDenied
+    );
+    assert!(fixture.host.workspace().available);
+}

@@ -182,7 +182,7 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Report LOTUS frontend (headless/windowed), protocol, session tree, cards, approved asset handles and limits."
+        description = "Report LOTUS frontend (headless/windowed), protocol, session tree, cards, approved asset handles, limits and the window workspace layout (workspace.available is false headless)."
     )]
     pub async fn lotus_status(&self) -> String {
         let host = self.host.as_deref();
@@ -200,6 +200,7 @@ impl LotusServer {
             "frontend_metrics": host.map(Supervisor::frontend_metrics).unwrap_or_default(),
             "artifacts": host.map(Supervisor::artifact_usage),
             "policy": host.map(Supervisor::policy_status),
+            "workspace": host.map(Supervisor::workspace),
         })
         .to_string()
     }
@@ -523,6 +524,21 @@ mod tests {
             "a CLI/MCP debug operation was omitted from the public schema"
         );
         assert!(actual.is_array());
+    }
+
+    /// lotus#67: a headless host says it has no window workspace.
+    #[tokio::test]
+    async fn headless_status_reports_no_workspace() {
+        let root = std::env::temp_dir().join(format!("lotus-mcp-ws-{}", std::process::id()));
+        let worker = std::env::current_exe().unwrap();
+        let config = HostConfig::new(worker, root.join("store"));
+        let server = LotusServer::configured(config, BTreeMap::new()).unwrap();
+        let status: Value = serde_json::from_str(&server.lotus_status().await).unwrap();
+        assert_eq!(status["workspace"]["available"], false);
+        assert_eq!(status["workspace"]["revision"], 0);
+        assert_eq!(status["workspace"]["layout"]["mode"], "empty");
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

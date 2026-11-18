@@ -206,7 +206,7 @@ Headless and windowed servers expose the same tools; `lotus_status` reports
 | `lotus_list_sessions` | ids, kind, card/parent, asset and gauges; never waits on a busy worker |
 | `lotus_list_cards` | cards and which session mounts each |
 | `lotus_registers` | r0–r15 and CPSR of one core at a safe point |
-| `lotus_focus_session` | windowed: show that session to the person; headless: no effect |
+| `lotus_focus_session` | windowed: inspect that session, and show it unless the workspace is split; headless: no effect |
 
 Host configuration gains `asset_directories` (handle → directory; each `.3dsx`
 directly inside is approved as `<handle>/<file>`, re-listed on demand, so
@@ -263,6 +263,42 @@ Pane widths, open states and Discord options persist in `desktop.json`
 `%APPDATA%\LOTUS\desktop.json`, else `$XDG_CONFIG_HOME/lotus/desktop.json`.
 The portable launcher keeps it in `data/`. If the file exists but does not parse,
 it is never overwritten, and the preferences menu says so.
+
+## Workspace (#67)
+
+The workspace is what a windowed host shows: `empty`, `single {session}` or
+`split {first, second, axis, ratio, screens}` (`lotus_session::workspace`, pure and
+unit-tested). The supervisor owns the one instance, so the desktop and MCP change the
+same state through `Supervisor::update_workspace`; neither keeps its own layout.
+
+- Sessions are stored by session ID. `horizontal` = first left, second right;
+  `vertical` = first top, second bottom; `auto` leaves the choice to the window.
+  `ratio` is the first tile's share, 0.2–0.8 (a policy bound, not a hardware one).
+  `screens` is each tile's top/bottom arrangement: `auto`, `stacked`, `side_by_side`.
+- Operations: `tile`, `single`, `untile {keep}`, `swap`, `set_axis`, `set_ratio`,
+  `set_screen_layout`, `focus_viewport`. Each is validated whole (existing,
+  distinct sessions, ratio bounds, split-only operations) and commits all or
+  nothing. `revision` increments only when the state changes; a repeated
+  operation is a no-op. `expected_revision` refuses a stale request
+  (`ResourceBusy`), so an agent cannot overwrite a newer drag.
+- Separate from the workspace, and never changed by it: the inspector target
+  (`Update::selected`), controller input, audio focus and worker execution.
+  Outside a split, selecting a session in the sidebar or with
+  `lotus_focus_session` shows it via `single`; selection never collapses a split.
+- A stopped session leaves the workspace when it is unregistered: a split
+  collapses to the other tile, whose worker keeps running; a single view becomes
+  empty. A crashed session stays registered and keeps its tile.
+- Headless hosts never enable it: `lotus_status.workspace.available` is false and
+  every change returns `Unsupported`. MCP changes need control permission.
+- `desktop.json` keeps `split_axis` and `split_ratio`, the defaults for a `tile`
+  that omits them. Tiled sessions are not saved: session IDs end with the host,
+  and restoring a layout never starts a worker.
+
+Evidence: `workspace::tests` (transitions, idempotence, invalid and stale
+requests leave the state unchanged, removal fallback) and
+`supervision.rs` `workspace_arranges_without_touching_workers` /
+`workspace_writes_from_mcp_need_control` against `lotus-mock-native` workers
+(**verified compiled**).
 
 ## Discord Rich Presence
 

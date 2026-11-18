@@ -261,6 +261,10 @@ pub struct Supervisor {
     budgets: crate::policy::Budgets,
     /// Session whose worker runs at raised priority (`policy.focus_priority`).
     focused: Mutex<Option<String>>,
+    /// Window layout (lotus#67). Lock order: `registry`, then `workspace`.
+    workspace: Mutex<crate::workspace::Workspace>,
+    /// Set by a windowed frontend; headless hosts refuse workspace changes.
+    workspace_available: AtomicBool,
 }
 
 impl Supervisor {
@@ -314,6 +318,8 @@ impl Supervisor {
             shader_publish: tokio::sync::Mutex::default(),
             budgets: crate::policy::Budgets::new(policy),
             focused: Mutex::default(),
+            workspace: Mutex::default(),
+            workspace_available: AtomicBool::new(false),
         })
     }
 
@@ -807,6 +813,8 @@ impl Supervisor {
         if focused.as_deref() == Some(id) {
             *focused = None;
         }
+        drop(focused);
+        lock(&self.workspace).remove(id);
     }
 
     /// Host memory as admission sees it: the largest worker working set as the estimate.
@@ -1505,6 +1513,55 @@ impl Supervisor {
         self.set_focus(id);
         *lock(&self.focus_request) = Some(id.to_string());
         Ok(())
+    }
+
+    /// Called once by a windowed frontend; workspace changes are refused until then.
+    pub fn enable_workspace(&self, defaults: crate::workspace::SplitDefaults) {
+        lock(&self.workspace).set_defaults(defaults);
+        self.workspace_available.store(true, Ordering::Release);
+    }
+
+    /// Window layout for `lotus_status` and `lotus_workspace get`.
+    #[must_use]
+    pub fn workspace(&self) -> crate::workspace::Status {
+        let workspace = lock(&self.workspace);
+        crate::workspace::Status {
+            available: self.workspace_available.load(Ordering::Acquire),
+            snapshot: workspace.snapshot(),
+            defaults: workspace.defaults(),
+        }
+    }
+
+    /// Commits one workspace operation atomically or refuses it. MCP needs control
+    /// permission. Never touches a worker, the inspector target or audio focus.
+    pub fn update_workspace(
+        &self,
+        operation: &crate::workspace::Operation,
+        expected_revision: Option<u64>,
+        actor: Actor,
+    ) -> io::Result<crate::workspace::Snapshot> {
+        if !self.workspace_available.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "no LOTUS window: workspace layout exists only in lotus-desktop",
+            ));
+        }
+        if actor == Actor::Mcp {
+            self.require_control()?;
+        }
+        let registry = lock(&self.registry);
+        let result = lock(&self.workspace).apply(operation, expected_revision, |id| {
+            registry.sessions.contains_key(id)
+        });
+        drop(registry);
+        result.map_err(|error| {
+            let kind = match error {
+                crate::workspace::WorkspaceError::Stale { .. } => io::ErrorKind::ResourceBusy,
+                crate::workspace::WorkspaceError::UnknownSession(_) => io::ErrorKind::NotFound,
+                _ => io::ErrorKind::InvalidInput,
+            };
+            io::Error::new(kind, error.to_string())
+        })
     }
 
     #[must_use]

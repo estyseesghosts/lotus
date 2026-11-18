@@ -103,7 +103,10 @@ pub struct Update {
     pub assets: Vec<String>,
     pub max_sessions: usize,
     pub control: bool,
+    /// Inspector target: preview of a single view, inspector panels, audio focus. Distinct
+    /// from `workspace`, which says what the window shows (lotus#67).
     pub selected: String,
+    pub workspace: lotus_session::workspace::Snapshot,
     pub preview: Option<Preview>,
     /// Registers of the selected session at its last paused frame.
     pub registers: Option<(String, Value)>,
@@ -201,6 +204,7 @@ impl DesktopController {
         let latest = Arc::new(Mutex::new(Update {
             max_sessions: host.max_sessions(),
             control: host.allows_control(),
+            workspace: host.workspace().snapshot,
             ..Update::default()
         }));
         let inspector = Arc::new(AtomicBool::new(false));
@@ -358,6 +362,7 @@ impl Loops {
             if changed && !selected.is_empty() {
                 self.host.set_focus(&selected);
             }
+            self.show_selected(&selected);
             let now = Instant::now();
             if let Some(previous) = published_at {
                 let interval = now.duration_since(previous).as_secs_f64() * 1e3;
@@ -679,6 +684,30 @@ impl Loops {
                 () = tokio::time::sleep(Duration::from_secs(1)), if failed => {}
             }
         }
+    }
+
+    /// Outside a split, the window shows the selected session; this goes through the shared
+    /// workspace operation so MCP sees the same revision. A split is never collapsed by
+    /// selection. A session that vanished meanwhile is refused and retried next tick.
+    fn show_selected(&self, selected: &str) {
+        use lotus_session::workspace::{Layout, Operation};
+        let status = self.host.workspace();
+        let shown = match &status.snapshot.layout {
+            Layout::Split { .. } => true,
+            Layout::Single { session, .. } => session == selected,
+            Layout::Empty => selected.is_empty(),
+        };
+        let snapshot = if shown {
+            status.snapshot
+        } else {
+            let single = Operation::Single {
+                session: selected.to_string(),
+            };
+            self.host
+                .update_workspace(&single, None, Actor::Desktop)
+                .unwrap_or(status.snapshot)
+        };
+        lock(&self.published).workspace = snapshot;
     }
 
     /// Returns false once the window side has gone away.
