@@ -42,6 +42,25 @@ class Client:
                 assert "error" not in reply,reply
                 return reply["result"]
 
+    def send_concurrent(self,method,params_list):
+        """Write every request before reading any reply; return results in request order."""
+        ids=[]
+        for params in params_list:
+            self.sequence+=1;ids.append(self.sequence)
+            message={"jsonrpc":"2.0","method":method,"id":self.sequence,"params":params}
+            self.record("request",message)
+            self.process.stdin.write(json.dumps(message)+"\n")
+        self.process.stdin.flush()
+        results={};deadline=time.monotonic()+40
+        while len(results)<len(ids):
+            reply=self.messages.get(timeout=max(.001,deadline-time.monotonic()))
+            assert reply is not None,"MCP server exited early"
+            self.record("response",reply)
+            if reply.get("id") in ids:
+                assert "error" not in reply,reply
+                results[reply["id"]]=reply["result"]
+        return [results[i] for i in ids]
+
     def tool(self,name,arguments,expected_error=False):
         result=self.send("tools/call",{"name":name,"arguments":arguments})
         assert bool(result.get("isError"))==expected_error,result

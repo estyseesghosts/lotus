@@ -319,3 +319,91 @@ async fn a_second_stop_of_one_session_is_refused_not_doubled() {
     assert!(first.is_ok() != second.is_ok(), "{first:?} {second:?}");
     assert!(fixture.host.sessions().is_empty());
 }
+
+/// lotus#44: concurrent enables on different sessions may not exceed the rewind budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_rewind_enables_respect_the_budget() {
+    use lotus_protocol::debug::DebugCommand;
+    let base = std::env::temp_dir().join(format!("lotus-sup-budget-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(env!("CARGO_BIN_EXE_lotus-mock-native"), base.join("store"));
+    config.allow_control = true;
+    config.max_sessions = 4;
+    config.assets.insert("demo".into(), content);
+    config.policy.rewind_sessions = Some(1);
+    let fixture = Host {
+        host: Arc::new(Supervisor::new(config).expect("host")),
+        base,
+    };
+    let ids = fixture.running(3).await;
+    let enable = DebugCommand::RewindConfigure {
+        enabled: true,
+        capacity: 8,
+        budget_mib: 64,
+        interval_frames: None,
+        compression_level: None,
+    };
+    for round in 0..3 {
+        // Every worker's next reply stalls, so all requests are in flight together.
+        for id in &ids {
+            fixture.stall(id, 400);
+        }
+        let results = futures_join(&fixture.host, &ids, &enable).await;
+        let admitted = results.iter().filter(|result| result.is_ok()).count();
+        assert_eq!(admitted, 1, "round {round}: {results:?}");
+        let status = fixture.host.policy_status();
+        assert_eq!(status["rewind"]["sessions"].as_array().unwrap().len(), 1);
+        assert!(status["rewind"]["pending"].as_object().unwrap().is_empty());
+        // Disable everywhere; the next round starts from an empty budget.
+        let holder = &ids[results.iter().position(Result::is_ok).unwrap()];
+        let disable = DebugCommand::RewindConfigure {
+            enabled: false,
+            capacity: 8,
+            budget_mib: 64,
+            interval_frames: None,
+            compression_level: None,
+        };
+        fixture
+            .host
+            .debug(holder, &disable, Actor::Host)
+            .await
+            .expect("disable");
+    }
+    // A worker that rejects the enable leaves no holder and no pending slot.
+    std::fs::write(fixture.root(&ids[0]).join("mock-reject-debug"), b"").expect("reject");
+    assert!(fixture
+        .host
+        .debug(&ids[0], &enable, Actor::Host)
+        .await
+        .is_err());
+    let status = fixture.host.policy_status();
+    assert!(status["rewind"]["sessions"].as_array().unwrap().is_empty());
+    fixture
+        .host
+        .debug(&ids[1], &enable, Actor::Host)
+        .await
+        .expect("budget was not leaked");
+}
+
+async fn futures_join(
+    host: &Arc<Supervisor>,
+    ids: &[String],
+    command: &lotus_protocol::debug::DebugCommand,
+) -> Vec<std::io::Result<serde_json::Value>> {
+    let tasks: Vec<_> = ids
+        .iter()
+        .map(|id| {
+            let host = host.clone();
+            let id = id.clone();
+            let command = command.clone();
+            tokio::spawn(async move { host.debug(&id, &command, Actor::Host).await })
+        })
+        .collect();
+    let mut results = Vec::new();
+    for task in tasks {
+        results.push(task.await.expect("task"));
+    }
+    results
+}

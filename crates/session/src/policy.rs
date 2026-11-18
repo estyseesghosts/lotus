@@ -11,7 +11,13 @@
 //!
 //! `batch` turns every adaptive limit off unless a limit is set explicitly, so timing
 //! experiments see no scheduling. Memory admission is a safety check in both modes.
-use std::collections::BTreeSet;
+//!
+//! Admission to a session-long tool is a [`ToolPermit`] taken before the first `await` (#44).
+//! A pending enable counts against the limit, so concurrent requests on different sessions
+//! cannot both pass a check made before either committed. The permit records the outcome only
+//! through [`ToolPermit::commit`] after the worker accepted; dropping it (worker error, timeout,
+//! cancelled task) frees the pending slot and leaves the recorded state as it was.
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -108,11 +114,100 @@ impl Tool {
     }
 }
 
+/// Sessions using one session-long tool, and enables still waiting for their worker.
+#[derive(Debug, Default)]
+struct Holders {
+    active: BTreeSet<String>,
+    /// Session -> enable requests in flight.
+    pending: BTreeMap<String, usize>,
+}
+
+impl Holders {
+    /// Sessions that consume the budget: active or with an enable in flight.
+    fn occupied(&self) -> BTreeSet<&String> {
+        self.active.iter().chain(self.pending.keys()).collect()
+    }
+}
+
+#[derive(Debug, Default)]
+struct Ledger {
+    rewind: Holders,
+    gpu: Holders,
+    /// Sessions that ended while a permit was in flight; such a permit cannot commit.
+    ended: BTreeSet<String>,
+}
+
+impl Ledger {
+    fn tool(&mut self, tool: Tool) -> &mut Holders {
+        match tool {
+            Tool::Rewind => &mut self.rewind,
+            Tool::GpuCapture => &mut self.gpu,
+        }
+    }
+
+    fn has_pending(&self, session: &str) -> bool {
+        self.rewind.pending.contains_key(session) || self.gpu.pending.contains_key(session)
+    }
+}
+
+/// Admission to enable or disable a session-long tool; see the module docs.
+#[must_use = "dropping the permit discards the admission"]
+pub struct ToolPermit<'a> {
+    budgets: &'a Budgets,
+    tool: Tool,
+    session: String,
+    /// Holds a pending enable slot.
+    pending: bool,
+}
+
+impl ToolPermit<'_> {
+    /// The worker accepted: record whether the session now uses the tool.
+    pub fn commit(mut self, active: bool) {
+        let mut ledger = self.budgets.ledger();
+        let ended = ledger.ended.contains(&self.session);
+        self.finish(&mut ledger);
+        if ended {
+            return;
+        }
+        let holders = ledger.tool(self.tool);
+        if active {
+            holders.active.insert(self.session.clone());
+        } else {
+            holders.active.remove(&self.session);
+        }
+    }
+
+    fn finish(&mut self, ledger: &mut Ledger) {
+        if !std::mem::take(&mut self.pending) {
+            return;
+        }
+        let holders = ledger.tool(self.tool);
+        if let Some(count) = holders.pending.get_mut(&self.session) {
+            *count -= 1;
+            if *count == 0 {
+                holders.pending.remove(&self.session);
+            }
+        }
+        if !ledger.has_pending(&self.session) {
+            ledger.ended.remove(&self.session);
+        }
+    }
+}
+
+impl Drop for ToolPermit<'_> {
+    fn drop(&mut self) {
+        if self.pending {
+            let budgets = self.budgets;
+            self.finish(&mut budgets.ledger());
+        }
+    }
+}
+
 /// Which sessions hold each budget, and the one-shot slots.
 #[derive(Debug)]
 pub struct Budgets {
     policy: Policy,
-    holders: Mutex<(BTreeSet<String>, BTreeSet<String>)>,
+    holders: Mutex<Ledger>,
     snapshots: Option<tokio::sync::Semaphore>,
     queued: std::sync::atomic::AtomicUsize,
     refused: std::sync::atomic::AtomicU64,
@@ -141,64 +236,74 @@ impl Budgets {
         &self.policy
     }
 
-    fn holders(&self) -> std::sync::MutexGuard<'_, (BTreeSet<String>, BTreeSet<String>)> {
+    fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
         self.holders
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Check that `session` may enable `tool`. Call [`Self::set`] after the worker accepted.
-    pub fn admit(&self, tool: Tool, session: &str) -> io::Result<()> {
+    /// Admit `session` to enable (`enable`) or disable `tool`. Take this before awaiting the
+    /// worker and [`ToolPermit::commit`] after it accepted. A session already using the tool may
+    /// reconfigure it; a disable is never refused.
+    pub fn reserve(&self, tool: Tool, session: &str, enable: bool) -> io::Result<ToolPermit<'_>> {
         let limit = match tool {
             Tool::Rewind => self.policy.rewind_limit(),
             Tool::GpuCapture => self.policy.gpu_capture_limit(),
         };
-        let Some(limit) = limit else { return Ok(()) };
-        let holders = self.holders();
-        let set = match tool {
-            Tool::Rewind => &holders.0,
-            Tool::GpuCapture => &holders.1,
+        let permit = ToolPermit {
+            budgets: self,
+            tool,
+            session: session.to_string(),
+            pending: enable,
         };
-        if set.contains(session) || set.len() < limit {
-            return Ok(());
+        if !enable {
+            return Ok(permit);
         }
-        self.refused
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Err(io::Error::new(
-            io::ErrorKind::ResourceBusy,
-            format!(
-                "{} budget: {} of {limit} sessions already use it ({}); disable it there or raise \
-                 policy.{} (host config)",
-                tool.name(),
-                set.len(),
-                set.iter().cloned().collect::<Vec<_>>().join(", "),
-                match tool {
-                    Tool::Rewind => "rewind_sessions",
-                    Tool::GpuCapture => "gpu_capture_sessions",
-                }
-            ),
-        ))
+        let mut ledger = self.ledger();
+        let holders = ledger.tool(tool);
+        let occupied = holders.occupied();
+        if let Some(limit) = limit {
+            if !occupied.contains(&session.to_string()) && occupied.len() >= limit {
+                let users: Vec<String> = occupied.into_iter().cloned().collect();
+                let pending = holders.pending.len();
+                drop(ledger);
+                let mut permit = permit;
+                permit.pending = false;
+                self.refused
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Err(io::Error::new(
+                    io::ErrorKind::ResourceBusy,
+                    format!(
+                        "{} budget: {} of {limit} sessions already use it ({}{}); disable it \
+                         there or raise policy.{} (host config)",
+                        tool.name(),
+                        users.len(),
+                        users.join(", "),
+                        if pending > 0 {
+                            ", including enables in flight"
+                        } else {
+                            ""
+                        },
+                        match tool {
+                            Tool::Rewind => "rewind_sessions",
+                            Tool::GpuCapture => "gpu_capture_sessions",
+                        }
+                    ),
+                ));
+            }
+        }
+        *holders.pending.entry(session.to_string()).or_default() += 1;
+        Ok(permit)
     }
 
-    /// Record whether `session` now uses `tool`.
-    pub fn set(&self, tool: Tool, session: &str, active: bool) {
-        let mut holders = self.holders();
-        let set = match tool {
-            Tool::Rewind => &mut holders.0,
-            Tool::GpuCapture => &mut holders.1,
-        };
-        if active {
-            set.insert(session.to_string());
-        } else {
-            set.remove(session);
-        }
-    }
-
-    /// A session ended: it holds nothing.
+    /// A session ended: it holds nothing, and its permits still in flight cannot commit.
     pub fn release(&self, session: &str) {
-        let mut holders = self.holders();
-        holders.0.remove(session);
-        holders.1.remove(session);
+        let mut ledger = self.ledger();
+        ledger.rewind.active.remove(session);
+        ledger.gpu.active.remove(session);
+        if ledger.has_pending(session) {
+            ledger.ended.insert(session.to_string());
+        }
     }
 
     /// Wait for a one-shot snapshot slot, at most `snapshot_wait_ms`.
@@ -245,15 +350,17 @@ impl Budgets {
     /// Policy, holders and queue for `lotus_status`.
     #[must_use]
     pub fn status(&self, memory: &Memory) -> serde_json::Value {
-        let holders = self.holders();
+        let ledger = self.ledger();
         let in_use = match (&self.snapshots, self.policy.snapshot_limit()) {
             (Some(semaphore), Some(limit)) => limit - semaphore.available_permits(),
             _ => 0,
         };
         serde_json::json!({
             "workload": self.policy.workload,
-            "rewind": {"limit": self.policy.rewind_limit(), "sessions": holders.0},
-            "gpu_capture": {"limit": self.policy.gpu_capture_limit(), "sessions": holders.1},
+            "rewind": {"limit": self.policy.rewind_limit(), "sessions": ledger.rewind.active,
+                "pending": ledger.rewind.pending},
+            "gpu_capture": {"limit": self.policy.gpu_capture_limit(),
+                "sessions": ledger.gpu.active, "pending": ledger.gpu.pending},
             "snapshots": {"limit": self.policy.snapshot_limit(), "in_use": in_use,
                 "queued": self.queued.load(std::sync::atomic::Ordering::Relaxed)},
             "refused": self.refused.load(std::sync::atomic::Ordering::Relaxed),
@@ -368,28 +475,38 @@ mod tests {
     fn interactive_budgets_refuse_with_holders_and_batch_has_none() {
         let budgets = Budgets::new(Policy::default());
         for session in ["a", "b"] {
-            budgets.admit(Tool::Rewind, session).expect("within budget");
-            budgets.set(Tool::Rewind, session, true);
+            budgets
+                .reserve(Tool::Rewind, session, true)
+                .expect("within budget")
+                .commit(true);
         }
-        budgets
-            .admit(Tool::Rewind, "a")
+        let reconfigure = budgets
+            .reserve(Tool::Rewind, "a", true)
             .expect("a holder may reconfigure");
-        let refused = budgets.admit(Tool::Rewind, "c").expect_err("third");
+        drop(reconfigure);
+        let refused = budgets
+            .reserve(Tool::Rewind, "c", true)
+            .err()
+            .expect("third");
         assert_eq!(refused.kind(), io::ErrorKind::ResourceBusy);
         assert!(refused.to_string().contains("a, b"), "{refused}");
-        budgets
-            .admit(Tool::GpuCapture, "c")
-            .expect("separate budget");
+        drop(
+            budgets
+                .reserve(Tool::GpuCapture, "c", true)
+                .expect("separate budget"),
+        );
         budgets.release("a");
-        budgets.admit(Tool::Rewind, "c").expect("released");
+        drop(budgets.reserve(Tool::Rewind, "c", true).expect("released"));
 
         let batch = Budgets::new(Policy {
             workload: Workload::Batch,
             ..Policy::default()
         });
         for session in ["a", "b", "c", "d"] {
-            batch.admit(Tool::Rewind, session).expect("no batch limit");
-            batch.set(Tool::Rewind, session, true);
+            batch
+                .reserve(Tool::Rewind, session, true)
+                .expect("no batch limit")
+                .commit(true);
         }
         let explicit = Policy {
             workload: Workload::Batch,
@@ -403,6 +520,80 @@ mod tests {
             ..Policy::default()
         };
         assert_eq!(unlimited.rewind_limit(), None);
+    }
+
+    fn active(budgets: &Budgets, tool: Tool) -> Vec<String> {
+        budgets.ledger().tool(tool).active.iter().cloned().collect()
+    }
+
+    #[test]
+    fn pending_enables_count_against_the_limit() {
+        for limit in 1..=3usize {
+            let budgets = Budgets::new(Policy {
+                rewind_sessions: Some(limit),
+                ..Policy::default()
+            });
+            // 8 sessions ask before any worker replied: exactly `limit` are admitted.
+            let sessions: Vec<String> = (0..8).map(|i| format!("s{i}")).collect();
+            let permits: Vec<_> = sessions
+                .iter()
+                .filter_map(|id| budgets.reserve(Tool::Rewind, id, true).ok())
+                .collect();
+            assert_eq!(permits.len(), limit);
+            let status = budgets.status(&Memory::default());
+            assert_eq!(
+                status["rewind"]["pending"].as_object().unwrap().len(),
+                limit
+            );
+            // First accepted, second rejected by its worker, the rest dropped (timeout/cancel).
+            let mut permits = permits.into_iter();
+            permits.next().unwrap().commit(true);
+            drop(permits);
+            assert_eq!(active(&budgets, Tool::Rewind), vec!["s0".to_string()]);
+            let status = budgets.status(&Memory::default());
+            assert!(status["rewind"]["pending"].as_object().unwrap().is_empty());
+            // Freed slots are reusable; totals never exceed the limit.
+            let again: Vec<_> = sessions[1..]
+                .iter()
+                .filter_map(|id| budgets.reserve(Tool::Rewind, id, true).ok())
+                .collect();
+            assert_eq!(again.len(), limit - 1);
+        }
+    }
+
+    #[test]
+    fn transitions_commit_only_accepted_outcomes() {
+        let budgets = Budgets::new(Policy {
+            gpu_capture_sessions: Some(1),
+            ..Policy::default()
+        });
+        budgets
+            .reserve(Tool::GpuCapture, "a", true)
+            .expect("enable")
+            .commit(true);
+        // A failed disable (permit dropped) leaves the tool recorded as active.
+        drop(
+            budgets
+                .reserve(Tool::GpuCapture, "a", false)
+                .expect("disable"),
+        );
+        assert_eq!(active(&budgets, Tool::GpuCapture), vec!["a".to_string()]);
+        assert!(budgets.reserve(Tool::GpuCapture, "b", true).is_err());
+        // Capture -> counters is a disable; committed, it frees the budget.
+        budgets
+            .reserve(Tool::GpuCapture, "a", false)
+            .expect("counters")
+            .commit(false);
+        let b = budgets.reserve(Tool::GpuCapture, "b", true).expect("free");
+        // The session ends while its enable is in flight: the late commit is ignored.
+        budgets.release("b");
+        b.commit(true);
+        assert!(active(&budgets, Tool::GpuCapture).is_empty());
+        assert!(budgets.ledger().ended.is_empty(), "no leaked end markers");
+        budgets
+            .reserve(Tool::GpuCapture, "c", true)
+            .expect("nothing leaked")
+            .commit(true);
     }
 
     #[tokio::test]

@@ -4,6 +4,8 @@
    the two holders named, shown in lotus_status.policy and in its telemetry.policy_note, and
    admitted once a holder disables rewind. GPU `counters` capture never counts; `events` does.
 2. batch: three rewind sessions, no limit.
+2b. concurrent (#44): with rewind_sessions 1, three sessions send rewind_configure at once;
+   exactly one is admitted, in five rounds.
 3. memory admission: a reserve larger than the host's memory refuses a new session with the
    numbers; reserve 0 disables the check.
 
@@ -85,6 +87,27 @@ try:
     policy = status(client)["policy"]
     assert policy["rewind"]["limit"] is None and len(policy["rewind"]["sessions"]) == 3, policy
     report["batch"] = policy
+    client.close()
+    clients.pop()
+
+    client = host("concurrent", {"rewind_sessions": 1})
+    clients.append(client)
+    sessions = [create(client) for _ in range(3)]
+    for session in sessions:
+        client.tool("lotus_run_until", {"session": session, "frames": 5})
+    rounds = []
+    for _ in range(5):
+        calls = [{"name": "lotus_debug", "arguments": {"session": session, "command": {
+            "operation": "rewind_configure", "enabled": True, "capacity": 8, "budget_mib": 32}}}
+            for session in sessions]
+        results = client.send_concurrent("tools/call", calls)
+        admitted = [s for s, r in zip(sessions, results) if not r.get("isError")]
+        assert len(admitted) == 1, results
+        policy = status(client)["policy"]
+        assert policy["rewind"]["sessions"] == admitted and not policy["rewind"]["pending"], policy
+        rewind(client, admitted[0], False)
+        rounds.append(admitted[0])
+    report["concurrent"] = {"admitted_per_round": rounds}
     client.close()
     clients.pop()
 

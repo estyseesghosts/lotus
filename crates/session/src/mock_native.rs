@@ -11,6 +11,8 @@
 //! - `mock-stall-ms`: before the next reply, sleep that many milliseconds (file is consumed).
 //! - `mock-async-pending`: `flush_storage` answers `async_fs_pending` that many times.
 //! - `mock-no-flush`: `flush_storage` is unsupported, like a worker that predates it.
+//! - `mock-reject-debug`: `debug` answers `unsupported`; otherwise `rewind_configure` and
+//!   `gpu_configure` are accepted.
 //! - every accepted `input` is appended to `inputs.jsonl` as `{"buttons","x","y","touch","owner"}`.
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -186,6 +188,15 @@ impl Machine {
                     let _ = writeln!(log, "{line}");
                 }
                 (Status::Ok, self.snapshot())
+            }
+            Method::Debug => {
+                let command = request.params["operation"].as_str().unwrap_or("");
+                if self.root.join("mock-reject-debug").exists()
+                    || !matches!(command, "rewind_configure" | "gpu_configure")
+                {
+                    return (Status::Unsupported, serde_json::Value::Null);
+                }
+                (Status::Ok, serde_json::json!({"operation": command}))
             }
             Method::Registers => (
                 Status::Ok,

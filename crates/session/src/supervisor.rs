@@ -870,8 +870,8 @@ impl Supervisor {
         use crate::policy::Tool;
         use lotus_protocol::debug::{DebugCommand, GpuCapture};
         let handle = self.handle(id)?;
-        // Host-wide budgets (crate::policy). Session-long tools are checked before and
-        // recorded after the worker accepted; one-shot full-state work holds a slot.
+        // Host-wide budgets (crate::policy). Session-long tools take a permit before any
+        // await and record it after the worker accepted; one-shot full-state work holds a slot.
         let tool = match command {
             DebugCommand::RewindConfigure { enabled, .. } => Some((Tool::Rewind, *enabled)),
             DebugCommand::GpuConfigure {
@@ -882,12 +882,16 @@ impl Supervisor {
             )),
             _ => None,
         };
-        if let Some((tool, true)) = tool {
-            if let Err(error) = self.budgets.admit(tool, id) {
-                handle.telemetry().policy_note = error.to_string();
-                return Err(error);
-            }
-        }
+        let permit = match tool {
+            Some((tool, enable)) => match self.budgets.reserve(tool, id, enable) {
+                Ok(permit) => Some((permit, enable)),
+                Err(error) => {
+                    handle.telemetry().policy_note = error.to_string();
+                    return Err(error);
+                }
+            },
+            None => None,
+        };
         let slot = match command {
             DebugCommand::SaveState { .. }
             | DebugCommand::LoadState { .. }
@@ -909,8 +913,8 @@ impl Supervisor {
         };
         let mut result = self.debug_inner(id, command, client).await?;
         drop(slot);
-        if let Some((tool, active)) = tool {
-            self.budgets.set(tool, id, active);
+        if let Some((permit, active)) = permit {
+            permit.commit(active);
         }
         handle.native.lock().await.decorate(&mut result);
         Ok(result)
