@@ -300,6 +300,46 @@ requests leave the state unchanged, removal fallback) and
 `workspace_writes_from_mcp_need_control` against `lotus-mock-native` workers
 (**verified compiled**).
 
+## Live input state (#60)
+
+`native_session::InputState` is the one fast input state for the desktop,
+`submit_input`/`input`, MCP `lotus_input`, the scenario runner and the worker's
+`input` method: `buttons` (Azahar `Settings::NativeButton` bits), touch `x`/`y`
+in native bottom-screen pixels with `touch`, and `circle_pad`/`c_stick` as
+`[x, y]`, each -1..=1 with x right and y up. That is what Azahar's
+`Input::AnalogDevice::GetStatus` hands HID (`ctr_worker/input.h` `Analog`, which
+also clamps the vector to length 1), and it matches gilrs' stick convention
+(`lotus-input` `Axis`), so no sign change is needed between them.
+
+- **Worker** (integration `b2b6f6dd`, experimental `3ef0f937`): `input` takes
+  optional `circle_pad`/`c_stick` and changes only the fields it is sent. Before
+  this it replaced the whole state, so every button or touch update zeroed the
+  sticks and the accelerometer/gyroscope set by `input_state`. Motion, the 3D
+  slider and volume stay outside the fast state and keep their `input_state`
+  values. Out-of-range or malformed sticks reply `invalid_argument`. Both
+  workers list `analog_input`.
+- **Host**: `InputState::validate` refuses non-finite or out-of-range axes and
+  off-screen touch before queueing. A worker without `analog_input` gets no
+  stick fields, and a stick off centre is refused with `Unsupported`. This
+  happens in `submit_input` too, so the desktop learns it rather than
+  telemetry. The mailbox treats stick positions like touch coordinates: newest
+  value wins, never a transition. Button and touch edges are still kept, and
+  owner hand-off (#48) is unchanged.
+- **Evidence**: `tools/analog_input_acceptance.py <worker> <peripherals.3dsx>
+  <out>` is **verified emulator** on both workers. It runs two workers on the
+  peripherals fixture at once, drives opposite stick directions through `input`
+  and decodes HID/IR shared memory. Neutral/left/right/up/down each gave the
+  expected signs and circle direction bits in both sessions: circle ±154,
+  C-stick ±156. A button-only `input` kept the sticks and the accelerometer
+  (128, -256, 512). `cargo test -p lotus-session` covers per-session delivery
+  through the mock and refusal by a worker without the feature
+  (`analog_input_is_per_session_and_refused_by_old_workers`). It also covers
+  stick coalescing that keeps a tap
+  (`stick_moves_coalesce_but_keep_button_edges`).
+- **Not yet**: no controller drives the sticks until routing (#61) and mapping
+  (#63). ZL/ZR (bits 14/15) and Home (16) travel as buttons; Home reaches APT
+  only with HOME Menu registered (tools/peripheral_acceptance.py).
+
 ## Controllers (#59)
 
 `lotus-input` owns physical gamepads. `lotus-desktop` starts one

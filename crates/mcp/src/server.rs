@@ -389,7 +389,7 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Set complete buttons/touch state on an owned session; scenario ownership excludes live input. Requires control permission."
+        description = "Set complete buttons/touch/Circle Pad/C-stick state on an owned session (sticks need a worker listing analog_input); scenario ownership excludes live input. Requires control permission."
     )]
     pub async fn lotus_input(&self, Parameters(args): Parameters<InputArgs>) -> CallToolResult {
         let result = async {
@@ -399,6 +399,8 @@ impl LotusServer {
                 x: args.x,
                 y: args.y,
                 touch: args.touch,
+                circle_pad: args.circle_pad,
+                c_stick: args.c_stick,
             };
             host.input(&args.session, state, &args.owner, Actor::Mcp)
                 .await

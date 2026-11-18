@@ -25,6 +25,7 @@ and the host refuses a request that needs a missing one with a typed
 | `event_subscriptions` (#26) | no | yes |
 | `gpu_capture_levels` (#24) | no | yes |
 | `state_hash` (#29) | no | yes |
+| `analog_input` (#60, from integration `b2b6f6dd` / experimental `3ef0f937`) | yes | yes |
 
 Release builds run `tests/test_packaged.py` on the assembled ZIP: its
 `lotus-mcp` against both of its workers on the debugger fixture (handshake and

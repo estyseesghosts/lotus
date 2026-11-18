@@ -110,8 +110,10 @@ pub mod feature {
     pub const DETERMINISTIC_ASYNC: &str = "deterministic_async";
     /// `status.gpu_memory` (#46).
     pub const GPU_MEMORY: &str = "gpu_memory";
+    /// Fast `input` takes `circle_pad`/`c_stick` and keeps fields it is not sent (#60).
+    pub const ANALOG_INPUT: &str = "analog_input";
     /// Every feature this host knows, for manifests and release notes.
-    pub const ALL: [&str; 7] = [
+    pub const ALL: [&str; 8] = [
         FLUSH_STORAGE,
         EVENT_SUBSCRIPTIONS,
         GPU_CAPTURE_LEVELS,
@@ -119,6 +121,7 @@ pub mod feature {
         PREVIEW_NONBLOCKING,
         DETERMINISTIC_ASYNC,
         GPU_MEMORY,
+        ANALOG_INPUT,
     ];
 }
 

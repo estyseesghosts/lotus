@@ -189,8 +189,8 @@ pub(super) struct Queued {
 /// A newer state replaces the queued tail unless that would hide a transition: the tail
 /// differs from the state before it in a button or touch bit and the newer state reverts that
 /// bit. Then the newer state is appended, so a press and release shorter than one exchange
-/// both reach the guest. Touch coordinates are not transitions and always take the newest
-/// value. With [`MAILBOX`] entries queued the tail is overwritten and counted as dropped.
+/// both reach the guest. Touch coordinates and stick positions are not transitions and always
+/// take the newest value. With [`MAILBOX`] entries queued the tail is overwritten and counted as dropped.
 ///
 /// The owner is part of a state (#48): the worker records who set its input, so a state from
 /// a new owner is never coalesced with an equal state of the previous owner, whether queued,
@@ -204,10 +204,6 @@ pub(super) struct Mailbox {
     in_flight: Option<(InputState, String)>,
     /// Last state this mailbox delivered; `None` once anything else may have set input.
     sent: Option<(InputState, String)>,
-}
-
-fn same(a: &InputState, b: &InputState) -> bool {
-    a.buttons == b.buttons && a.touch == b.touch && a.x == b.x && a.y == b.y
 }
 
 impl Mailbox {
@@ -234,7 +230,7 @@ impl Mailbox {
         let Some(tail) = self.queue.back() else {
             let held = match (&self.in_flight, &self.sent) {
                 (Some((state, owner)), _) | (None, Some((state, owner))) => {
-                    same(state, &item.state) && *owner == item.owner
+                    *state == item.state && *owner == item.owner
                 }
                 (None, None) => false,
             };
@@ -245,7 +241,7 @@ impl Mailbox {
             }
             return;
         };
-        if same(&tail.state, &item.state) {
+        if tail.state == item.state {
             metrics.coalesced += 1;
             return;
         }
@@ -369,6 +365,7 @@ mod tests {
             x,
             y: 0,
             touch,
+            ..InputState::default()
         }
     }
 
@@ -434,6 +431,34 @@ mod tests {
         // The newest state is always last, so nothing stays pressed after a release.
         submit(&mut mailbox, &mut metrics, state(0, false, 5));
         assert_eq!(mailbox.queue.back().map(|q| q.state.buttons), Some(0));
+    }
+
+    #[test]
+    fn stick_moves_coalesce_but_keep_button_edges() {
+        let (mut mailbox, mut metrics) = (Mailbox::default(), InputMetrics::default());
+        let stick = |buttons, x: f32| InputState {
+            buttons,
+            circle_pad: [x, 0.0],
+            ..InputState::default()
+        };
+        submit(&mut mailbox, &mut metrics, stick(0, 0.1));
+        submit(&mut mailbox, &mut metrics, stick(0, 0.2));
+        submit(&mut mailbox, &mut metrics, stick(0, 0.3));
+        // Sampling a stick is not a transition: one entry with the newest position.
+        assert_eq!(mailbox.len(), 1);
+        assert_eq!(mailbox.queue[0].state.circle_pad, [0.3, 0.0]);
+        // A tap during stick motion keeps press and release, each with its own position.
+        submit(&mut mailbox, &mut metrics, stick(1, 0.4));
+        submit(&mut mailbox, &mut metrics, stick(0, 0.5));
+        let delivered: Vec<(u32, f32)> = mailbox
+            .queue
+            .iter()
+            .map(|q| (q.state.buttons, q.state.circle_pad[0]))
+            .collect();
+        assert_eq!(delivered, vec![(1, 0.4), (0, 0.5)]);
+        // The same state again is held, not re-sent.
+        submit(&mut mailbox, &mut metrics, stick(0, 0.5));
+        assert_eq!(mailbox.len(), 2);
     }
 
     #[test]

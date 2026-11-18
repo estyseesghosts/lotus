@@ -11,9 +11,9 @@
 //! - `mock-stall-ms`: before the next reply, sleep that many milliseconds (file is consumed);
 //!   `<ms> <method>` (e.g. `5000 capture`) stalls only the next reply to that method.
 //! - `mock-async-pending`: `flush_storage` answers `async_fs_pending` that many times.
-//! - `mock-no-flush`: `flush_storage` is unsupported and not listed in `features`, like a
-//!   worker that predates it. `features` otherwise lists `flush_storage` and
-//!   `gpu_capture_levels` (lotus#42).
+//! - `mock-no-flush`: `flush_storage` and `analog_input` are unsupported and not listed in
+//!   `features`, like a worker that predates them. `features` otherwise lists
+//!   `flush_storage`, `gpu_capture_levels` (lotus#42) and `analog_input` (lotus#60).
 //! - `capture` writes both screens to `frames/<screen>-<sequence % 3>.bgra` (LTRF header,
 //!   solid colour by frame) like the native ring files.
 //! - `mock-exit-code`: on the next request, exit with that code without replying.
@@ -24,7 +24,8 @@
 //! - `mock-gpu-memory`: its JSON is `status.gpu_memory` (lotus#46).
 //! - `mock-gpu-error`: on the next request, write `worker_gpu_error: <its JSON>` to stderr and
 //!   exit with 4, like `ExitOnGpuFailure` in `ctr_worker/control.h`.
-//! - every accepted `input` is appended to `inputs.jsonl` as `{"buttons","x","y","touch","owner"}`.
+//! - every accepted `input` is appended to `inputs.jsonl` as
+//!   `{"buttons","x","y","touch","owner","circle_pad","c_stick"}` (sticks `null` when not sent).
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,7 +109,7 @@ impl Machine {
             "features": if self.root.join("mock-no-flush").exists() {
                 serde_json::json!(["gpu_capture_levels"])
             } else {
-                serde_json::json!(["flush_storage", "gpu_capture_levels"])
+                serde_json::json!(["flush_storage", "gpu_capture_levels", "analog_input"])
             },
             "renderer": self.settings.get("graphics_api"),
             "gpu_memory": std::fs::read_to_string(self.root.join("mock-gpu-memory"))
@@ -201,7 +202,8 @@ impl Machine {
                 self.buttons = request.params["buttons"].as_u64().unwrap_or(0);
                 self.touch = request.params["touch"].as_bool().unwrap_or(false);
                 let line = serde_json::json!({"buttons": self.buttons, "x": request.params["x"],
-                    "y": request.params["y"], "touch": self.touch, "owner": owner});
+                    "y": request.params["y"], "touch": self.touch, "owner": owner,
+                    "circle_pad": request.params["circle_pad"], "c_stick": request.params["c_stick"]});
                 if let Ok(mut log) = std::fs::OpenOptions::new()
                     .create(true)
                     .append(true)

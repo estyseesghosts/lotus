@@ -181,6 +181,8 @@ struct SessionHandle {
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Ends the worker process without `native`, for a stop that cannot get the lock.
     kill: Arc<Mutex<crate::controlled_worker::KillSwitch>>,
+    /// The worker listed `analog_input`, so queued stick states can be delivered.
+    analog_input: bool,
 }
 
 impl SessionHandle {
@@ -567,6 +569,9 @@ impl Supervisor {
         telemetry.shader_seed = shader_state.to_string();
         telemetry.record(actor, "create");
         let kill = native.kill_switch();
+        let analog_input = native
+            .features()
+            .contains(lotus_protocol::capabilities::feature::ANALOG_INPUT);
         let handle = Arc::new(SessionHandle {
             info: Mutex::new(info.clone()),
             root,
@@ -582,6 +587,7 @@ impl Supervisor {
             mailbox: Mutex::default(),
             tasks: Mutex::default(),
             kill,
+            analog_input,
         });
         handle.start();
         reservation.commit(handle);
@@ -690,9 +696,17 @@ impl Supervisor {
         actor: Actor,
     ) -> io::Result<()> {
         self.require_control()?;
+        state.validate()?;
         let handle = self.handle(id)?;
         if handle.is_closed() {
             return Err(io::Error::other("session is stopping"));
+        }
+        // Refused here, not in the delivery task, so the caller learns it (lotus#60).
+        if state.analog() && !handle.analog_input {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this worker does not list analog_input; stick input would be ignored",
+            ));
         }
         {
             let mut mailbox = lock(&handle.mailbox);

@@ -70,12 +70,13 @@ Worker features (#42). A native worker lists the optional control features it
 implements in `hello`/`status` `features` (`ctr_worker/control.h` `Features`;
 names in `lotus_protocol::capabilities::feature`): `flush_storage`,
 `event_subscriptions`, `gpu_capture_levels`, `state_hash`,
-`preview_nonblocking`, `deterministic_async`, `gpu_memory`. The list is in the
+`preview_nonblocking`, `deterministic_async`, `gpu_memory`, `analog_input`
+(#60). The list is in the
 session's `native-manifest.json`. A request that needs a missing feature fails
 with `Unsupported` ("worker AZAHAR does not support state_hash; it advertises
 [...]") before it reaches the worker: `state_hash`, `events_configure`,
 `gpu_configure` with `capture`, `settings_set deterministic_async_operations`,
-and `flush_storage` for card copies. Older workers ignored unknown fields such
+`flush_storage` for card copies, and fast `input` with a stick off centre. Older workers ignored unknown fields such
 as `capture` and `subscriptions`, which is why the host checks. A worker
 without the field advertises nothing.
 

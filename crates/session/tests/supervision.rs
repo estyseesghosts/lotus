@@ -422,9 +422,7 @@ async fn an_owner_change_during_a_stalled_input_is_delivered() {
     let root = fixture.root(id);
     let pressed = InputState {
         buttons: 1,
-        x: 0,
-        y: 0,
-        touch: false,
+        ..InputState::default()
     };
     // Wait out any status exchange already started, then stall the next reply.
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -553,6 +551,148 @@ async fn until(what: &str, mut done: impl FnMut() -> bool) {
         assert!(Instant::now() < deadline, "{what}");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+}
+
+fn sticks(root: &Path) -> Vec<(u64, serde_json::Value, serde_json::Value)> {
+    std::fs::read_to_string(root.join("inputs.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).expect("json");
+            (
+                value["buttons"].as_u64().expect("buttons"),
+                value["circle_pad"].clone(),
+                value["c_stick"].clone(),
+            )
+        })
+        .collect()
+}
+
+/// lotus#60: stick positions travel each session's own mailbox next to button edges, bad
+/// ranges are refused before queueing, and a worker without `analog_input` refuses a moved
+/// stick instead of dropping it while neutral input still works.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn analog_input_is_per_session_and_refused_by_old_workers() {
+    let fixture = host("analog", 3);
+    let ids = fixture.running(2).await;
+    for step in 1..=10u32 {
+        for (index, id) in ids.iter().enumerate() {
+            let sign = if index == 0 { 1.0 } else { -1.0 };
+            let state = InputState {
+                buttons: step % 2,
+                circle_pad: [sign * step as f32 / 10.0, 0.0],
+                c_stick: [0.0, sign * step as f32 / 10.0],
+                ..InputState::default()
+            };
+            fixture
+                .host
+                .submit_input(id, state, "live", Actor::Desktop)
+                .expect("submit");
+        }
+    }
+    for id in &ids {
+        fixture
+            .host
+            .submit_input(id, InputState::default(), "live", Actor::Desktop)
+            .expect("neutral");
+    }
+    until("both sessions end neutral", || {
+        ids.iter().all(|id| {
+            sticks(&fixture.root(id))
+                .last()
+                .is_some_and(|(buttons, circle, cstick)| {
+                    *buttons == 0
+                        && *circle == serde_json::json!([0.0, 0.0])
+                        && *cstick == serde_json::json!([0.0, 0.0])
+                })
+        })
+    })
+    .await;
+    for (index, id) in ids.iter().enumerate() {
+        let sign = if index == 0 { 1.0 } else { -1.0 };
+        let delivered = sticks(&fixture.root(id));
+        // Never the sibling's direction; at least one off-centre sample got through.
+        assert!(delivered.iter().all(|(_, circle, cstick)| {
+            circle[0].as_f64().expect("x") * sign >= 0.0
+                && cstick[1].as_f64().expect("y") * sign >= 0.0
+        }));
+        assert!(delivered.iter().any(|(_, circle, _)| circle[0] != 0.0));
+        // Button edges are not lost to stick coalescing: presses and releases alternate.
+        assert!(delivered
+            .windows(2)
+            .any(|pair| pair[0].0 == 1 && pair[1].0 == 0));
+    }
+    for axis in [1.5, f32::NAN, f32::INFINITY] {
+        let error = fixture
+            .host
+            .submit_input(
+                &ids[0],
+                InputState {
+                    circle_pad: [axis, 0.0],
+                    ..InputState::default()
+                },
+                "live",
+                Actor::Desktop,
+            )
+            .expect_err("out of range");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error}");
+    }
+
+    let card = fixture
+        .base
+        .join("store")
+        .canonicalize()
+        .expect("store")
+        .join("cards/old");
+    std::fs::create_dir_all(&card).expect("card");
+    std::fs::write(card.join("mock-no-flush"), "").expect("old worker");
+    let old = fixture
+        .host
+        .create(
+            SessionKind::Primary { card: "old".into() },
+            Some("demo"),
+            Actor::Host,
+        )
+        .await
+        .expect("old worker")
+        .id;
+    let moved = InputState {
+        c_stick: [0.0, 1.0],
+        ..InputState::default()
+    };
+    for error in [
+        fixture
+            .host
+            .submit_input(&old, moved, "live", Actor::Desktop)
+            .expect_err("queued"),
+        fixture
+            .host
+            .input(&old, moved, "live", Actor::Host)
+            .await
+            .expect_err("direct"),
+    ] {
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported, "{error}");
+    }
+    fixture
+        .host
+        .input(
+            &old,
+            InputState {
+                buttons: 1,
+                ..InputState::default()
+            },
+            "live",
+            Actor::Host,
+        )
+        .await
+        .expect("buttons still work");
+    let sent = sticks(&card);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        (sent[0].1.clone(), sent[0].2.clone()),
+        (serde_json::Value::Null, serde_json::Value::Null)
+    );
+    fixture.host.close().await;
 }
 
 /// lotus#46: with too little device-local headroom for the largest running session's peak, a
@@ -737,7 +877,7 @@ async fn requests_needing_unadvertised_features_are_refused() {
     .expect("json");
     assert_eq!(
         manifest["features"],
-        serde_json::json!(["flush_storage", "gpu_capture_levels"])
+        serde_json::json!(["flush_storage", "gpu_capture_levels", "analog_input"])
     );
 }
 

@@ -15,10 +15,10 @@ fork = "https://github.com/estyseesghosts/azahar.git"
 upstream_commit = "11eceda5e0e682a1f44e396bf954a1b9137097ca"
 # Branch with upstream minimal native worker hooks.
 integration_branch = "integration"
-integration_commit = "7cd04970a5a0171fbcabd36692b63008c54a1865"
+integration_commit = "b2b6f6dde9278862988d2726f082fb0e9337da3d"
 # Branch with tracing, debugger and accuracy experiments.
 experimental_branch = "experimental"
-experimental_commit = "435684c0b7188857f9d22eb8071754e5c057f595"
+experimental_commit = "3ef0f9377706bbb055ac76519e0a9e86ecbc5e95"
 # Vendored checkout of the pinned Azahar source.
 vendor_path = "vendor/azahar"
 

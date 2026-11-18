@@ -98,6 +98,12 @@ pub struct InputArgs {
     pub x: u16,
     pub y: u16,
     pub touch: bool,
+    /// Circle Pad `[x, y]`, each -1..=1, x right, y up. Omitted means centred.
+    #[serde(default)]
+    pub circle_pad: [f32; 2],
+    /// C-stick `[x, y]` (New 3DS), same convention. Omitted means centred.
+    #[serde(default)]
+    pub c_stick: [f32; 2],
 }
 
 /// Typed debug operations, with limits checked by the shared session API.

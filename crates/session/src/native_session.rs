@@ -37,12 +37,54 @@ pub struct Frame {
 }
 
 /// Input is a complete state, so disconnect/release can always send zero.
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+///
+/// `buttons` uses Azahar's `Settings::NativeButton` bit order. Sticks are `[x, y]`, each in
+/// -1..=1 with x right and y up, the values Azahar's `Input::AnalogDevice::GetStatus` returns
+/// to HID (`ctr_worker/input.h` `Analog`). Motion, the 3D slider and volume are not part of
+/// the fast state: the worker keeps what `input_state` set (lotus#60).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct InputState {
     pub buttons: u32,
     pub x: u16,
     pub y: u16,
     pub touch: bool,
+    #[serde(default)]
+    pub circle_pad: [f32; 2],
+    #[serde(default)]
+    pub c_stick: [f32; 2],
+}
+
+impl InputState {
+    /// Either stick is off centre.
+    #[must_use]
+    pub fn analog(&self) -> bool {
+        self.circle_pad
+            .iter()
+            .chain(&self.c_stick)
+            .any(|axis| *axis != 0.0)
+    }
+
+    /// Host-side range check; the worker repeats it (`control.h` `Stick`).
+    pub fn validate(&self) -> io::Result<()> {
+        if self
+            .circle_pad
+            .iter()
+            .chain(&self.c_stick)
+            .any(|axis| !axis.is_finite() || axis.abs() > 1.0)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "stick axes must be finite and within -1..=1",
+            ));
+        }
+        if self.x >= 320 || self.y >= 240 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "touch is in native bottom-screen pixels: x < 320, y < 240",
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Owns one private native worker. Each command completes at an emulation safe point.
@@ -410,7 +452,21 @@ impl NativeSession {
     }
 
     pub async fn input(&mut self, state: InputState, owner: &str) -> io::Result<Value> {
+        state.validate()?;
         let mut params = serde_json::to_value(state).map_err(io::Error::other)?;
+        if !self
+            .features
+            .contains(lotus_protocol::capabilities::feature::ANALOG_INPUT)
+        {
+            // Older workers ignore unknown fields, so a moved stick would be lost silently.
+            if state.analog() {
+                self.require(lotus_protocol::capabilities::feature::ANALOG_INPUT)?;
+            }
+            if let Some(fields) = params.as_object_mut() {
+                fields.remove("circle_pad");
+                fields.remove("c_stick");
+            }
+        }
         params["owner"] = owner.into();
         self.operation(Method::Input, params).await
     }
