@@ -835,21 +835,15 @@ impl LotusWindow {
     }
 
     fn button(&mut self, key: &str, down: bool) {
-        let mask = match key {
-            "z" => 1,
-            "x" => 2,
-            "a" => 4,
-            "s" => 8,
-            "up" => 16,
-            "down" => 32,
-            "left" => 64,
-            "right" => 128,
-            "q" => 256,
-            "w" => 512,
-            "enter" => 1024,
-            "backspace" => 2048,
-            _ => return,
-        };
+        // The builtin input layout (lotus#57) until saved presets are wired by lotus#63/#64.
+        static LAYOUT: std::sync::LazyLock<lotus_input::layout::Resolved> =
+            std::sync::LazyLock::new(|| {
+                lotus_input::layout::resolve(&[], &Default::default(), None, None)
+            });
+        let mask = LAYOUT.key_bits(key);
+        if mask == 0 {
+            return;
+        }
         if down {
             self.keys |= mask;
         } else {

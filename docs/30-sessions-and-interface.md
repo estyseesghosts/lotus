@@ -742,6 +742,65 @@ To qualify a pad, record its model, USB or Bluetooth connection and the OS
 build. Then follow the user guide's pairing steps
 ([37](37-user-guide.md#game-controllers)) and read `routing.devices`.
 
+## Input layouts (#57)
+
+`crates/input/src/layout.rs` defines the preset format and resolver for
+keyboard and controller bindings. The desktop keyboard already resolves
+through it (the builtin layout only); saving, selecting and editing presets
+land with mapping profiles (#63) and the Settings window (#64).
+
+- **Actions.** Stable IDs: `a b x y up down left right l r zl zr start select
+  home`, `circle_pad_{up,down,left,right}`, `c_stick_{up,down,left,right}`.
+  Touch is not an action; it follows the pointer on the bottom screen.
+- **Bindings.** `{"device":"keyboard","key":"z"}` (GPUI key names, the strings
+  the window already matches, not scancodes), `{"device":"button","button":"east"}`
+  and `{"device":"axis","axis":"left_x","direction":"negative"}`, using the
+  positional `Button`/`Axis` names (SDL layout) rather than backend IDs. The
+  `device` tag is the capability a binding needs. A binding whose device is
+  absent stays in the preset and never fires.
+- **Preset file.** `{"version":1,"name":"…","bindings":{"a":[…],…}}`, which is
+  also the export format. On import, unknown action IDs and unparseable
+  bindings are dropped and reported, and duplicates within an action collapse.
+  Actions the file omits (an older preset) take the builtin bindings. A missing,
+  zero or newer `version` or an empty name refuses the file.
+- **Builtin preset `default`.** It reproduces the shipped controls exactly:
+  the keyboard table under Window and `default_button` plus both sticks for
+  controllers. Tests pin both.
+- **Precedence.** This is the order of worker settings (#51). The base preset
+  is the card's selection, else the global one, else `default`. Global
+  overrides apply on top unless the card selects a different preset (they are
+  edits of the global preset). Card overrides apply next, then a secondary's
+  ephemeral overrides. An override replaces one action's whole binding list,
+  and an empty list unbinds it. Resolution never writes a layer, so a
+  secondary's edit cannot reach its parent card. A selected preset missing
+  from the library falls back to `default` with a `MissingPreset` problem.
+- **Reset.** Removing an override inherits the layer below. Resetting a layer
+  removes all of its overrides. Reset-to-preset clears the card and session
+  overrides, keeping the selection.
+- **Conflicts.** One binding on several actions presses all of them; it is
+  reported by `Resolved::conflicts` for the editor to warn about, not refused.
+  The session input-owner protocol (#48) is unchanged. A layout only decides
+  which bits a physical input sets before the state reaches the router.
+
+**Editor interaction (#64, not built).** The Controls view sits inside the
+standalone Settings window. It shows a 3DS outline with every action. Selecting
+one lists its bindings with the layer each came from, and offers add (capture
+the next key; controller capture appears only once #63 makes controller
+bindings take effect), remove, and reset to inherited. A scope picker chooses
+global, card or the selected secondary. The view has preset
+create/rename/duplicate/delete and import/export, and the builtin preset is
+read-only. Conflicting bindings are marked on both actions. Keyboard and
+controller bindings are listed separately. Dead zones, thresholds, multiple
+controllers and hotplug belong to #63's per-device profiles, not to this
+format. Unavailable devices only grey out their bindings.
+
+Evidence: **verified compiled** — unit tests in `layout.rs` (builtin keyboard
+and controller defaults, import/export round trip, migration and refusal,
+unknown actions and bindings, override layering and reset, secondary
+isolation, card preset selection, missing presets, conflicts). The window's
+key handling now goes through `key_bits` with the same masks; not re-run in
+the window.
+
 ## Settings registry (#50)
 
 `lotus-settings` describes every setting a person or client can see: the 173
@@ -835,8 +894,9 @@ Evidence: **verified emulator** (mock worker) in
 `crates/session/tests/settings_layers.rs`, unit tests in `settings_store.rs`,
 plus CLI and MCP tests. `debug settings_set` still writes a worker directly
 and is not recorded as a runtime override. Portable packaging was not rebuilt
-for this change (source inspected). Controls and MCP groups have no settings until input presets
-(#57/#63) and automation settings (#56) land.
+for this change (source inspected). Controls and MCP groups have no settings until stored input presets
+(#63) and automation settings (#56) land. Input layouts (#57) resolve in
+the same order but are not registry keys.
 
 ## Discord Rich Presence
 

@@ -491,7 +491,11 @@ fn two_pads_soak_without_crossover_or_stuck_input() {
         script.button(handle, buttons[(n % 2) as usize], (n / 2).is_multiple_of(2));
         let drift = (n % 17) as f32 / 40.0;
         script.axis(handle, Axis::LeftX, sign * (0.5 + drift));
-        script.axis(handle, Axis::LeftY, if n.is_multiple_of(3) { 0.6 } else { -0.6 });
+        script.axis(
+            handle,
+            Axis::LeftY,
+            if n.is_multiple_of(3) { 0.6 } else { -0.6 },
+        );
     };
     let run = |pads: &[usize], length: Duration, n: &mut u64| {
         let started = Instant::now();

@@ -14,6 +14,9 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
   controllers routed per session (#61); controller pairing policy, identify
   and reconnect (#62). Per-controller routing metrics, session ownership
   denials, and a two-pad soak test with a stalled sibling (#66).
+- Input-layout preset format and resolver: stable 3DS action IDs, portable
+  keyboard/controller bindings, global → card → secondary overrides; the
+  builtin preset reproduces the shipped keys (#57).
 - Circle Pad and C-stick carried through the fast input path (`analog_input`
   feature, #60).
 - Scenario memory, event and coverage assertions execute (#94).

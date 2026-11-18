@@ -22,9 +22,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, SystemTime};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub mod gilrs_backend;
+pub mod layout;
 pub mod router;
 pub mod synthetic;
 
@@ -40,7 +41,7 @@ impl std::fmt::Display for DeviceId {
 
 /// Logical buttons by position, independent of the backend (gilrs' `Button` naming, which
 /// follows the SDL game controller layout).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Button {
     South,
@@ -63,7 +64,7 @@ pub enum Button {
 }
 
 /// Axes in -1.0..=1.0; sticks are positive right and up (gilrs convention).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Axis {
     LeftX,
