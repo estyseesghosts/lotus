@@ -23,6 +23,9 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
   overrides; `ctr-cli settings show|set|unset|reset`, MCP `lotus_settings`
   and `lotus_settings_change` (#51). Saved changes do not reach a running
   worker; they are listed as pending until the session is recreated.
+- The portable launcher takes its data directory from `-DataDir`, a
+  `lotus.json` beside it, or `%APPDATA%\LOTUS\lotus.json` (`-SetDataDir`),
+  defaulting to `data\` beside the launcher; `desktop.json` moves with it.
 
 Controller paths are verified against tests and the mock worker only; real
 controller testing is still pending. Apply-class enforcement for running

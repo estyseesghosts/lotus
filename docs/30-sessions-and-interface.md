@@ -587,8 +587,9 @@ overrides → host configuration `profile`. `crates/session/src/settings_store.r
 - **Frontends.** `lotus_settings` and `lotus_settings_change` (MCP);
   `ctr-cli settings show|set|unset|reset <host-config> global|card:<name>`.
   Changes need `allow_control`. Portable builds keep `storage_root` at
-  `data/<backend>/sessions` (`packaging/windows/launch.ps1`), so both files
-  stay in the release folder, separately per backend.
+  `<data>/<backend>/sessions` (`packaging/windows/launch.ps1`), so both files
+  stay in the data directory (`data/` in the release folder by default),
+  separately per backend.
 
 Evidence: **verified emulator** (mock worker) in
 `crates/session/tests/settings_layers.rs`, unit tests in `settings_store.rs`,

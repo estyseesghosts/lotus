@@ -16,6 +16,35 @@ packaging = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packaging)
 
 
+def check_data_dir(root, run, temporary):
+    """Data directory precedence: -DataDir, then lotus.json beside the launcher, then
+    %APPDATA%/LOTUS/lotus.json (written by -SetDataDir), then data/ beside the launcher."""
+    launch = ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+              str(root / "launch.ps1"), "-ConfigureOnly"]
+
+    def storage(*extra):
+        """host.json per candidate written by this run (earlier runs' copies removed first)."""
+        for path in candidates:
+            (path / "citnlo" / "host.json").unlink(missing_ok=True)
+        run(*launch, *extra)
+        return {path: json.loads((path / "citnlo" / "host.json").read_text(encoding="utf-8"))
+                for path in candidates if (path / "citnlo" / "host.json").exists()}
+
+    user = temporary / "user data dir"
+    beside = root / "beside"
+    flag = temporary / "flag dir"
+    candidates = [user, beside, flag]
+    run(*launch[:-1], "-SetDataDir", str(user))
+    written = storage()
+    assert list(written) == [user] and Path(written[user]["storage_root"]).parent.samefile(user / "citnlo")
+    (root / "lotus.json").write_text('{"data_dir": "beside"}', encoding="utf-8")
+    written = storage()
+    assert list(written) == [beside] and Path(written[beside]["storage_root"]).parent.samefile(beside / "citnlo")
+    written = storage("-DataDir", str(flag))
+    assert list(written) == [flag] and Path(written[flag]["storage_root"]).parent.samefile(flag / "citnlo")
+    (root / "lotus.json").unlink()
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="LOTUS portable ") as temporary:
         relocated = Path(temporary) / "Moved installation"
@@ -38,6 +67,8 @@ def main():
                        if not key.startswith(("LOTUS_", "CARGO_", "RUST"))}
         environment["PATH"] = os.pathsep.join([
             str(Path(os.environ["SystemRoot"]) / "System32"), os.environ["SystemRoot"]])
+        # The launcher reads %APPDATA%/LOTUS/lotus.json; never the runner's real profile.
+        environment["APPDATA"] = str(Path(temporary) / "appdata")
 
         def run(*command):
             return subprocess.run(command, cwd=temporary, env=environment, capture_output=True,
@@ -65,6 +96,7 @@ def main():
             assert Path(config["storage_root"]).resolve().is_relative_to(root.resolve())
             subprocess.run([sys.executable, str(ROOT / "tests/test_native_protocol.py"), str(worker)],
                            cwd=temporary, env=environment, check=True, timeout=60)
+        check_data_dir(root, run, Path(temporary))
         with subprocess.Popen([str(root / "bin/lotus-mcp.exe")], cwd=temporary, env=environment,
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                               text=True, encoding="utf-8") as server:

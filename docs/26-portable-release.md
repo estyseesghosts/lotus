@@ -4,7 +4,8 @@
 AZAHAR/CITnLO runtimes. Extract it into a writable folder. `LOTUS.cmd` selects
 homebrew using a Windows file dialog and launches CITnLO; `LOTUS-AZAHAR.cmd`
 selects AZAHAR. Both recreate absolute host configuration from the installation
-location, retaining sessions under `data/<backend>/sessions`. No installer,
+location, retaining sessions under `<data>/<backend>/sessions`, where `<data>` is `data/`
+beside the launcher unless configured otherwise ([37](37-user-guide.md#data-directory)). No installer,
 registry changes or developer tools are required. Windows 11 x64 / Direct3D 11
 is the initial target. The binaries are unsigned.
 

@@ -35,21 +35,22 @@ What is in the folder:
 | `launch.ps1` | the launcher both `.cmd` files call; options below |
 | `bin/` | `lotus-desktop.exe`, `lotus-mcp.exe`, `ctr-cli.exe` |
 | `runtimes/citnlo/`, `runtimes/azahar/` | the two `ctr-worker.exe` builds |
-| `data/` | created on first run: everything you produce |
+| `data/` | created on first run: everything you produce (default data directory; see [Data directory](#data-directory)) |
 | `licenses/`, `SOURCE.md`, `release-manifest.json` | licences, exact source and build revisions |
 
 Which worker: CITnLO has every debugger feature; AZAHAR lacks event
 subscriptions, GPU capture levels and `state_hash` (feature matrix in
 [35](35-release-notes.md)). Use AZAHAR to compare against upstream behaviour.
 
-**Upgrading**: extract the new release to a new folder and copy `data/` across.
+**Upgrading**: extract the new release to a new folder and copy `data/` across,
+or keep data outside the release folder (below) so there is nothing to copy.
 **Moving**: move the whole folder; the launcher rewrites machine-specific paths
 on every start.
 
 ### Launcher options
 
 `launch.ps1` (`packaging/windows/launch.ps1`) writes
-`data/<backend>/host.json` on every start, then runs one of the programs.
+`<data>/<backend>/host.json` on every start, then runs one of the programs.
 Pass options to either `.cmd`, e.g. `LOTUS.cmd -Mode WindowedMCP game.3dsx`.
 
 | Option | Values | Effect |
@@ -57,12 +58,31 @@ Pass options to either `.cmd`, e.g. `LOTUS.cmd -Mode WindowedMCP game.3dsx`.
 | `-Backend` | `CITnLO` (default), `AZAHAR` | which worker; the `.cmd` files set it |
 | `-Mode` | `Desktop` (default), `MCP`, `WindowedMCP` | window; headless MCP on stdio; window that also serves MCP on stdio |
 | first argument | path to a `.3dsx` | approves it as asset `homebrew` |
+| `-DataDir` | path | use this data directory for this start only |
+| `-SetDataDir` | path | save this data directory in `%APPDATA%\LOTUS\lotus.json` and exit |
 | `-ConfigureOnly` | switch | write `host.json` and stop |
 
 Dragging a `.3dsx` onto a `.cmd` file is the same as passing it. The launcher
 always sets `allow_control: true`. It rewrites `host.json` each start, so
 **edit a copy** if you want custom settings and start the programs directly
 (section 5).
+
+### Data directory
+
+`<data>` holds `host.json`, sessions (cards, saves, logs, settings) and
+`desktop.json`. The launcher picks the first of:
+
+1. `-DataDir <path>`
+2. `data_dir` in `lotus.json` beside `launch.ps1`
+3. `data_dir` in `%APPDATA%\LOTUS\lotus.json` (what `-SetDataDir` writes)
+4. `data\` beside `launch.ps1` (default)
+
+`lotus.json` is `{"data_dir": "D:/LOTUS data"}`. A relative path resolves
+against the folder of the `lotus.json` that names it; `%VAR%` references are
+expanded. The directory is created if missing. The `%APPDATA%` file is per
+Windows user and outlives release folders, so `LOTUS.cmd -SetDataDir
+"D:\LOTUS data"` once makes every later release use that directory. Existing
+data is not moved; copy the old `data\` contents there yourself.
 
 ## 3. Using the window
 
@@ -75,7 +95,7 @@ Every running console is a **session** with its own worker process. There
 are two kinds:
 
 - A **primary** session mounts a **card**: a persistent SD/NAND/sysdata folder
-  at `data/<backend>/sessions/cards/<card>/`. Saves and installed data written
+  at `<data>/<backend>/sessions/cards/<card>/`. Saves and installed data written
   by the guest stay there across restarts. One primary per card at a time.
   Card names are 1–32 characters of `a-z 0-9 - _`; a card is created on first
   use.
@@ -256,7 +276,7 @@ no longer valid. Details: [30](30-sessions-and-interface.md#settings-layers-51).
 ### Window preferences (`desktop.json`)
 
 Location: `LOTUS_DESKTOP_PREFERENCES` if set (the portable launcher sets
-`data/desktop.json`), else `%APPDATA%\LOTUS\desktop.json`. A file that does
+`<data>/desktop.json`), else `%APPDATA%\LOTUS\desktop.json`. A file that does
 not parse is never overwritten; the preferences menu says so.
 
 | Key | Default |
@@ -416,7 +436,8 @@ failed assertion. Format and limits: [22](22-scenario-runner.md); examples in
 
 ## 8. Where data lives
 
-Portable layout under `data/` (`<backend>` is `citnlo` or `azahar`):
+Layout under the data directory (`data/` by default, see
+[Data directory](#data-directory); `<backend>` is `citnlo` or `azahar`):
 
 | Path | Contents | Kept |
 | --- | --- | --- |

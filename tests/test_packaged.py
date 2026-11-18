@@ -35,9 +35,9 @@ from mcp_client import Client  # noqa: E402
 # Control features each branch lists unconditionally (ctr_worker/control.h Features).
 # `preview_nonblocking` and `gpu_memory` depend on the build and are reported, not required.
 EXPECTED = {
-    "azahar": {"flush_storage", "deterministic_async"},
+    "azahar": {"flush_storage", "deterministic_async", "analog_input"},
     "citnlo": {"flush_storage", "event_subscriptions", "gpu_capture_levels", "state_hash",
-               "deterministic_async"},
+               "deterministic_async", "analog_input"},
 }
 BUILD_DEPENDENT = {"preview_nonblocking", "gpu_memory"}
 
