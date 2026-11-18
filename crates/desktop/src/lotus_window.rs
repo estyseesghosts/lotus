@@ -45,6 +45,12 @@ const CONTENT_PADDING: f32 = 24.0;
 const TILE_HEADER: f32 = 28.0;
 /// Space between the two tiles of a split.
 const TILE_GAP: f32 = 12.0;
+/// Width of a tile's gauge column on the outer edge of a left/right split (lotus#70).
+const GAUGE_COLUMN: f32 = 112.0;
+/// Height of a tile's gauge row on the outer edge of a top/bottom split (lotus#70).
+const GAUGE_ROW: f32 = layout::PILL_HEIGHT + 2.0 * layout::PILL_GAP;
+/// Space between a tile and its gauges.
+const GAUGE_GAP: f32 = 6.0;
 /// Hit width of a pane divider, inside the pane's edge.
 const DIVIDER_WIDTH: f32 = 6.0;
 
@@ -2192,9 +2198,118 @@ impl LotusWindow {
                     .gap(px(TILE_GAP))
                     .when(split.vertical, |row| row.flex_col())
                     .children(tiles.into_iter().map(|(viewport, session, other, tile)| {
-                        self.render_tile(viewport, session, other, tile, *axis, cx)
+                        let gauges =
+                            self.render_tile_gauges(viewport, session, split.vertical, tile);
+                        let tile = self.render_tile(viewport, session, other, tile, *axis, cx);
+                        // Gauges sit on the outer edge: before the first tile, after the second.
+                        let (lead, trail) = match viewport {
+                            Viewport::First => (gauges, tile),
+                            Viewport::Second => (tile, gauges),
+                        };
+                        div()
+                            .flex()
+                            .flex_none()
+                            .gap(px(GAUGE_GAP))
+                            .when(split.vertical, |slot| slot.flex_col())
+                            .child(lead)
+                            .child(trail)
                     })),
             )
+            .into_any_element()
+    }
+
+    /// One tile's own gauges (lotus#70): state, FPS, speed, frame (the remaining telemetry
+    /// in its tooltip) and the controllers assigned to that session. A column beside a
+    /// left/right tile, a row above or below a top/bottom tile.
+    fn render_tile_gauges(
+        &self,
+        viewport: Viewport,
+        session: &str,
+        vertical: bool,
+        tile: TilePlan,
+    ) -> AnyElement {
+        let summary = self.sessions.iter().find(|s| s.info.id == session);
+        let mut items = Vec::new();
+        match summary {
+            None => items.push(gauges::Gauge {
+                label: "STATE",
+                value: "ended".into(),
+                colour: theme::text_muted(),
+                detail: "the session is no longer registered".into(),
+            }),
+            Some(summary) => {
+                items.push(gauges::Gauge {
+                    label: "STATE",
+                    value: state_name(summary).into(),
+                    colour: state_colour(summary),
+                    detail: session_tree::session_label(&summary.info).to_string(),
+                });
+                let [fps, speed, frame, rest @ ..] = gauges::gauges(&summary.telemetry);
+                let more = rest
+                    .iter()
+                    .map(|gauge| format!("{}: {} · {}", gauge.label, gauge.value, gauge.detail))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                items.extend([
+                    fps,
+                    speed,
+                    gauges::Gauge {
+                        detail: format!("{}\n{more}", frame.detail),
+                        ..frame
+                    },
+                ]);
+            }
+        }
+        let paired = pairing(&self.controllers, session);
+        if paired.is_empty() {
+            items.push(gauges::Gauge {
+                label: "PAD",
+                value: "none".into(),
+                colour: theme::text_muted(),
+                detail: "No controller is assigned to this session".into(),
+            });
+        }
+        let target = self.session_name(session);
+        for pad in paired {
+            items.push(gauges::Gauge {
+                label: "PAD",
+                value: pad.name.clone(),
+                colour: if pad.connected {
+                    theme::success()
+                } else {
+                    theme::warning()
+                },
+                detail: match &pad.device {
+                    Some(device) => format!("{} · {device} → {target}", pad.name),
+                    None => format!(
+                        "{} → {target}: disconnected; the assignment returns when it reconnects",
+                        pad.name
+                    ),
+                },
+            });
+        }
+        let index = match viewport {
+            Viewport::First => 0,
+            Viewport::Second => 1,
+        };
+        let count = items.len() as f32;
+        let strip = if vertical {
+            let width = ((tile.width - (count - 1.0) * layout::PILL_GAP) / count).max(0.0);
+            gauges::gauge_pills(items, width, false)
+                .w(px(tile.width.max(0.0)))
+                .h(px(GAUGE_ROW))
+                .items_center()
+        } else {
+            gauges::gauge_pills(items, GAUGE_COLUMN, false)
+                .flex_col()
+                .w(px(GAUGE_COLUMN))
+                .h(px(tile.height.max(0.0)))
+        };
+        div()
+            .id(SharedString::from(format!("tile-gauges-{index}")))
+            .flex_none()
+            .overflow_hidden()
+            .child(strip)
             .into_any_element()
     }
 
@@ -2234,13 +2349,6 @@ impl LotusWindow {
             || session_tree::short_id(session).to_string(),
             |summary| session_tree::session_label(&summary.info).to_string(),
         );
-        let pads: Vec<String> = self
-            .controllers
-            .pads
-            .iter()
-            .filter(|pad| pad.session.as_deref() == Some(session))
-            .map(|pad| pad.name.clone())
-            .collect();
         let keep = other.to_string();
         let mut header = div()
             .flex()
@@ -2262,18 +2370,6 @@ impl LotusWindow {
                     })
                     .child(label),
             )
-            .children(pads.into_iter().map(|name| {
-                div()
-                    .flex_none()
-                    .max_w(px(140.0))
-                    .truncate()
-                    .px_1()
-                    .rounded(px(4.0))
-                    .border_1()
-                    .border_color(theme::border_strong())
-                    .text_color(theme::text_secondary())
-                    .child(name)
-            }))
             .when(focused, |header| {
                 header.child(
                     div()
@@ -3132,9 +3228,11 @@ impl Render for LotusWindow {
         let viewport_height = f32::from(window.viewport_size().height);
         let density = layout::toolbar_density(plan.main);
         let mode = layout::gauge_mode(plan.main, viewport_height, self.gauges_expanded);
+        // A split shows each console's gauges beside its own tile instead (lotus#70).
+        let split = matches!(self.workspace.layout, Layout::Split { .. });
         let loaded = self
             .selected_summary()
-            .filter(|summary| summary.info.asset.is_some())
+            .filter(|summary| summary.info.asset.is_some() && !split)
             .cloned();
         let gauge_height = if loaded.is_some() {
             layout::gauge_height(mode, plan.main)
@@ -3275,6 +3373,19 @@ struct SplitPlan {
     tiles: [TilePlan; 2],
 }
 
+#[cfg(test)]
+impl SplitPlan {
+    /// Space each tile's gauges take on its outer edge, gap included: left of the first
+    /// and right of the second tile, or above the first and below the second.
+    fn gauge_edge(&self) -> f32 {
+        gauge_edge(self.vertical)
+    }
+}
+
+fn gauge_edge(vertical: bool) -> f32 {
+    GAUGE_GAP + if vertical { GAUGE_ROW } else { GAUGE_COLUMN }
+}
+
 /// An `Auto` choice changes only once the alternative is this much larger, so a resize
 /// or divider drag around the crossover does not flip the layout back and forth.
 const AUTO_HYSTERESIS: f32 = 0.05;
@@ -3304,7 +3415,9 @@ fn split_plan(
     let (width, height) = (width.max(0.0), height.max(0.0));
     let plan = |vertical: bool| {
         let along = (if vertical { height } else { width } - TILE_GAP).max(0.0);
-        let sizes = [along * ratio, along * (1.0 - ratio)];
+        // Each slot gives its outer edge to that console's gauges (lotus#70).
+        let sizes = [along * ratio, along * (1.0 - ratio)]
+            .map(|slot| (slot - gauge_edge(vertical)).max(0.0));
         let mut tiles = [0, 1].map(|index| {
             let (w, h) = if vertical {
                 (width, sizes[index])
@@ -3408,6 +3521,39 @@ fn fit_scale(layout: ScreenLayout, width: f32, height: f32) -> f32 {
     } else {
         1.0
     }
+}
+
+/// A controller shown in a tile's gauges.
+#[derive(Debug, Clone, PartialEq)]
+struct Paired {
+    name: String,
+    /// `None` when disconnected: the router remembers the assignment (lotus#62).
+    device: Option<String>,
+    connected: bool,
+}
+
+/// Controllers assigned to `session`, from the router's assignment state only: never
+/// inferred from pad order, tile order or keyboard focus.
+fn pairing(controllers: &crate::input_routing::Controllers, session: &str) -> Vec<Paired> {
+    let connected = controllers
+        .pads
+        .iter()
+        .filter(|pad| pad.session.as_deref() == Some(session))
+        .map(|pad| Paired {
+            name: pad.name.clone(),
+            device: Some(pad.id.to_string()),
+            connected: true,
+        });
+    let remembered = controllers
+        .remembered
+        .iter()
+        .filter(|pad| pad.session == session)
+        .map(|pad| Paired {
+            name: pad.name.clone(),
+            device: None,
+            connected: false,
+        });
+    connected.chain(remembered).collect()
 }
 
 fn state_name(summary: &SessionSummary) -> &'static str {
@@ -3837,7 +3983,7 @@ mod tests {
             .all(|t| t.screens == ScreenLayout::Stacked));
         // The ratio splits the axis less the gap; sizes never go negative.
         let off = split_plan(1200.0, 700.0, Axis::Horizontal, 0.7, auto, None);
-        let total = off.tiles[0].width + off.tiles[1].width + TILE_GAP;
+        let total = off.tiles[0].width + off.tiles[1].width + 2.0 * off.gauge_edge() + TILE_GAP;
         assert!((total - 1200.0).abs() < 1e-3, "{off:?}");
         assert!(off.tiles[0].width > off.tiles[1].width);
         assert!(off.tiles[0].scale >= off.tiles[1].scale);
@@ -3891,7 +4037,8 @@ mod tests {
                             plan.tiles.iter().map(|t| t.width).sum()
                         };
                         let room = if plan.vertical { height } else { width };
-                        assert!(along + TILE_GAP <= room + 1e-3, "{case}");
+                        let gauges = 2.0 * plan.gauge_edge();
+                        assert!(along + gauges + TILE_GAP <= room + 1e-3, "{case}");
                         for tile in plan.tiles {
                             assert!(tile.width >= 0.0 && tile.height >= 0.0, "{case}");
                             assert!(tile.scale.is_finite() && tile.scale >= 0.5, "{case}");
@@ -3970,6 +4117,60 @@ mod tests {
             let forced = split_plan(2600.0, height, axis, 0.5, auto, Some(held));
             assert_eq!(forced.vertical, vertical);
         }
+    }
+
+    #[test]
+    fn tile_pairing_comes_from_assignments_only() {
+        use lotus_input::router::{PadStatus, Remembered};
+        use lotus_input::DeviceId;
+        let pad = |id, name: &str, session: Option<&str>| PadStatus {
+            id: DeviceId(id),
+            name: name.into(),
+            model_uuid: String::new(),
+            session: session.map(str::to_string),
+        };
+        let controllers = crate::input_routing::Controllers {
+            // Listed out of tile order; one unassigned pad.
+            pads: vec![
+                pad(2, "DualSense", Some("b")),
+                pad(7, "Spare", None),
+                pad(1, "Xbox Wireless", Some("a")),
+            ],
+            remembered: vec![Remembered {
+                name: "Pro Controller".into(),
+                model_uuid: String::new(),
+                session: "b".into(),
+            }],
+            ..Default::default()
+        };
+        let a = pairing(&controllers, "a");
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].name, "Xbox Wireless");
+        assert_eq!(a[0].device.as_deref(), Some("pad-1"));
+        let b = pairing(&controllers, "b");
+        assert_eq!(
+            b.iter()
+                .map(|p| (p.name.as_str(), p.connected))
+                .collect::<Vec<_>>(),
+            [("DualSense", true), ("Pro Controller", false)]
+        );
+        assert!(pairing(&controllers, "c").is_empty());
+    }
+
+    #[test]
+    fn split_reserves_each_tiles_outer_gauge_edge() {
+        let auto = [workspace::ScreenLayout::Auto; 2];
+        let side = split_plan(1600.0, 800.0, Axis::Horizontal, 0.5, auto, None);
+        let slot = (1600.0 - TILE_GAP) / 2.0;
+        assert!((side.tiles[0].width - (slot - GAUGE_COLUMN - GAUGE_GAP)).abs() < 1e-3);
+        assert!(
+            (side.tiles[0].height - 800.0).abs() < 1e-3,
+            "row keeps full height"
+        );
+        let stacked = split_plan(1600.0, 1200.0, Axis::Vertical, 0.5, auto, None);
+        let slot = (1200.0 - TILE_GAP) / 2.0;
+        assert!((stacked.tiles[1].height - (slot - GAUGE_ROW - GAUGE_GAP)).abs() < 1e-3);
+        assert!((stacked.tiles[1].width - 1600.0).abs() < 1e-3);
     }
 
     #[test]

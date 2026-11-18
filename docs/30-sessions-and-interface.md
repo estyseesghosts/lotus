@@ -343,7 +343,17 @@ cycles the axis auto → left/right → top/bottom).
   (host pixels per guest pixel, after zoom). It is `null` before the window lays
   the split out, outside a split, or while the report is for an older revision,
   and reporting it never bumps the revision.
-- Gauges stay under the stage for the selected session; edge gauges are #70.
+- Gauges (#70): in a split each console has its own gauges on its outer edge
+  and the bottom strip is hidden. Left/right: a 112 px column left of the first
+  tile and right of the second. Top/bottom: a pill row above the first and below
+  the second. `split_plan` takes that edge out of each slot before fitting the
+  screens, so gauges never cover a screen or touch area. Pills: state, FPS, speed,
+  frame (audio, renderer, worker and control in its tooltip), then one `PAD` per
+  controller assigned to that session: green when connected, amber when
+  disconnected but remembered by the router (#62), `none` otherwise. Pairing is
+  read from the assignment state only (`pairing`), never from pad order, tile
+  order or keyboard focus. Gauges follow the session, so a swap moves them with
+  it. Single view keeps the bottom strip unchanged.
 
 Evidence: `responsive_controller.rs`
 `tiled_sessions_preview_independently_while_one_stalls` (mock workers): with A's
@@ -360,6 +370,15 @@ CITnLO `t03` sessions on Vulkan (**emulator**): at 1700x950 `auto` resolved
 left/right stacked at 1.35 on both tiles; at 900x1400 it went top/bottom at 0.81;
 back at 1700x950 it returned to left/right; `set_axis vertical` gave side-by-side
 screens at 1.24, all without restarting a worker.
+
+Gauge evidence: `tile_pairing_comes_from_assignments_only` and
+`split_reserves_each_tiles_outer_gauge_edge` (**verified compiled**). Release
+build, two CITnLO `t03` sessions (**emulator**): left/right put A's gauges far
+left and B's far right; after `swap` and `set_axis vertical` A sat at the bottom
+with its gauges below it; killing A's worker turned only A's gauges to `crashed`,
+FPS 0.0, while B's kept updating at 60 fps. Physical controllers were not
+connected, so `PAD` was only seen as `none`; connected and remembered pads are
+covered by the unit test alone.
 
 ## Live input state (#60)
 

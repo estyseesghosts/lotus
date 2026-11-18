@@ -1,4 +1,5 @@
-//! Gauge strip: what the selected session's emulator is doing right now.
+//! Gauges: what a session's emulator is doing right now; the bottom strip for the
+//! selected session, or each tile's own edge gauges in a split (lotus#70).
 //!
 //! All rates are guest output per *host* second as measured by the supervisor
 //! ([`lotus_session::telemetry`]); none is a guest-tick or hardware-cycle claim.
