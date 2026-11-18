@@ -252,7 +252,7 @@ mod tests {
     }
 
     /// Shape of the line `ReportGpuFailure` wrote in the injected sweep (lotus#46).
-    const GPU: &str = "worker_gpu_error: {\"cause\":\"gpu_out_of_memory\",\"frame\":312,\"gpu_memory\":{\"allocation_failures\":1,\"budget_source\":\"VK_EXT_memory_budget\",\"heaps\":[]},\"object\":\"image\",\"vk_result\":-2,\"vk_result_name\":\"ErrorOutOfDeviceMemory\"}\n";
+    const GPU: &str = "worker_gpu_error: {\"cause\":\"gpu_out_of_memory\",\"frame\":312,\"gpu_memory\":{\"allocation_failures\":1,\"budget_source\":\"VK_EXT_memory_budget\",\"heaps\":[]},\"object\":\"image\",\"vk_result\":-2,\"vk_result_name\":\"VK_ERROR_OUT_OF_DEVICE_MEMORY\"}\n";
 
     #[test]
     fn the_worker_gpu_report_is_parsed_and_wins_over_log_lines() {
@@ -261,7 +261,7 @@ mod tests {
         assert_eq!(cause, Cause::VulkanOutOfMemory);
         assert_eq!(
             marker.as_deref(),
-            Some("ErrorOutOfDeviceMemory (-2) creating image")
+            Some("VK_ERROR_OUT_OF_DEVICE_MEMORY (-2) creating image")
         );
         let report = gpu_error(GPU).unwrap();
         assert_eq!(report["frame"], 312);

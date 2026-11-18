@@ -651,7 +651,7 @@ async fn a_worker_gpu_error_is_typed_and_isolated() {
     let fixture = host("gpu-error", 2);
     let ids = fixture.running(2).await;
     let report = serde_json::json!({"cause": "gpu_out_of_memory", "vk_result": -2,
-        "vk_result_name": "ErrorOutOfDeviceMemory", "object": "image", "frame": 40,
+        "vk_result_name": "VK_ERROR_OUT_OF_DEVICE_MEMORY", "object": "image", "frame": 40,
         "gpu_memory": serde_json::from_str::<serde_json::Value>(&gpu_memory(0, 900)).unwrap()});
     std::fs::write(
         fixture.root(&ids[0]).join("mock-gpu-error"),
@@ -671,7 +671,7 @@ async fn a_worker_gpu_error_is_typed_and_isolated() {
     assert!(failure["summary"]
         .as_str()
         .unwrap()
-        .contains("ErrorOutOfDeviceMemory (-2) creating image"));
+        .contains("VK_ERROR_OUT_OF_DEVICE_MEMORY (-2) creating image"));
     let before = telemetry(&fixture.host, &ids[1]).frames;
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert!(
