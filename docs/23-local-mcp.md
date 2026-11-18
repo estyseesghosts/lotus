@@ -70,7 +70,7 @@ Policy (#23, `crates/session/src/policy.rs`), `"policy": {...}` in the host
 config, defaults shown:
 `{"workload": "interactive", "rewind_sessions": null, "gpu_capture_sessions": null,
 "snapshot_slots": null, "snapshot_wait_ms": 10000, "memory_reserve_mib": 1024,
-"focus_priority": false}`. Unset budgets are 2 under `interactive` and unlimited
+"gpu_admission": true, "gpu_reserve_mib": 0, "focus_priority": false}`. Unset budgets are 2 under `interactive` and unlimited
 under `batch`; 0 means unlimited. Normal emulation is never gated:
 
 - `rewind_sessions`: sessions recording rewind checkpoints at once. Enabling a
@@ -83,14 +83,30 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
   wait up to `snapshot_wait_ms`, then fail with the reason.
 - `memory_reserve_mib`: a new session is refused while available physical
   memory is below the reserve plus the largest current worker working set
-  (1 GiB with none running; a t03 Vulkan worker measured 962 MiB). VRAM is not
-  measured.
+  (1 GiB with none running; a t03 Vulkan worker measured 962 MiB). Device memory
+  is the next item.
+- `gpu_admission`, `gpu_reserve_mib` (#46): a new Vulkan session needs
+  device-local headroom of at least the largest running session's device-local
+  high-water mark plus `gpu_reserve_mib`. Headroom is `budget - usage` of the
+  largest device-local heap from each Vulkan session's `telemetry.gpu_memory`,
+  smallest over sessions. Only `VK_EXT_memory_budget` budgets are used: they are
+  the driver's figure for this process given every other process on the device,
+  so other GPU consumers count. Without the extension the worker reports
+  `budget_source: "vma_estimate"` (VMA's 80 % of the heap from its own usage,
+  blind to other processes); it is shown but never refuses. With no Vulkan
+  session running nothing is measured and nothing is refused. Under pressure a
+  session that only prefers Vulkan (`prefer_vulkan`, no `graphics_api` in the
+  profile) is created on software before load, with the reason in
+  `telemetry.renderer_fallback`; a profile with `graphics_api: 2` is refused
+  with the numbers. Running sessions are never switched.
 - `focus_priority`: the focused session's worker (desktop selection,
   `lotus_focus_session`) runs in the above-normal priority class. Off until
   `tools/bench_parallel.py --focus-priority` shows a gain on a quiet host.
 
 `lotus_status.policy` lists limits, holders, slots in use and queued, refusals
-and memory (available, reserve, estimate, pressure); a session's
+memory (available, reserve, estimate, pressure) and `gpu_memory`
+(`budget_source`, `headroom_mib`, `estimate_mib`, `reserve_mib`,
+`allocation_failures`, `pressure`); a session's
 `telemetry.policy_note` holds its last refusal or wait. The desktop previews only
 the selected session (`desktop_controller.rs` `preview_loop`), so hidden sessions
 cost no readbacks under either workload. `tests/test_mcp_policy.py` checks the

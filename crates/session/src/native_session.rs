@@ -221,6 +221,18 @@ impl NativeSession {
         Ok(())
     }
 
+    /// Select software (`Settings::GraphicsAPI::Software` = 0) for a session that would have
+    /// preferred Vulkan, recording `reason` as the renderer fallback (GPU admission, lotus#46).
+    pub async fn start_on_software(&mut self, reason: String) -> io::Result<()> {
+        self.apply_profile(&std::collections::BTreeMap::from([(
+            "graphics_api".to_string(),
+            lotus_protocol::debug::SettingValue::Integer(0),
+        )]))
+        .await?;
+        self.renderer_fallback = Some(reason);
+        Ok(())
+    }
+
     async fn refresh_profile(&mut self) -> io::Result<()> {
         use sha2::{Digest, Sha256};
         let mut values = std::collections::BTreeMap::new();

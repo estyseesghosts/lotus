@@ -478,6 +478,7 @@ impl Supervisor {
         let content = asset.map(|handle| self.resolve_asset(handle)).transpose()?;
         let id = SessionUuid::generate().to_string();
         self.host_memory().admit()?;
+        let gpu_refusal = self.gpu_memory().refusal();
         let reservation = self.reserve(&id, &kind)?;
         let root = match &kind {
             SessionKind::Primary { card } => self.cards.primary_root(card)?,
@@ -499,6 +500,17 @@ impl Supervisor {
             }
             let mut native = NativeSession::spawn(executable, &root).await?;
             let profile = seed.map_or(&self.config.profile, |(_, profile)| profile);
+            // An explicit Vulkan profile is refused under GPU pressure; Vulkan only preferred
+            // starts on software before load, the restartable boundary prefer_vulkan already
+            // falls back at (lotus#46).
+            let explicit_vulkan = matches!(
+                profile.get("graphics_api"),
+                Some(lotus_protocol::debug::SettingValue::Integer(2))
+            );
+            if let (true, Some(refusal)) = (explicit_vulkan, &gpu_refusal) {
+                let _ = native.stop().await;
+                return Err(io::Error::new(io::ErrorKind::OutOfMemory, refusal.clone()));
+            }
             if let Err(error) = native.apply_profile(profile).await {
                 let _ = native.stop().await;
                 return Err(error);
@@ -508,7 +520,11 @@ impl Supervisor {
                 && native.has_settings()
                 && !profile.contains_key("graphics_api")
             {
-                if let Err(error) = native.prefer_vulkan().await {
+                let chosen = match &gpu_refusal {
+                    Some(refusal) => native.start_on_software(refusal.clone()).await,
+                    None => native.prefer_vulkan().await,
+                };
+                if let Err(error) = chosen {
                     let _ = native.stop().await;
                     return Err(error);
                 }
@@ -804,10 +820,24 @@ impl Supervisor {
         crate::policy::Memory::measure(self.config.policy.memory_reserve_mib, largest)
     }
 
+    /// Device-local GPU memory over running Vulkan sessions (lotus#46).
+    #[must_use]
+    pub fn gpu_memory(&self) -> crate::policy::GpuMemory {
+        let summaries = self.summaries();
+        let policy = &self.config.policy;
+        crate::policy::GpuMemory::measure(
+            policy.gpu_admission,
+            policy.gpu_reserve_mib,
+            summaries
+                .iter()
+                .filter_map(|summary| summary.telemetry.gpu_memory.as_ref()),
+        )
+    }
+
     /// Workload policy, budget holders, snapshot queue and memory for `lotus_status`.
     #[must_use]
     pub fn policy_status(&self) -> serde_json::Value {
-        self.budgets.status(&self.host_memory())
+        self.budgets.status(&self.host_memory(), &self.gpu_memory())
     }
 
     /// The session a person is looking at (desktop selection, `lotus_focus_session`). With
@@ -1769,6 +1799,7 @@ pub(crate) fn failure_value(report: &crate::failure::FailureReport) -> serde_jso
         "summary": report.summary(),
         "renderer": report.cause.is_renderer(),
         "exit_code": report.exit_code,
+        "gpu": report.gpu,
     })
 }
 

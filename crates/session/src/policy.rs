@@ -54,6 +54,10 @@ pub struct Policy {
     /// New sessions are refused while available physical memory would drop below this.
     /// 0 disables the check.
     pub memory_reserve_mib: u64,
+    /// GPU headroom admission for new Vulkan sessions ([`GpuMemory`], lotus#46).
+    pub gpu_admission: bool,
+    /// Device-local memory kept free beyond a session's estimated need. 0 keeps none.
+    pub gpu_reserve_mib: u64,
     /// Raise the focused session's worker to the above-normal priority class (Windows).
     /// Off until `tools/bench_parallel.py --focus-priority` shows a gain on a quiet host.
     pub focus_priority: bool,
@@ -68,6 +72,8 @@ impl Default for Policy {
             snapshot_slots: None,
             snapshot_wait_ms: 10_000,
             memory_reserve_mib: 1024,
+            gpu_admission: true,
+            gpu_reserve_mib: 0,
             focus_priority: false,
         }
     }
@@ -349,7 +355,7 @@ impl Budgets {
 
     /// Policy, holders and queue for `lotus_status`.
     #[must_use]
-    pub fn status(&self, memory: &Memory) -> serde_json::Value {
+    pub fn status(&self, memory: &Memory, gpu: &GpuMemory) -> serde_json::Value {
         let ledger = self.ledger();
         let in_use = match (&self.snapshots, self.policy.snapshot_limit()) {
             (Some(semaphore), Some(limit)) => limit - semaphore.available_permits(),
@@ -366,11 +372,12 @@ impl Budgets {
             "refused": self.refused.load(std::sync::atomic::Ordering::Relaxed),
             "focus_priority": self.policy.focus_priority,
             "memory": memory,
+            "gpu_memory": gpu,
         })
     }
 }
 
-/// Host memory as seen by admission. VRAM is not measured.
+/// Host memory as seen by admission. Device memory is [`GpuMemory`].
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Memory {
     pub available_mib: Option<u64>,
@@ -414,6 +421,101 @@ impl Memory {
                 self.reserve_mib
             ),
         ))
+    }
+}
+
+/// Device-local GPU memory as seen by admission of a new Vulkan session (lotus#46), from the
+/// running sessions' `status.gpu_memory` (CITnLO `ctr_worker/control.h` `GpuMemory`).
+///
+/// The headroom is `budget - usage` of the largest device-local heap. With
+/// `VK_EXT_memory_budget` the budget is what the driver lets this process allocate given every
+/// other process on the device (Vulkan specification, `VkPhysicalDeviceMemoryBudgetPropertiesEXT`),
+/// so it covers other GPU consumers; the smallest headroom over sessions is used. Without the
+/// extension VMA estimates the budget as 80 % of the heap from this process's own usage, which
+/// does not see other sessions or processes, so it is reported but never used to refuse.
+/// With no Vulkan session running there is nothing to measure and nothing is refused.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GpuMemory {
+    /// `VK_EXT_memory_budget`, `vma_estimate`, or null with no Vulkan session.
+    pub budget_source: Option<String>,
+    pub headroom_mib: Option<u64>,
+    /// Largest device-local high-water mark of one running session.
+    pub estimate_mib: Option<u64>,
+    pub reserve_mib: u64,
+    /// Failed Vulkan allocations over running sessions.
+    pub allocation_failures: u64,
+    /// A new Vulkan session would not fit: headroom below estimate plus reserve.
+    pub pressure: bool,
+}
+
+impl GpuMemory {
+    /// From the `gpu_memory` objects of running sessions.
+    #[must_use]
+    pub fn measure<'a>(
+        enabled: bool,
+        reserve_mib: u64,
+        sessions: impl IntoIterator<Item = &'a serde_json::Value>,
+    ) -> Self {
+        let mut gpu = Self {
+            reserve_mib,
+            ..Self::default()
+        };
+        let mut measured = false;
+        for status in sessions {
+            let source = status["budget_source"].as_str().unwrap_or("");
+            gpu.allocation_failures += status["allocation_failures"].as_u64().unwrap_or(0);
+            let extension = source == "VK_EXT_memory_budget";
+            if gpu.budget_source.is_none() || extension {
+                gpu.budget_source = Some(source.to_string());
+            }
+            let heaps: Vec<&serde_json::Value> = status["heaps"]
+                .as_array()
+                .map(|heaps| {
+                    heaps
+                        .iter()
+                        .filter(|heap| heap["device_local"] == true)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let high_water: u64 = heaps
+                .iter()
+                .filter_map(|heap| heap["block_bytes_high_water"].as_u64())
+                .sum();
+            gpu.estimate_mib = gpu.estimate_mib.max(Some(high_water >> 20));
+            let largest = heaps
+                .iter()
+                .max_by_key(|heap| heap["size"].as_u64().unwrap_or(0));
+            if let (true, Some(heap)) = (extension, largest) {
+                let headroom = heap["budget"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_sub(heap["usage"].as_u64().unwrap_or(0))
+                    >> 20;
+                gpu.headroom_mib = Some(gpu.headroom_mib.map_or(headroom, |h| h.min(headroom)));
+                measured = true;
+            }
+        }
+        gpu.pressure = enabled
+            && measured
+            && gpu
+                .headroom_mib
+                .zip(gpu.estimate_mib)
+                .is_some_and(|(headroom, estimate)| headroom < estimate + reserve_mib);
+        gpu
+    }
+
+    /// Why a new Vulkan session does not fit, with the numbers; None when it does.
+    #[must_use]
+    pub fn refusal(&self) -> Option<String> {
+        self.pressure.then(|| {
+            format!(
+                "GPU memory: {} MiB device-local headroom (VK_EXT_memory_budget), a Vulkan session \
+                 reached up to {} MiB and policy keeps {} MiB free (policy.gpu_reserve_mib)",
+                self.headroom_mib.unwrap_or(0),
+                self.estimate_mib.unwrap_or(0),
+                self.reserve_mib
+            )
+        })
     }
 }
 
@@ -540,7 +642,7 @@ mod tests {
                 .filter_map(|id| budgets.reserve(Tool::Rewind, id, true).ok())
                 .collect();
             assert_eq!(permits.len(), limit);
-            let status = budgets.status(&Memory::default());
+            let status = budgets.status(&Memory::default(), &GpuMemory::default());
             assert_eq!(
                 status["rewind"]["pending"].as_object().unwrap().len(),
                 limit
@@ -550,7 +652,7 @@ mod tests {
             permits.next().unwrap().commit(true);
             drop(permits);
             assert_eq!(active(&budgets, Tool::Rewind), vec!["s0".to_string()]);
-            let status = budgets.status(&Memory::default());
+            let status = budgets.status(&Memory::default(), &GpuMemory::default());
             assert!(status["rewind"]["pending"].as_object().unwrap().is_empty());
             // Freed slots are reusable; totals never exceed the limit.
             let again: Vec<_> = sessions[1..]
@@ -613,9 +715,51 @@ mod tests {
         assert!(refused.to_string().contains("fork"), "{refused}");
         drop(held);
         budgets.snapshot("fork").await.expect("released");
-        let status = budgets.status(&Memory::default());
+        let status = budgets.status(&Memory::default(), &GpuMemory::default());
         assert_eq!(status["refused"], 1);
         assert_eq!(status["snapshots"]["in_use"], 0);
+    }
+
+    fn gpu_status(
+        source: &str,
+        budget_mib: u64,
+        usage_mib: u64,
+        high_mib: u64,
+    ) -> serde_json::Value {
+        serde_json::json!({"budget_source": source, "allocation_failures": 1, "heaps": [
+            {"device_local": false, "size": 32u64 << 30, "budget": 1u64 << 30, "usage": 0,
+             "block_bytes_high_water": 1u64 << 30},
+            {"device_local": true, "size": 16u64 << 30, "budget": budget_mib << 20,
+             "usage": usage_mib << 20, "block_bytes_high_water": high_mib << 20}]})
+    }
+
+    #[test]
+    fn gpu_admission_uses_the_smallest_extension_headroom_and_largest_high_water() {
+        let a = gpu_status("VK_EXT_memory_budget", 3000, 1000, 900);
+        let b = gpu_status("VK_EXT_memory_budget", 2500, 1000, 400);
+        let gpu = GpuMemory::measure(true, 0, [&a, &b]);
+        assert_eq!(gpu.headroom_mib, Some(1500));
+        assert_eq!(gpu.estimate_mib, Some(900));
+        assert_eq!(gpu.allocation_failures, 2);
+        assert!(!gpu.pressure);
+        let reserved = GpuMemory::measure(true, 700, [&a, &b]);
+        let refusal = reserved.refusal().expect("pressure");
+        assert!(
+            refusal.contains("1500 MiB device-local headroom"),
+            "{refusal}"
+        );
+        assert!(GpuMemory::measure(false, 700, [&a, &b]).refusal().is_none());
+    }
+
+    #[test]
+    fn gpu_estimates_and_no_sessions_never_refuse() {
+        let estimate = gpu_status("vma_estimate", 100, 100, 900);
+        let gpu = GpuMemory::measure(true, 0, [&estimate]);
+        assert_eq!(gpu.budget_source.as_deref(), Some("vma_estimate"));
+        assert_eq!(gpu.headroom_mib, None);
+        assert!(!gpu.pressure);
+        let none = GpuMemory::measure(true, 0, []);
+        assert!(none.budget_source.is_none() && !none.pressure);
     }
 
     #[test]

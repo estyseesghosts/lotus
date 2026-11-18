@@ -17,6 +17,11 @@
 //! - `mock-exit-code`: on the next request, exit with that code without replying.
 //! - `mock-reject-debug`: `debug` answers `unsupported`; otherwise `rewind_configure` and
 //!   `gpu_configure` are accepted.
+//! - `debug` `settings_set` stores the value and `settings_list` returns every stored one
+//!   (`debug_api` is true in hello); `status.renderer` is the stored `graphics_api`.
+//! - `mock-gpu-memory`: its JSON is `status.gpu_memory` (lotus#46).
+//! - `mock-gpu-error`: on the next request, write `worker_gpu_error: <its JSON>` to stderr and
+//!   exit with 4, like `ExitOnGpuFailure` in `ctr_worker/control.h`.
 //! - every accepted `input` is appended to `inputs.jsonl` as `{"buttons","x","y","touch","owner"}`.
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -73,6 +78,7 @@ struct Machine {
     touch: bool,
     guest: Option<Guest>,
     captures: u64,
+    settings: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Machine {
@@ -96,7 +102,11 @@ impl Machine {
             "stop": self.stop_reason.map(|reason| serde_json::json!({"reason": reason})),
             "last_error": "", "input_owner": self.owner, "buttons": self.buttons,
             "touch_down": self.touch, "audio_samples": 0, "audio_dropped": 0,
-            "preview": "capture",
+            "preview": "capture", "debug_api": true,
+            "renderer": self.settings.get("graphics_api"),
+            "gpu_memory": std::fs::read_to_string(self.root.join("mock-gpu-memory"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()),
         })
     }
 
@@ -196,10 +206,24 @@ impl Machine {
             }
             Method::Debug => {
                 let command = request.params["operation"].as_str().unwrap_or("");
-                if self.root.join("mock-reject-debug").exists()
-                    || !matches!(command, "rewind_configure" | "gpu_configure")
-                {
+                if self.root.join("mock-reject-debug").exists() {
                     return (Status::Unsupported, serde_json::Value::Null);
+                }
+                match command {
+                    "rewind_configure" | "gpu_configure" => {}
+                    "settings_set" => {
+                        let name = request.params["name"].as_str().unwrap_or("").to_string();
+                        self.settings.insert(name, request.params["value"].clone());
+                    }
+                    "settings_list" => {
+                        let settings: Vec<_> = self
+                            .settings
+                            .iter()
+                            .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+                            .collect();
+                        return (Status::Ok, serde_json::json!({"settings": settings}));
+                    }
+                    _ => return (Status::Unsupported, serde_json::Value::Null),
                 }
                 (Status::Ok, serde_json::json!({"operation": command}))
             }
@@ -261,6 +285,7 @@ fn main() -> io::Result<()> {
         touch: false,
         guest: None,
         captures: 0,
+        settings: serde_json::Map::new(),
     };
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
@@ -277,6 +302,10 @@ fn main() -> io::Result<()> {
                 let _ = std::fs::remove_file(&stall);
                 std::thread::sleep(Duration::from_millis(ms));
             }
+        }
+        if let Ok(text) = std::fs::read_to_string(root.join("mock-gpu-error")) {
+            eprintln!("worker_gpu_error: {}", text.trim());
+            std::process::exit(4);
         }
         if let Ok(text) = std::fs::read_to_string(root.join("mock-exit-code")) {
             std::process::exit(text.trim().parse().unwrap_or(1));

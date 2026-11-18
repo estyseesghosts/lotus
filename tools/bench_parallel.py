@@ -20,8 +20,12 @@ with all sessions still running.
 
 Host throughput, guest progress and correctness are kept apart: fps and CPU are host measures;
 guest ticks are reported per session but never compared, because free-running sessions are not
-deterministic (docs/34, #29). Not measured: GPU memory and GPU wait time (no portable source
-here), allocation counts.
+deterministic (docs/34, #29). GPU memory (lotus#46) comes from each session's
+`telemetry.gpu_memory` (CITnLO VMA statistics): device-local live and high-water block bytes and
+failed allocations per session, and per trial the host policy's `gpu_memory` (smallest
+device-local headroom, budget source, pressure) before and after the window. Budgets are the
+driver's only with `VK_EXT_memory_budget`; otherwise the source reads `vma_estimate`. Not
+measured: GPU wait time, host allocation counts.
 
 Host policy (lotus#23): `--workload batch` (default) has no budgets, so every session may run
 the same expensive configuration and timings see no scheduling; `--workload interactive` applies
@@ -143,6 +147,21 @@ def tool(frontend, name, arguments):
     return result
 
 
+def gpu_policy(frontend):
+    return (tool(frontend, "lotus_status", {}).get("policy") or {}).get("gpu_memory")
+
+
+def device_local(gpu_memory):
+    """One session's device-local block bytes, high-water mark and failed allocations."""
+    if not gpu_memory:
+        return None
+    heaps = [heap for heap in gpu_memory["heaps"] if heap["device_local"]]
+    return dict(budget_source=gpu_memory["budget_source"],
+                allocation_failures=gpu_memory["allocation_failures"],
+                block_bytes=sum(heap["block_bytes"] for heap in heaps),
+                block_bytes_high_water=sum(heap["block_bytes_high_water"] for heap in heaps))
+
+
 def rows(frontend):
     return {row["id"]: row for row in tool(frontend, "lotus_status", {})["sessions"]}
 
@@ -213,6 +232,7 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
         if args.stall:
             processes[0].suspend(True)
         ram_before = available_ram()
+        gpu_before = gpu_policy(frontend)
         first = rows(frontend)
         usage_before = [p.usage() for p in processes]
         start = time.perf_counter()
@@ -248,6 +268,7 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
         last = rows(frontend)
         usage_after = [p.usage() for p in processes]
         ram_after = available_ram()
+        gpu_after = gpu_policy(frontend)
         if args.stall:
             processes[0].suspend(False)
 
@@ -264,6 +285,7 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
             results.append(dict(
                 session, stalled=sid in stalled, fps=(t1["frames"] - t0["frames"]) / elapsed,
                 state=t1["state"], renderer=t1["renderer"], renderer_fallback=t1["renderer_fallback"],
+                gpu_memory=device_local(t1.get("gpu_memory")),
                 command=percentiles(commands[sid]), input=percentiles(inputs[sid]),
                 errors=errors[sid][:4], error_count=len(errors[sid]), supervision=supervision,
                 usage=None if not (before and after) else dict(
@@ -280,6 +302,9 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                     fps_skew=max(running) / min(running) if running and min(running) > 0 else None,
                     min_fps=min(running) if running else None, status_poll=percentiles(status_seconds),
                     host_ram_available_before=ram_before, host_ram_available_after=ram_after,
+                    gpu_memory_before=gpu_before, gpu_memory_after=gpu_after,
+                    gpu_allocation_failures=sum((r["gpu_memory"] or {}).get("allocation_failures", 0)
+                                                for r in results),
                     shutdown_seconds=shutdown_seconds, probe_rounds=len(rounds),
                     probe_rounds_expected=int(elapsed / args.probe_interval) + 1, rounds=rounds)
     finally:
@@ -447,13 +472,13 @@ def write_summary(out, report, loads):
               "Host throughput (fps = presented guest frames per host second). Guest ticks are in report.json, "
               "per session, and are not comparable across free-running sessions.", "",
               "| worker | frontend | renderer | model | config | N | aggregate fps | per-session min / median / max | "
-              "skew | cmd p50 / p95 ms | input p95 ms | late polls | CPU s/s per worker | working set MiB | shutdown s |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+              "skew | cmd p50 / p95 ms | input p95 ms | late polls | CPU s/s per worker | working set MiB | GPU high-water MiB / failed allocs | shutdown s |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     points = []
     for t in report["trials"]:
         head = f"| {t['worker']} | {t['frontend']} | {t['renderer']} | {t['model']} | {t['config']} | {t['sessions_requested']} |"
         if t["status"] != "ok":
-            lines.append(head + f" {t['status']}: {t.get('error', '')} |" + " |" * 8)
+            lines.append(head + f" {t['status']}: {t.get('error', '')} |" + " |" * 9)
             continue
         live = [s for s in t["sessions"] if not (s["stalled"] or s["idle"])]
         fps = [s["fps"] for s in live]
@@ -466,7 +491,9 @@ def write_summary(out, report, loads):
                      f"{median([c['p50_ms'] for c in command]):.1f} / {max([c['p95_ms'] for c in command] or [float('nan')]):.1f} | "
                      f"{max(inputs or [float('nan')]):.1f} | {sum(s['supervision']['late_polls'] for s in live)} | "
                      f"{median([u['cpu_seconds'] / t['seconds'] for u in usage]):.2f} | "
-                     f"{median([u['working_set_bytes'] / 2**20 for u in usage]):.0f} | {t['shutdown_seconds']:.2f} |")
+                     f"{median([u['working_set_bytes'] / 2**20 for u in usage]):.0f} | "
+                     f"{max([s['gpu_memory']['block_bytes_high_water'] / 2**20 for s in live if s.get('gpu_memory')] or [float('nan')]):.0f}"
+                     f" / {t.get('gpu_allocation_failures', 0)} | {t['shutdown_seconds']:.2f} |")
         points.append((f"{t['worker']} {t['frontend']} {t['renderer']} {t['model']} {t['config']}",
                        t["sessions_requested"], t["aggregate_fps"]))
     if report["references"]:

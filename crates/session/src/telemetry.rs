@@ -82,6 +82,10 @@ pub struct Telemetry {
     pub transport: Option<Value>,
     /// CITnLO `status.events`: subscribed and kept event categories, latest sequence, losses.
     pub events: Option<Value>,
+    /// CITnLO `status.gpu_memory` (lotus#46): `budget_source`, `allocation_failures` and per
+    /// heap `device_local`, `size`, `budget`, `usage`, `block_bytes`,
+    /// `block_bytes_high_water`, `allocation_bytes`. Null without a Vulkan renderer.
+    pub gpu_memory: Option<Value>,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -123,6 +127,7 @@ impl Telemetry {
             policy_note: String::new(),
             transport: None,
             events: None,
+            gpu_memory: None,
             started: Instant::now(),
             window: None,
         }
@@ -138,6 +143,7 @@ impl Telemetry {
         self.audio_dropped = status["audio_dropped"].as_u64().unwrap_or(0);
         self.transport = status.get("transport").cloned();
         self.events = status.get("events").cloned();
+        self.gpu_memory = status.get("gpu_memory").filter(|v| !v.is_null()).cloned();
         self.input_owner = status["input_owner"].as_str().unwrap_or("").to_string();
         self.buttons = status["buttons"]
             .as_u64()

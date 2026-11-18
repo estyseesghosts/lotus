@@ -23,6 +23,10 @@ impl Drop for Host {
 }
 
 fn host(name: &str, sessions: usize) -> Host {
+    host_with(name, sessions, |_| {})
+}
+
+fn host_with(name: &str, sessions: usize, configure: impl FnOnce(&mut HostConfig)) -> Host {
     let base = std::env::temp_dir().join(format!("lotus-sup-{name}-{}", SessionUuid::generate()));
     std::fs::create_dir_all(&base).expect("base");
     let content = base.join("demo.3dsx");
@@ -31,6 +35,7 @@ fn host(name: &str, sessions: usize) -> Host {
     config.allow_control = true;
     config.max_sessions = sessions;
     config.assets.insert("demo".into(), content);
+    configure(&mut config);
     Host {
         host: Arc::new(Supervisor::new(config).expect("host")),
         base,
@@ -528,5 +533,149 @@ async fn a_crashed_worker_reports_its_logged_cause() {
     assert_eq!(
         telemetry(&fixture.host, &ids[2]).failure.unwrap()["cause"],
         "abort"
+    );
+}
+
+/// `status.gpu_memory` of one Vulkan session: one 16 GiB device-local heap with
+/// `VK_EXT_memory_budget`, `headroom_mib` left and a `high_water_mib` peak.
+fn gpu_memory(headroom_mib: u64, high_water_mib: u64) -> String {
+    let usage = 2000u64 << 20;
+    serde_json::json!({"budget_source": "VK_EXT_memory_budget", "allocation_failures": 0,
+        "heaps": [{"device_local": true, "size": 16u64 << 30, "budget": usage + (headroom_mib << 20),
+            "usage": usage, "block_bytes": high_water_mib << 20,
+            "block_bytes_high_water": high_water_mib << 20, "allocation_bytes": 0}]})
+    .to_string()
+}
+
+async fn until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(Instant::now() < deadline, "{what}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// lotus#46: with too little device-local headroom for the largest running session's peak, a
+/// session that only prefers Vulkan starts on software with the reason, and an explicit
+/// Vulkan profile is refused with the numbers. Running sessions are untouched.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn gpu_pressure_starts_preferred_vulkan_on_software_and_refuses_explicit() {
+    let fixture = host("gpu-admit", 3);
+    let ids = fixture.running(2).await;
+    until("renderer", || {
+        !telemetry(&fixture.host, &ids[0]).renderer.is_empty()
+    })
+    .await;
+    assert_eq!(telemetry(&fixture.host, &ids[0]).renderer, "vulkan");
+    for id in &ids {
+        std::fs::write(
+            fixture.root(id).join("mock-gpu-memory"),
+            gpu_memory(500, 900),
+        )
+        .expect("gpu");
+    }
+    until("gpu telemetry", || {
+        ids.iter()
+            .all(|id| telemetry(&fixture.host, id).gpu_memory.is_some())
+    })
+    .await;
+    let policy = fixture.host.policy_status();
+    assert_eq!(policy["gpu_memory"]["headroom_mib"], 500, "{policy}");
+    assert_eq!(policy["gpu_memory"]["estimate_mib"], 900);
+    assert_eq!(policy["gpu_memory"]["pressure"], true);
+    let third = fixture
+        .host
+        .create(
+            SessionKind::Secondary { parent: None },
+            Some("demo"),
+            Actor::Host,
+        )
+        .await
+        .expect("software session");
+    until("renderer", || {
+        !telemetry(&fixture.host, &third.id).renderer.is_empty()
+    })
+    .await;
+    let third = telemetry(&fixture.host, &third.id);
+    assert_eq!(third.renderer, "software");
+    assert!(
+        third
+            .renderer_fallback
+            .contains("500 MiB device-local headroom"),
+        "{}",
+        third.renderer_fallback
+    );
+
+    let explicit = host_with("gpu-refuse", 3, |config| {
+        config.profile.insert(
+            "graphics_api".into(),
+            lotus_protocol::debug::SettingValue::Integer(2),
+        );
+    });
+    let ids = explicit.running(2).await;
+    std::fs::write(
+        explicit.root(&ids[0]).join("mock-gpu-memory"),
+        gpu_memory(500, 900),
+    )
+    .expect("gpu");
+    until("gpu telemetry", || {
+        telemetry(&explicit.host, &ids[0]).gpu_memory.is_some()
+    })
+    .await;
+    let error = explicit
+        .host
+        .create(
+            SessionKind::Secondary { parent: None },
+            Some("demo"),
+            Actor::Host,
+        )
+        .await
+        .expect_err("refused");
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+    assert!(
+        error.to_string().contains("reached up to 900 MiB"),
+        "{error}"
+    );
+    let before = telemetry(&explicit.host, &ids[1]).frames;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        telemetry(&explicit.host, &ids[1]).frames > before,
+        "sibling progresses"
+    );
+}
+
+/// lotus#46: a worker that reports `worker_gpu_error` and exits 4 fails with the typed cause
+/// and the report, while its sibling keeps running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_worker_gpu_error_is_typed_and_isolated() {
+    let fixture = host("gpu-error", 2);
+    let ids = fixture.running(2).await;
+    let report = serde_json::json!({"cause": "gpu_out_of_memory", "vk_result": -2,
+        "vk_result_name": "ErrorOutOfDeviceMemory", "object": "image", "frame": 40,
+        "gpu_memory": serde_json::from_str::<serde_json::Value>(&gpu_memory(0, 900)).unwrap()});
+    std::fs::write(
+        fixture.root(&ids[0]).join("mock-gpu-error"),
+        report.to_string(),
+    )
+    .expect("error");
+    until("failure", || {
+        telemetry(&fixture.host, &ids[0]).failure.is_some()
+    })
+    .await;
+    let failure = telemetry(&fixture.host, &ids[0]).failure.unwrap();
+    assert_eq!(failure["cause"], "vulkan_out_of_memory", "{failure}");
+    assert_eq!(failure["exit_code"], 4);
+    assert_eq!(failure["renderer"], true);
+    assert_eq!(failure["gpu"]["object"], "image");
+    assert_eq!(failure["gpu"]["frame"], 40);
+    assert!(failure["summary"]
+        .as_str()
+        .unwrap()
+        .contains("ErrorOutOfDeviceMemory (-2) creating image"));
+    let before = telemetry(&fixture.host, &ids[1]).frames;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        telemetry(&fixture.host, &ids[1]).frames > before,
+        "sibling progresses"
     );
 }

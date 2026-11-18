@@ -30,6 +30,8 @@ pub enum Cause {
     VulkanOutOfMemory,
     /// `VK_ERROR_DEVICE_LOST` (-4).
     VulkanDeviceLost,
+    /// Another Vulkan error the worker reported as `worker_gpu_error` (cause `gpu_error`).
+    VulkanError,
     /// The worker logged a critical error, panicked or exited nonzero on its own.
     Abort,
     /// The reply broke the control protocol.
@@ -45,6 +47,7 @@ impl Cause {
         match self {
             Self::VulkanOutOfMemory => "vulkan_out_of_memory",
             Self::VulkanDeviceLost => "vulkan_device_lost",
+            Self::VulkanError => "vulkan_error",
             Self::Abort => "abort",
             Self::MalformedReply => "malformed_reply",
             Self::Timeout => "timeout",
@@ -55,7 +58,10 @@ impl Cause {
     /// Known renderer failure, as opposed to an unexplained disconnect.
     #[must_use]
     pub fn is_renderer(self) -> bool {
-        matches!(self, Self::VulkanOutOfMemory | Self::VulkanDeviceLost)
+        matches!(
+            self,
+            Self::VulkanOutOfMemory | Self::VulkanDeviceLost | Self::VulkanError
+        )
     }
 }
 
@@ -71,6 +77,9 @@ pub struct FailureReport {
     pub connection: String,
     pub last_method: Option<String>,
     pub last_request_id: u64,
+    /// The worker's `worker_gpu_error` report (lotus#46): `cause`, `vk_result`,
+    /// `vk_result_name`, `object`, `gpu_memory` at the failure, `frame` when known.
+    pub gpu: Option<serde_json::Value>,
     pub epoch: u64,
     pub host_time_unix_ms: u64,
     pub stderr_tail: String,
@@ -120,7 +129,39 @@ pub fn tail(path: &Path) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Cause and marker line from the log tails, the exit code and the transport error.
+/// Prefix of the stderr line a CITnLO worker writes before exiting on a Vulkan failure
+/// (`ctr_worker/control.h` `ReportGpuFailure`), followed by one JSON object.
+pub const GPU_ERROR_PREFIX: &str = "worker_gpu_error: ";
+
+/// The last `worker_gpu_error` report in `stderr`, if one parses.
+#[must_use]
+pub fn gpu_error(stderr: &str) -> Option<serde_json::Value> {
+    stderr.lines().rev().find_map(|line| {
+        let json = line.trim().strip_prefix(GPU_ERROR_PREFIX)?;
+        serde_json::from_str::<serde_json::Value>(json)
+            .ok()
+            .filter(serde_json::Value::is_object)
+    })
+}
+
+/// Cause and marker for a `worker_gpu_error` report: the failed object and Vulkan result.
+fn classify_gpu(report: &serde_json::Value) -> (Cause, String) {
+    let cause = match report["cause"].as_str() {
+        Some("gpu_out_of_memory") => Cause::VulkanOutOfMemory,
+        Some("gpu_device_lost") => Cause::VulkanDeviceLost,
+        _ => Cause::VulkanError,
+    };
+    let marker = format!(
+        "{} ({}) creating {}",
+        report["vk_result_name"].as_str().unwrap_or("?"),
+        report["vk_result"].as_i64().unwrap_or(0),
+        report["object"].as_str().unwrap_or("?"),
+    );
+    (cause, marker)
+}
+
+/// Cause and marker line from the log tails, the exit code and the transport error. A
+/// `worker_gpu_error` report on stderr takes precedence over log lines.
 #[must_use]
 pub fn classify(
     log: &str,
@@ -128,6 +169,10 @@ pub fn classify(
     exit_code: Option<i32>,
     transport: io::ErrorKind,
 ) -> (Cause, Option<String>) {
+    if let Some(report) = gpu_error(stderr) {
+        let (cause, line) = classify_gpu(&report);
+        return (cause, Some(marker(&line)));
+    }
     let lines = || log.lines().chain(stderr.lines());
     // Azahar's Vulkan texture runtime logs `Failed allocating image with error -2`
     // (vk_texture_runtime.cpp, LOG_CRITICAL before UNREACHABLE).
@@ -204,6 +249,37 @@ mod tests {
         assert!(marker
             .unwrap()
             .contains("Failed allocating image with error -2"));
+    }
+
+    /// Shape of the line `ReportGpuFailure` wrote in the injected sweep (lotus#46).
+    const GPU: &str = "worker_gpu_error: {\"cause\":\"gpu_out_of_memory\",\"frame\":312,\"gpu_memory\":{\"allocation_failures\":1,\"budget_source\":\"VK_EXT_memory_budget\",\"heaps\":[]},\"object\":\"image\",\"vk_result\":-2,\"vk_result_name\":\"ErrorOutOfDeviceMemory\"}\n";
+
+    #[test]
+    fn the_worker_gpu_report_is_parsed_and_wins_over_log_lines() {
+        let critical = "[1.0] Render.Vulkan <Critical> something\n";
+        let (cause, marker) = classify(critical, GPU, Some(4), io::ErrorKind::BrokenPipe);
+        assert_eq!(cause, Cause::VulkanOutOfMemory);
+        assert_eq!(
+            marker.as_deref(),
+            Some("ErrorOutOfDeviceMemory (-2) creating image")
+        );
+        let report = gpu_error(GPU).unwrap();
+        assert_eq!(report["frame"], 312);
+        assert_eq!(
+            report["gpu_memory"]["budget_source"],
+            "VK_EXT_memory_budget"
+        );
+        let lost = GPU.replace("gpu_out_of_memory", "gpu_device_lost");
+        assert_eq!(
+            classify("", &lost, Some(4), io::ErrorKind::BrokenPipe).0,
+            Cause::VulkanDeviceLost
+        );
+        let other = GPU.replace("gpu_out_of_memory", "gpu_error");
+        assert!(classify("", &other, Some(4), io::ErrorKind::BrokenPipe)
+            .0
+            .is_renderer());
+        // A truncated line is ignored, not misparsed.
+        assert!(gpu_error("worker_gpu_error: {\"cause\":").is_none());
     }
 
     #[test]
@@ -297,6 +373,7 @@ mod tests {
             connection: String::new(),
             last_method: Some("Status".into()),
             last_request_id: 7,
+            gpu: None,
             epoch: 1,
             host_time_unix_ms: 0,
             stderr_tail: String::new(),

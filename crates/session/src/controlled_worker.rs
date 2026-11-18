@@ -278,6 +278,7 @@ impl ControlledWorker {
             connection: self.session.clone(),
             last_method: self.last_method.map(|method| format!("{method:?}")),
             last_request_id: self.next_request.saturating_sub(1),
+            gpu: crate::failure::gpu_error(&stderr_tail),
             epoch: self.epoch,
             host_time_unix_ms: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
