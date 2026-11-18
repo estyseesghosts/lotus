@@ -140,3 +140,150 @@ fn a_stalled_selected_worker_never_freezes_the_window_or_its_siblings() {
     drop(controller);
     let _ = std::fs::remove_dir_all(base);
 }
+
+fn root(base: &std::path::Path, id: &str) -> PathBuf {
+    base.join("store")
+        .canonicalize()
+        .expect("store")
+        .join("scratch")
+        .join(id)
+}
+
+/// lotus#45: with A's preview and inspector exchanges stalled, B's first preview and
+/// inspection arrive without waiting for A, and A's late replies never appear as B's.
+#[test]
+fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
+    let base = std::env::temp_dir().join(format!("lotus-hol-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let controller = DesktopController::start(config, McpMode::Off).expect("controller");
+    for _ in 0..2 {
+        controller
+            .commands
+            .send(Command::Create {
+                kind: SessionKind::Secondary { parent: None },
+                asset: Some("demo".into()),
+            })
+            .expect("create");
+    }
+    wait(&controller, "two playing sessions", |update| {
+        update.sessions.len() == 2 && update.sessions.iter().all(|s| s.telemetry.playing)
+    });
+    let ids: Vec<String> = {
+        let update = controller.latest.lock().expect("snapshot");
+        update.sessions.iter().map(|s| s.info.id.clone()).collect()
+    };
+    let (a, b) = (ids[0].clone(), ids[1].clone());
+    controller.inspector.store(true, Ordering::Release);
+    controller
+        .commands
+        .send(Command::Select(a.clone()))
+        .expect("select a");
+    wait(&controller, "a live preview of A", |update| {
+        update
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.session == a)
+    });
+    // A's next capture stalls 5 s; its preview task holds the exchange.
+    std::fs::write(root(&base, &a).join("mock-stall-ms"), "5000 capture").expect("stall");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !controller.host().frontend_metrics()["pending"]
+        .as_array()
+        .is_some_and(|pending| {
+            pending.iter().any(|op| {
+                op["kind"] == "preview"
+                    && op["session"] == a.as_str()
+                    && op["age_ms"].as_f64().unwrap_or(0.0) > 200.0
+            })
+        })
+    {
+        assert!(
+            Instant::now() < deadline,
+            "A's preview never stalled: {}",
+            controller.host().frontend_metrics()
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let started = Instant::now();
+    controller
+        .commands
+        .send(Command::Select(b.clone()))
+        .expect("select b");
+    wait(&controller, "B's first preview", |update| {
+        update
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.session == b)
+    });
+    let preview_latency = started.elapsed();
+    wait(&controller, "B's first inspection", |update| {
+        update
+            .inspection
+            .as_ref()
+            .is_some_and(|(session, _, _)| *session == b)
+    });
+    let inspection_latency = started.elapsed();
+    eprintln!(
+        "B preview {preview_latency:?}, inspection {inspection_latency:?}; {}",
+        controller.host().frontend_metrics()
+    );
+    // A 5 s stall on A; a loop awaiting A would take ~4.8 s here.
+    assert!(
+        preview_latency < Duration::from_millis(1000),
+        "{preview_latency:?}"
+    );
+    assert!(
+        inspection_latency < Duration::from_millis(1000),
+        "{inspection_latency:?}"
+    );
+    // A -> B -> A -> B while A is still stalled: never a second exchange of a kind on A.
+    for target in [&a, &b, &a, &b] {
+        controller
+            .commands
+            .send(Command::Select(target.clone()))
+            .expect("select");
+        std::thread::sleep(Duration::from_millis(60));
+        let metrics = controller.host().frontend_metrics();
+        for kind in ["preview", "inspection", "registers"] {
+            let on_a = metrics["pending"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|op| op["kind"] == kind && op["session"] == a.as_str())
+                .count();
+            assert!(on_a <= 1, "{kind}: {metrics}");
+        }
+    }
+    // After A answers, its result is dropped: everything shown is B's.
+    std::thread::sleep(Duration::from_millis(5500));
+    {
+        let update = controller.latest.lock().expect("snapshot");
+        assert_eq!(update.selected, b);
+        if let Some(preview) = &update.preview {
+            assert_eq!(preview.session, b, "A's late preview shown as B");
+        }
+        if let Some((session, _, _)) = &update.inspection {
+            assert_eq!(session, &b);
+        }
+    }
+    let metrics = controller.host().frontend_metrics();
+    assert!(
+        metrics["stale_dropped"].as_u64().unwrap_or(0) >= 1,
+        "{metrics}"
+    );
+    assert!(
+        metrics["pending"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|op| op["age_ms"].as_f64().unwrap_or(0.0) < 2000.0),
+        "leaked operation: {metrics}"
+    );
+    drop(controller);
+    let _ = std::fs::remove_dir_all(base);
+}

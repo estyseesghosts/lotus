@@ -249,7 +249,8 @@ pub struct Supervisor {
     /// Content approved interactively by the desktop user.
     local_assets: Mutex<BTreeMap<String, PathBuf>>,
     focus_request: Mutex<Option<String>>,
-    audio_focus: tokio::sync::Mutex<Option<String>>,
+    /// Session holding exclusive audio focus, by the latest request.
+    audio_focus: Mutex<Option<String>>,
     /// Set by [`Supervisor::close`]; refuses new sessions.
     closing: AtomicBool,
     /// Loop cadence and latency reported by a windowed frontend; null when headless.
@@ -307,7 +308,7 @@ impl Supervisor {
             artifacts: Mutex::new(artifacts),
             local_assets: Mutex::default(),
             focus_request: Mutex::default(),
-            audio_focus: tokio::sync::Mutex::default(),
+            audio_focus: Mutex::default(),
             closing: AtomicBool::new(false),
             frontend_metrics: Mutex::default(),
             shader_publish: tokio::sync::Mutex::default(),
@@ -1305,29 +1306,47 @@ impl Supervisor {
         use lotus_protocol::debug::DebugCommand;
         self.require_control()?;
         let handle = self.handle(id)?;
-        let mut focus = self.audio_focus.lock().await;
-        if enabled && focus.as_deref() != Some(id) {
-            if let Some(previous) = focus.take() {
-                if let Ok(old) = self.handle(&previous) {
-                    old.native
-                        .lock()
-                        .await
-                        .debug(&DebugCommand::AudioFocus { enabled: false })
-                        .await?;
+        // The latest request owns focus at once (#45). Exchanges on one worker are FIFO on
+        // its session lock, so a later hand-off away from `id` is applied after this one.
+        // The previous holder is muted concurrently: a stalled worker delays only its own
+        // mute, and may keep audio until it answers.
+        let previous = {
+            let mut focus = lock(&self.audio_focus);
+            if enabled {
+                focus.replace(id.to_string()).filter(|old| old != id)
+            } else {
+                if focus.as_deref() == Some(id) {
+                    *focus = None;
                 }
+                None
+            }
+        };
+        let mute = async {
+            let Some(old) = previous.and_then(|previous| self.handle(&previous).ok()) else {
+                return Ok(serde_json::Value::Null);
+            };
+            let mut native = old.native.lock().await;
+            native
+                .debug(&DebugCommand::AudioFocus { enabled: false })
+                .await
+        };
+        let apply = async {
+            handle
+                .native
+                .lock()
+                .await
+                .debug(&DebugCommand::AudioFocus { enabled })
+                .await
+        };
+        let (muted, result) = tokio::join!(mute, apply);
+        if result.is_err() && enabled {
+            let mut focus = lock(&self.audio_focus);
+            if focus.as_deref() == Some(id) {
+                *focus = None;
             }
         }
-        let result = handle
-            .native
-            .lock()
-            .await
-            .debug(&DebugCommand::AudioFocus { enabled })
-            .await?;
-        if enabled {
-            *focus = Some(id.to_string());
-        } else if focus.as_deref() == Some(id) {
-            *focus = None;
-        }
+        let result = result?;
+        muted?;
         Ok(result)
     }
 

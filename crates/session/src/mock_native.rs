@@ -8,9 +8,12 @@
 //! `sdmc/b.bin` with the same counter while running, so any instant on disk has `a == b` or
 //! `a == b + 1`; pausing joins it.
 //! Fault injection, all through files in `LOTUS_STORAGE_ROOT` so a test can address one worker:
-//! - `mock-stall-ms`: before the next reply, sleep that many milliseconds (file is consumed).
+//! - `mock-stall-ms`: before the next reply, sleep that many milliseconds (file is consumed);
+//!   `<ms> <method>` (e.g. `5000 capture`) stalls only the next reply to that method.
 //! - `mock-async-pending`: `flush_storage` answers `async_fs_pending` that many times.
 //! - `mock-no-flush`: `flush_storage` is unsupported, like a worker that predates it.
+//! - `capture` writes both screens to `frames/<screen>-<sequence % 3>.bgra` (LTRF header,
+//!   solid colour by frame) like the native ring files.
 //! - `mock-exit-code`: on the next request, exit with that code without replying.
 //! - `mock-reject-debug`: `debug` answers `unsupported`; otherwise `rewind_configure` and
 //!   `gpu_configure` are accepted.
@@ -69,6 +72,7 @@ struct Machine {
     buttons: u64,
     touch: bool,
     guest: Option<Guest>,
+    captures: u64,
 }
 
 impl Machine {
@@ -199,6 +203,34 @@ impl Machine {
                 }
                 (Status::Ok, serde_json::json!({"operation": command}))
             }
+            Method::Capture => {
+                self.advance();
+                self.captures += 1;
+                let sequence = self.captures;
+                let mut frames = Vec::new();
+                for (screen, width) in [("top", 400u32), ("bottom", 320u32)] {
+                    let height = 240u32;
+                    let bytes = (width * height * 4) as usize;
+                    let path = format!("frames/{screen}-{}.bgra", sequence % 3);
+                    let mut data = Vec::with_capacity(bytes + 32);
+                    data.extend_from_slice(b"LTRF");
+                    data.extend_from_slice(&1u32.to_le_bytes());
+                    data.extend_from_slice(&self.epoch.to_le_bytes());
+                    data.extend_from_slice(&sequence.to_le_bytes());
+                    data.extend_from_slice(&width.to_le_bytes());
+                    data.extend_from_slice(&height.to_le_bytes());
+                    data.resize(bytes + 32, (self.frames % 256) as u8);
+                    let _ = std::fs::create_dir_all(self.root.join("frames"));
+                    if std::fs::write(self.root.join(&path), &data).is_err() {
+                        return (Status::Unsupported, serde_json::Value::Null);
+                    }
+                    frames.push(serde_json::json!({"screen": screen, "path": path,
+                        "epoch": self.epoch, "sequence": sequence, "slot": sequence % 3,
+                        "width": width, "height": height, "stride": width * 4,
+                        "format": "bgra8", "orientation": "top_left_row_major", "bytes": bytes}));
+                }
+                (Status::Ok, serde_json::json!({"frames": frames}))
+            }
             Method::Registers => (
                 Status::Ok,
                 serde_json::json!({"core": request.params["core"], "guest_ticks": self.frames * 4_481_136}),
@@ -228,6 +260,7 @@ fn main() -> io::Result<()> {
         buttons: 0,
         touch: false,
         guest: None,
+        captures: 0,
     };
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
@@ -235,8 +268,15 @@ fn main() -> io::Result<()> {
         let request: Request = control::read(&mut input)?;
         let stall = root.join("mock-stall-ms");
         if let Ok(text) = std::fs::read_to_string(&stall) {
-            let _ = std::fs::remove_file(&stall);
-            std::thread::sleep(Duration::from_millis(text.trim().parse().unwrap_or(0)));
+            // `<ms>` stalls the next reply; `<ms> <method>` the next reply to that method.
+            let mut words = text.split_whitespace();
+            let ms = words.next().and_then(|ms| ms.parse().ok()).unwrap_or(0);
+            let method = words.next();
+            let name = serde_json::to_value(request.method).unwrap_or_default();
+            if method.is_none_or(|method| name == method) {
+                let _ = std::fs::remove_file(&stall);
+                std::thread::sleep(Duration::from_millis(ms));
+            }
         }
         if let Ok(text) = std::fs::read_to_string(root.join("mock-exit-code")) {
             std::process::exit(text.trim().parse().unwrap_or(1));

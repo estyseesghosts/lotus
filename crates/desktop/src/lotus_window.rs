@@ -567,7 +567,7 @@ impl LotusWindow {
                 Ok(None) => "no failure recorded for this session".to_string(),
                 Err(error) => format!("failure report unavailable: {error}"),
             };
-            let _ = cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)));
+            cx.update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(text)));
         })
         .detach();
     }

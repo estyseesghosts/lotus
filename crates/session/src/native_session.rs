@@ -424,7 +424,10 @@ impl NativeSession {
     /// with no frames yet (an empty list).
     pub async fn preview(&mut self) -> io::Result<(Vec<Frame>, Option<u64>)> {
         if !self.shared_preview {
-            return Ok((self.capture().await?, None));
+            // An explicit capture is always a new, exact frame.
+            let frames = self.capture().await?;
+            self.preview_metrics.fresh = true;
+            return Ok((frames, None));
         }
         let data = self.operation(Method::Preview, Value::Null).await?;
         let reply: crate::preview_ring::PreviewReply =

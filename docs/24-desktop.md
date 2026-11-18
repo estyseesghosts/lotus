@@ -23,6 +23,13 @@ requests, each one at a time:
 - **Audio focus**, which follows the selection, latest selection wins, and
   retries a failed hand-off every second.
 
+Each request runs as its own task, with at most one per operation and session
+in flight (lotus#45). A worker stalled on the previous selection keeps its
+exchange, and the newly selected session's first preview, inspection and audio
+hand-off start on the next tick. A tick that finds the slot taken is counted as
+`saturated`. `frontend_metrics.pending` lists every operation in flight with
+its kind, session and age. Audio focus moves to the latest request at once; the
+previous holder is muted concurrently and may keep audio until its worker answers.
 An exchange in flight is never cancelled, since dropping it would leave its
 reply on the pipe. Each result carries the selection generation it started
 with and is discarded if the selection, panel or epoch changed meanwhile
@@ -32,7 +39,10 @@ Loop interval and per-operation latency are published as `frontend_metrics`
 in `lotus_status`. `tests/responsive_controller.rs` stalls the selected mock
 worker for 4 s: switching to and pausing its sibling completes within 500 ms,
 publication continues at about 33 ms, and the stalled worker's late inspector
-result is dropped (**verified compiled**, mock workers).
+result is dropped (**verified compiled**, mock workers). A second test stalls only A's capture for 5 s:
+B's first preview and inspection arrive in about 70 ms, no kind ever has two
+exchanges on A through A→B→A→B switching, and A's late frame is dropped
+(**verified**, mock workers).
 
 Only the selected session is previewed; the latest screen
 pair replaces the previous one, and replaced images are dropped from GPUI's

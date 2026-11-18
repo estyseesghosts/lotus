@@ -3,7 +3,9 @@
 //! A background thread runs a Tokio runtime. Its main loop only drains UI
 //! commands (each its own task) and publishes state every 33 ms; it never awaits
 //! a worker. The selected session's preview, inspector polling and audio focus
-//! run as separate tasks whose stale results are dropped (#21). Gauges,
+//! run as separate tasks whose stale results are dropped (#21), with at most one
+//! request per operation and session in flight, so a stalled worker never delays
+//! another session's (#45). Gauges,
 //! continuous running and live input belong to each session's own tasks in the
 //! supervisor; the window submits input without waiting. With [`McpMode::Stdio`] the same runtime also serves the
 //! MCP tools over stdio against the same supervisor, so an agent and the person
@@ -166,6 +168,25 @@ pub struct LoopMetrics {
     pub audio_focus: OperationStats,
     /// Results discarded because the selection, panel or epoch changed meanwhile.
     pub stale_dropped: u64,
+    /// Requests not started because the same operation on that session was still in flight.
+    pub saturated: u64,
+    /// Operations in flight now, with their age.
+    pub pending: Vec<PendingOperation>,
+}
+
+/// One outstanding desktop worker operation.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingOperation {
+    pub kind: &'static str,
+    pub session: String,
+    pub age_ms: f64,
+}
+
+/// Inspector refresh state, updated by the requests' own tasks.
+struct InspectorKeys {
+    registers: Option<(String, u64, u64)>,
+    inspection: Option<(String, Panel, u32, (u64, u64))>,
+    inspected_at: Instant,
 }
 
 impl DesktopController {
@@ -193,6 +214,7 @@ impl DesktopController {
             selected: Arc::new(tokio::sync::watch::channel(String::new()).0),
             generation: Arc::new(AtomicU64::new(0)),
             in_flight: Arc::default(),
+            preview_sequence: Arc::default(),
             metrics: Arc::default(),
         };
         let thread = std::thread::Builder::new()
@@ -250,8 +272,10 @@ struct Loops {
     selected: Arc<tokio::sync::watch::Sender<String>>,
     /// Increments on every selection change; results carry the value they started with.
     generation: Arc<AtomicU64>,
-    /// Operation kind -> (session, start), for [`Update::waiting`].
-    in_flight: Arc<Mutex<BTreeMap<&'static str, (String, Instant)>>>,
+    /// (operation kind, session) -> start, at most one each; for [`Update::waiting`].
+    in_flight: Arc<Mutex<BTreeMap<(&'static str, String), Instant>>>,
+    /// Sequence of published previews.
+    preview_sequence: Arc<AtomicU64>,
     metrics: Arc<Mutex<LoopMetrics>>,
 }
 
@@ -332,6 +356,7 @@ impl Loops {
                 metrics.ticks += 1;
                 metrics.tick_interval_ms = interval;
                 metrics.tick_interval_max_ms = metrics.tick_interval_max_ms.max(interval);
+                metrics.pending = self.pending_operations();
                 self.host
                     .set_frontend_metrics(serde_json::to_value(&*metrics).unwrap_or_default());
             }
@@ -348,15 +373,42 @@ impl Loops {
     fn waiting(&self) -> Vec<String> {
         lock(&self.in_flight)
             .iter()
-            .filter(|(_, (_, started))| started.elapsed() >= SLOW)
-            .map(|(kind, (session, started))| {
+            .filter(|(_, started)| started.elapsed() >= SLOW)
+            .map(|((kind, session), started)| {
                 let short = session.get(..8).unwrap_or(session);
                 format!("{kind} on {short} {:.1} s", started.elapsed().as_secs_f64())
             })
             .collect()
     }
 
-    /// Run one worker operation, recording its host latency and making it visible while slow.
+    /// Every outstanding desktop operation with its age, for `frontend_metrics.pending`.
+    fn pending_operations(&self) -> Vec<PendingOperation> {
+        lock(&self.in_flight)
+            .iter()
+            .map(|((kind, session), started)| PendingOperation {
+                kind,
+                session: session.clone(),
+                age_ms: started.elapsed().as_secs_f64() * 1e3,
+            })
+            .collect()
+    }
+
+    /// Claim the one slot for `kind` on `session`. False while an earlier request of that
+    /// kind on that session is still in flight (counted as saturated).
+    fn begin(&self, kind: &'static str, session: &str) -> bool {
+        let mut in_flight = lock(&self.in_flight);
+        let key = (kind, session.to_string());
+        if in_flight.contains_key(&key) {
+            drop(in_flight);
+            lock(&self.metrics).saturated += 1;
+            return false;
+        }
+        in_flight.insert(key, Instant::now());
+        true
+    }
+
+    /// Run one worker operation claimed with [`Self::begin`], recording its host latency.
+    /// The slot is released when the operation completes, however long the worker takes.
     async fn timed<T>(
         &self,
         kind: &'static str,
@@ -364,9 +416,8 @@ impl Loops {
         operation: impl std::future::Future<Output = T>,
     ) -> T {
         let started = Instant::now();
-        lock(&self.in_flight).insert(kind, (session.to_string(), started));
         let output = operation.await;
-        lock(&self.in_flight).remove(kind);
+        lock(&self.in_flight).remove(&(kind, session.to_string()));
         let ms = started.elapsed().as_secs_f64() * 1e3;
         let mut metrics = lock(&self.metrics);
         let stats = match kind {
@@ -391,12 +442,13 @@ impl Loops {
         current
     }
 
-    /// Live screens of the selected session only. An exchange already in flight is never
-    /// cancelled (dropping it would leave its reply on the pipe); a result for a session or
-    /// epoch that is no longer shown is discarded instead.
+    /// Live screens of the selected session only. Each request runs in its own task, at
+    /// most one per session (#45): a stalled worker keeps its own exchange, which is never
+    /// cancelled (dropping it would leave its reply on the pipe), while a newly selected
+    /// session's first request starts on the next tick. Results for a session, generation
+    /// or epoch that is no longer shown are discarded. Unselected sessions get no requests.
     async fn preview_loop(self) {
         let mut previewed = String::new();
-        let mut sequence = 0u64;
         let mut ticker = tick();
         loop {
             ticker.tick().await;
@@ -410,36 +462,46 @@ impl Loops {
                 self.host.forget_preview(&selected);
                 previewed.clone_from(&selected);
             }
-            let Some(frames) = self
-                .timed("preview", &selected, self.host.preview(&selected))
-                .await
-            else {
-                continue;
-            };
-            let epoch = frames.first().map_or(0, |frame| frame.lease.epoch);
-            let newer_epoch = self
-                .host
-                .summary(&selected)
-                .is_ok_and(|summary| summary.telemetry.epoch > epoch);
-            if !self.current(&selected, generation) || newer_epoch {
+            if !self.begin("preview", &selected) {
                 continue;
             }
-            sequence += 1;
-            lock(&self.published).preview = Some(Preview {
-                session: selected,
-                sequence,
-                frames,
+            let loops = self.clone();
+            tokio::spawn(async move {
+                let Some(frames) = loops
+                    .timed("preview", &selected, loops.host.preview(&selected))
+                    .await
+                else {
+                    return;
+                };
+                let epoch = frames.first().map_or(0, |frame| frame.lease.epoch);
+                let newer_epoch = loops
+                    .host
+                    .summary(&selected)
+                    .is_ok_and(|summary| summary.telemetry.epoch > epoch);
+                if !loops.current(&selected, generation) || newer_epoch {
+                    return;
+                }
+                let sequence = loops.preview_sequence.fetch_add(1, Ordering::AcqRel) + 1;
+                lock(&loops.published).preview = Some(Preview {
+                    session: selected,
+                    sequence,
+                    frames,
+                });
             });
         }
     }
 
     /// Inspector data for the selected session while the inspector is open. Live panels
     /// refresh every 500 ms; on-change panels ([`Panel::live`]) only when the view or the
-    /// paused frame changes. One request at a time, so a slow worker never piles them up.
+    /// paused frame changes. Registers and inspection each run as their own task, one per
+    /// session at a time, so a worker stalled on the previous selection never delays the
+    /// new one (#45) and a slow worker never piles requests up.
     async fn inspector_loop(self) {
-        let mut registers_key = None;
-        let mut inspection_key = None;
-        let mut inspected_at = Instant::now();
+        let state = Arc::new(Mutex::new(InspectorKeys {
+            registers: None,
+            inspection: None,
+            inspected_at: Instant::now(),
+        }));
         let mut ticker = tick();
         loop {
             ticker.tick().await;
@@ -454,18 +516,27 @@ impl Loops {
             let telemetry = &summary.telemetry;
             let paused = telemetry.state == SessionState::Paused && !telemetry.playing;
             let key = paused.then(|| (selected.clone(), telemetry.epoch, telemetry.frames));
-            if key.is_some() && key != registers_key {
-                let result = self
-                    .timed("registers", &selected, self.host.registers(&selected, 0))
-                    .await;
-                if let Ok(value) = result {
-                    if self.current(&selected, generation) {
-                        lock(&self.published).registers = Some((selected.clone(), value));
-                        registers_key.clone_from(&key);
-                    }
+            let registers_due = {
+                let mut keys = lock(&state);
+                if key.is_none() {
+                    keys.registers = None;
                 }
-            } else if key.is_none() {
-                registers_key = None;
+                key.is_some() && key != keys.registers
+            };
+            if registers_due && self.begin("registers", &selected) {
+                let (loops, state, selected, key) =
+                    (self.clone(), state.clone(), selected.clone(), key.clone());
+                tokio::spawn(async move {
+                    let result = loops
+                        .timed("registers", &selected, loops.host.registers(&selected, 0))
+                        .await;
+                    if let Ok(value) = result {
+                        if loops.current(&selected, generation) {
+                            lock(&loops.published).registers = Some((selected, value));
+                            lock(&state).registers = key;
+                        }
+                    }
+                });
             }
             let (panel, offset) = *lock(&self.inspection_selection);
             let view_key = (
@@ -474,42 +545,51 @@ impl Loops {
                 offset,
                 (telemetry.epoch, telemetry.frames),
             );
-            let due = match &inspection_key {
-                None => true,
-                Some((session, old_panel, old_offset, frame)) => {
-                    (session, old_panel, old_offset) != (&selected, &panel, &offset)
-                        || if panel.live() {
-                            inspected_at.elapsed() >= INSPECT_PERIOD
-                        } else {
-                            paused && *frame != view_key.3
-                        }
+            let due = {
+                let keys = lock(&state);
+                match &keys.inspection {
+                    None => true,
+                    Some((session, old_panel, old_offset, frame)) => {
+                        (session, old_panel, old_offset) != (&selected, &panel, &offset)
+                            || if panel.live() {
+                                keys.inspected_at.elapsed() >= INSPECT_PERIOD
+                            } else {
+                                paused && *frame != view_key.3
+                            }
+                    }
                 }
             };
             if !due {
                 continue;
             }
             let Some(command) = panel.command(offset) else {
-                inspection_key = Some(view_key);
+                lock(&state).inspection = Some(view_key);
                 continue;
             };
-            let value = self
-                .timed(
-                    "inspection",
-                    &selected,
-                    self.inspect(&selected, panel, &command),
-                )
-                .await;
-            inspected_at = Instant::now();
-            if self.current(&selected, generation)
-                && *lock(&self.inspection_selection) == (panel, offset)
-            {
-                lock(&self.published).inspection = Some((
-                    selected,
-                    panel,
-                    Arc::new(Inspection::from_value(&value, panel)),
-                ));
-                inspection_key = Some(view_key);
+            if !self.begin("inspection", &selected) {
+                continue;
             }
+            let (loops, state) = (self.clone(), state.clone());
+            tokio::spawn(async move {
+                let value = loops
+                    .timed(
+                        "inspection",
+                        &selected,
+                        loops.inspect(&selected, panel, &command),
+                    )
+                    .await;
+                lock(&state).inspected_at = Instant::now();
+                if loops.current(&selected, generation)
+                    && *lock(&loops.inspection_selection) == (panel, offset)
+                {
+                    lock(&loops.published).inspection = Some((
+                        selected,
+                        panel,
+                        Arc::new(Inspection::from_value(&value, panel)),
+                    ));
+                    lock(&state).inspection = Some(view_key);
+                }
+            });
         }
     }
 
@@ -533,33 +613,59 @@ impl Loops {
         value
     }
 
-    /// Exclusive audio follows the selection, latest selection wins. Runs apart from the UI
-    /// tick, so a slow hand-off between two workers never delays publication.
+    /// Exclusive audio follows the selection, latest selection wins. Each hand-off runs as
+    /// its own task, so one stalled worker never delays focus moving to another (#45);
+    /// [`Supervisor::focus_audio`] orders hand-offs per worker. A failed hand-off is retried
+    /// after a second unless the selection moves on first.
     async fn audio_focus_loop(self) {
         if !self.host.allows_control() {
             return;
         }
         let mut selection = self.selected.subscribe();
-        let mut focused = String::new();
+        // Last target requested and whether it has failed since.
+        let requested = Arc::new(Mutex::new((String::new(), false)));
+        let failed_wake = Arc::new(tokio::sync::Notify::new());
         loop {
             let target = selection.borrow_and_update().clone();
-            if !target.is_empty() && target != focused {
-                let result = self
-                    .timed("audio focus", &target, self.host.focus_audio(&target, true))
-                    .await;
-                if result.is_ok() {
-                    focused = target;
-                    continue;
+            let retry = {
+                let mut requested = lock(&requested);
+                let start = !target.is_empty() && (requested.0 != target || requested.1);
+                if start {
+                    *requested = (target.clone(), false);
                 }
-                // Retry a failed hand-off unless the selection moves on first.
-                tokio::select! {
-                    _ = selection.changed() => {}
-                    () = tokio::time::sleep(Duration::from_secs(1)) => {}
-                }
-                continue;
+                start
+            };
+            if retry && self.begin("audio focus", &target) {
+                let (loops, requested, wake) =
+                    (self.clone(), requested.clone(), failed_wake.clone());
+                tokio::spawn(async move {
+                    let result = loops
+                        .timed(
+                            "audio focus",
+                            &target,
+                            loops.host.focus_audio(&target, true),
+                        )
+                        .await;
+                    if result.is_err() {
+                        let mut requested = lock(&requested);
+                        if requested.0 == target {
+                            requested.1 = true;
+                            wake.notify_one();
+                        }
+                    }
+                });
             }
-            if selection.changed().await.is_err() {
-                return;
+            let failed = lock(&requested).1;
+            tokio::select! {
+                changed = selection.changed() => if changed.is_err() { return },
+                // A failure: wait a second, unless the selection moves on first.
+                () = failed_wake.notified(), if !failed => {
+                    tokio::select! {
+                        changed = selection.changed() => if changed.is_err() { return },
+                        () = tokio::time::sleep(Duration::from_secs(1)) => {}
+                    }
+                }
+                () = tokio::time::sleep(Duration::from_secs(1)), if failed => {}
             }
         }
     }
