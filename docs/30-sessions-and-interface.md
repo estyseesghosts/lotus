@@ -207,6 +207,7 @@ Headless and windowed servers expose the same tools; `lotus_status` reports
 | `lotus_list_cards` | cards and which session mounts each |
 | `lotus_registers` | r0–r15 and CPSR of one core at a safe point |
 | `lotus_focus_session` | windowed: inspect that session, and show it unless the workspace is split; headless: no effect |
+| `lotus_workspace` | `get` the layout, or `tile`, `single`, `untile`, `swap`, `set_axis`, `set_ratio`, `set_screen_layout`, `focus_viewport` with optional `expected_revision`; changes need control and a window ([workspace](#workspace-67)) |
 | `lotus_settings_schema` | the settings registry ([below](#settings-registry-50)), optionally one scope; no host needed |
 | `lotus_settings` | effective worker settings of `global`, a `card` or a `session`, with sources and problems ([layers](#settings-layers-51)) |
 | `lotus_settings_change` | `set`, `unset` or `reset` on the same targets; needs control |
@@ -293,6 +294,10 @@ same state through `Supervisor::update_workspace`; neither keeps its own layout.
   empty. A crashed session stays registered and keeps its tile.
 - Headless hosts never enable it: `lotus_status.workspace.available` is false and
   every change returns `Unsupported`. MCP changes need control permission.
+- `lotus_workspace` (#72) is the MCP view of the same model: `get` returns the
+  snapshot, a change returns `{committed, workspace}` with the new revision, and
+  stale, unknown-session and headless refusals come back as tool errors with the
+  supervisor's message. It never selects, moves controllers or starts workers.
 - `desktop.json` keeps `split_axis` and `split_ratio`, the defaults for a `tile`
   that omits them. Tiled sessions are not saved: session IDs end with the host,
   and restoring a layout never starts a worker.
@@ -301,6 +306,8 @@ Evidence: `workspace::tests` (transitions, idempotence, invalid and stale
 requests leave the state unchanged, removal fallback) and
 `supervision.rs` `workspace_arranges_without_touching_workers` /
 `workspace_writes_from_mcp_need_control` against `lotus-mock-native` workers
+(**verified compiled**). The MCP tool's read and refusal paths:
+`server::tests::workspace_tool_reads_headless_and_refuses_changes_it_cannot_commit`
 (**verified compiled**).
 
 ### Two visible sessions (#65)

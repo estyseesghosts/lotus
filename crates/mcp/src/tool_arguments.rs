@@ -223,3 +223,148 @@ pub struct PinArtifactArgs {
     /// True keeps the artifact until released; false makes it evictable again.
     pub pinned: bool,
 }
+
+/// `lotus_workspace` (lotus#72): read or change what the LOTUS window shows. Mirrors
+/// `lotus_session::workspace::Operation`, which has no JSON schema of its own.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceArgs {
+    pub operation: WorkspaceOperation,
+    /// Refuse the change unless the workspace is still at this revision (from `get` or
+    /// `lotus_status.workspace`), so a newer change by the person is never overwritten.
+    #[serde(default)]
+    pub expected_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AxisArg {
+    Auto,
+    /// First tile left, second right.
+    Horizontal,
+    /// First tile on top, second below.
+    Vertical,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ScreensArg {
+    Auto,
+    Stacked,
+    SideBySide,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ViewportArg {
+    First,
+    Second,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WorkspaceOperation {
+    /// Current revision, layout, focused viewport and split defaults. Read-only.
+    Get,
+    /// Show two different sessions together. Unset fields keep the current split's value,
+    /// or the saved defaults. Ratio is the first tile's share, 0.2 to 0.8.
+    Tile {
+        first: String,
+        second: String,
+        #[serde(default)]
+        axis: Option<AxisArg>,
+        #[serde(default)]
+        ratio: Option<f32>,
+        #[serde(default)]
+        screens: Option<[ScreensArg; 2]>,
+    },
+    /// Show one session alone; the other tile's session returns to the sidebar.
+    Single {
+        session: String,
+    },
+    /// Leave a split, keeping `keep` (default: the first tile).
+    Untile {
+        #[serde(default)]
+        keep: Option<String>,
+    },
+    Swap,
+    SetAxis {
+        axis: AxisArg,
+    },
+    SetRatio {
+        ratio: f32,
+    },
+    SetScreenLayout {
+        viewport: ViewportArg,
+        screens: ScreensArg,
+    },
+    /// Which tile receives the window's keyboard input.
+    FocusViewport {
+        viewport: ViewportArg,
+    },
+}
+
+impl From<AxisArg> for lotus_session::workspace::Axis {
+    fn from(axis: AxisArg) -> Self {
+        match axis {
+            AxisArg::Auto => Self::Auto,
+            AxisArg::Horizontal => Self::Horizontal,
+            AxisArg::Vertical => Self::Vertical,
+        }
+    }
+}
+
+impl From<ScreensArg> for lotus_session::workspace::ScreenLayout {
+    fn from(screens: ScreensArg) -> Self {
+        match screens {
+            ScreensArg::Auto => Self::Auto,
+            ScreensArg::Stacked => Self::Stacked,
+            ScreensArg::SideBySide => Self::SideBySide,
+        }
+    }
+}
+
+impl From<ViewportArg> for lotus_session::workspace::Viewport {
+    fn from(viewport: ViewportArg) -> Self {
+        match viewport {
+            ViewportArg::First => Self::First,
+            ViewportArg::Second => Self::Second,
+        }
+    }
+}
+
+impl WorkspaceOperation {
+    /// The workspace change, or `None` for `get`.
+    #[must_use]
+    pub fn change(self) -> Option<lotus_session::workspace::Operation> {
+        use lotus_session::workspace::Operation;
+        Some(match self {
+            Self::Get => return None,
+            Self::Tile {
+                first,
+                second,
+                axis,
+                ratio,
+                screens,
+            } => Operation::Tile {
+                first,
+                second,
+                axis: axis.map(Into::into),
+                ratio,
+                screens: screens.map(|pair| pair.map(Into::into)),
+            },
+            Self::Single { session } => Operation::Single { session },
+            Self::Untile { keep } => Operation::Untile { keep },
+            Self::Swap => Operation::Swap,
+            Self::SetAxis { axis } => Operation::SetAxis { axis: axis.into() },
+            Self::SetRatio { ratio } => Operation::SetRatio { ratio },
+            Self::SetScreenLayout { viewport, screens } => Operation::SetScreenLayout {
+                viewport: viewport.into(),
+                screens: screens.into(),
+            },
+            Self::FocusViewport { viewport } => Operation::FocusViewport {
+                viewport: viewport.into(),
+            },
+        })
+    }
+}

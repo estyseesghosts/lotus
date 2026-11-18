@@ -29,7 +29,7 @@ use crate::tool_arguments::{
     AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs, GdbOperation,
     InputArgs, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs,
     SessionArgs, SettingsArgs, SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs,
-    ValidateScenarioArgs,
+    ValidateScenarioArgs, WorkspaceArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -510,7 +510,25 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Show an owned session in the LOTUS window so a person can watch it. No effect when headless."
+        description = "Read or change what the LOTUS window shows (lotus#72), the same workspace the person changes in the window. operation.op: get (read-only), tile (two different sessions; axis auto/horizontal/vertical, ratio 0.2-0.8, screens per tile), single, untile (keep one), swap, set_axis, set_ratio, set_screen_layout, focus_viewport (keyboard target). A change commits all or nothing and returns the new revision; with expected_revision it is refused if the workspace changed since. Presentation only: never starts, stops or reconfigures a worker, the inspector target, audio focus or controllers. Changes need control permission. Headless: get reports available=false and every change fails as Unsupported."
+    )]
+    pub async fn lotus_workspace(
+        &self,
+        Parameters(args): Parameters<WorkspaceArgs>,
+    ) -> CallToolResult {
+        tool_result(self.require_host().and_then(|host| {
+            let Some(change) = args.operation.change() else {
+                return json(&host.workspace());
+            };
+            // The snapshot this change committed, not a later read another client may have
+            // changed meanwhile.
+            let snapshot = host.update_workspace(&change, args.expected_revision, Actor::Mcp)?;
+            Ok(serde_json::json!({"committed": true, "workspace": snapshot}))
+        }))
+    }
+
+    #[tool(
+        description = "Make a session the LOTUS window's inspector target (inspector, gauges, audio). Outside a split the window also shows it; a split is never collapsed, reordered or changed, and controller assignment never moves. No effect when headless."
     )]
     pub async fn lotus_focus_session(
         &self,
@@ -704,6 +722,56 @@ mod tests {
         assert_eq!(status["workspace"]["available"], false);
         assert_eq!(status["workspace"]["revision"], 0);
         assert_eq!(status["workspace"]["layout"]["mode"], "empty");
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// lotus#72: `lotus_workspace` reads without a window, refuses changes on a
+    /// headless host, and passes revision and lookup refusals through once enabled.
+    #[tokio::test]
+    async fn workspace_tool_reads_headless_and_refuses_changes_it_cannot_commit() {
+        use crate::tool_arguments::{WorkspaceArgs, WorkspaceOperation};
+        let root = std::env::temp_dir().join(format!("lotus-mcp-wst-{}", std::process::id()));
+        let worker = std::env::current_exe().unwrap();
+        let mut config = HostConfig::new(worker, root.join("store"));
+        config.allow_control = true;
+        let server = LotusServer::configured(config, BTreeMap::new()).unwrap();
+        let call = |operation, expected_revision| {
+            server.lotus_workspace(Parameters(WorkspaceArgs {
+                operation,
+                expected_revision,
+            }))
+        };
+        let text = |result: CallToolResult| -> (bool, String) {
+            let body = result.content[0].as_text().unwrap().text.clone();
+            (result.is_error == Some(true), body)
+        };
+        let (failed, body) = text(call(WorkspaceOperation::Get, None).await);
+        let read: Value = serde_json::from_str(&body).unwrap();
+        assert!(!failed);
+        assert_eq!(read["available"], false);
+        let (failed, body) = text(call(WorkspaceOperation::Swap, None).await);
+        assert!(failed && body.contains("no LOTUS window"), "{body}");
+
+        server
+            .require_host()
+            .unwrap()
+            .enable_workspace(Default::default());
+        let tile = || WorkspaceOperation::Tile {
+            first: "missing-a".into(),
+            second: "missing-b".into(),
+            axis: None,
+            ratio: None,
+            screens: None,
+        };
+        let (failed, body) = text(call(tile(), None).await);
+        assert!(failed && body.contains("no session missing-a"), "{body}");
+        let (failed, body) = text(call(WorkspaceOperation::Swap, Some(99)).await);
+        assert!(failed && body.contains("expected revision 99"), "{body}");
+        let (_, body) = text(call(WorkspaceOperation::Get, None).await);
+        let read: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(read["available"], true);
+        assert_eq!(read["revision"], 0);
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
     }
