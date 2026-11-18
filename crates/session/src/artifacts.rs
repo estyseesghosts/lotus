@@ -19,7 +19,13 @@
 //! `release` deletes at once. A URI that was evicted or released reports `expired` with the
 //! reason, distinct from an unknown URI. Files are written to `<id>.tmp` and renamed after
 //! the whole batch succeeded, so the catalog never names a partial file.
-use std::collections::{BTreeMap, VecDeque};
+//!
+//! [`ArtifactStore::reserve`] plans every eviction before changing anything: a request that
+//! cannot be satisfied returns `QuotaExceeded` with the catalog, tombstones, counters and
+//! files untouched (#43). Once a plan is feasible the evictions are committed even if the
+//! following write fails; the space stays free. Evicted files the caller could not delete
+//! are retried on the next publish and removed by the next [`ArtifactStore::open`].
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -141,6 +147,8 @@ pub struct ArtifactStore {
     clock: u64,
     evicted: u64,
     released: u64,
+    /// Files of removed artifacts whose deletion failed; retried by the next publish.
+    undeleted: Vec<PathBuf>,
 }
 
 /// Room made by [`ArtifactStore::reserve`]; files of evicted artifacts are deleted by the
@@ -178,6 +186,7 @@ impl ArtifactStore {
             clock: 0,
             evicted: 0,
             released: 0,
+            undeleted: Vec::new(),
         })
     }
 
@@ -189,9 +198,14 @@ impl ArtifactStore {
     }
 
     fn held(&self, session: &str) -> (usize, u64) {
+        self.held_without(session, &BTreeSet::new())
+    }
+
+    /// [`Self::held`] as if the artifacts in `planned` were already evicted.
+    fn held_without(&self, session: &str, planned: &BTreeSet<String>) -> (usize, u64) {
         let (mut count, mut bytes) = self.reserved.get(session).copied().unwrap_or_default();
-        for entry in self.entries.values() {
-            if entry.artifact.session == session {
+        for (uri, entry) in &self.entries {
+            if entry.artifact.session == session && !planned.contains(uri) {
                 count += 1;
                 bytes += entry.artifact.bytes as u64;
             }
@@ -200,11 +214,18 @@ impl ArtifactStore {
     }
 
     fn total(&self) -> (usize, u64) {
+        self.total_without(&BTreeSet::new())
+    }
+
+    fn total_without(&self, planned: &BTreeSet<String>) -> (usize, u64) {
         let (mut count, mut bytes) = self
             .reserved
             .values()
             .fold((0, 0), |(c, b), (rc, rb)| (c + rc, b + rb));
-        for entry in self.entries.values() {
+        for (uri, entry) in &self.entries {
+            if planned.contains(uri) {
+                continue;
+            }
             count += 1;
             bytes += entry.artifact.bytes as u64;
         }
@@ -212,7 +233,8 @@ impl ArtifactStore {
     }
 
     /// Make room for `count` artifacts of `bytes` total for `session`. `live` lists the
-    /// sessions that currently exist; only they have a floor.
+    /// sessions that currently exist; only they have a floor. Concurrent publishes see each
+    /// other's reservations. On error nothing observable has changed.
     pub fn reserve(
         &mut self,
         session: &str,
@@ -233,9 +255,11 @@ impl ArtifactStore {
         let floor = self.floor();
         let (own_count, own_bytes) = self.held(session);
         let below_floor = own_count + count <= floor.0 && own_bytes + bytes <= floor.1;
-        let mut evicted = Vec::new();
+        // Phase 1: choose victims against a hypothetical catalog without them.
+        let mut planned = BTreeSet::new();
+        let mut order = Vec::new();
         loop {
-            let (total_count, total_bytes) = self.total();
+            let (total_count, total_bytes) = self.total_without(&planned);
             if total_count + count <= self.quota.max_count
                 && total_bytes + bytes <= self.quota.max_bytes
             {
@@ -245,29 +269,30 @@ impl ArtifactStore {
                 if !live.iter().any(|id| id == owner) {
                     return true;
                 }
-                let (c, b) = store.held(owner);
+                let (c, b) = store.held_without(owner, &planned);
                 c > floor.0 || b > floor.1
             };
-            let victim = self
-                .entries
-                .iter()
-                .filter(|(_, e)| !e.artifact.pinned && e.artifact.session != session)
+            let candidates = || {
+                self.entries
+                    .iter()
+                    .filter(|(uri, e)| !e.artifact.pinned && !planned.contains(*uri))
+            };
+            let victim = candidates()
+                .filter(|(_, e)| e.artifact.session != session)
                 .filter(|(_, e)| over_floor(self, &e.artifact.session))
                 .filter(|(_, e)| e.leased_until <= now)
                 .min_by_key(|(_, e)| e.used)
                 .or_else(|| {
-                    self.entries
-                        .iter()
-                        .filter(|(_, e)| !e.artifact.pinned && e.artifact.session == session)
+                    candidates()
+                        .filter(|(_, e)| e.artifact.session == session)
                         .filter(|(_, e)| e.leased_until <= now)
                         .min_by_key(|(_, e)| e.used)
                 })
                 .or_else(|| {
                     // Floor guarantee: borrowed space is reclaimed even while leased.
-                    self.entries
-                        .iter()
+                    candidates()
                         .filter(|_| below_floor)
-                        .filter(|(_, e)| !e.artifact.pinned && e.artifact.session != session)
+                        .filter(|(_, e)| e.artifact.session != session)
                         .filter(|(_, e)| over_floor(self, &e.artifact.session))
                         .min_by_key(|(_, e)| e.used)
                 })
@@ -281,6 +306,12 @@ impl ArtifactStore {
                     ),
                 ));
             };
+            planned.insert(uri.clone());
+            order.push(uri);
+        }
+        // Phase 2: the plan is feasible; commit it and the reservation together.
+        let mut evicted = Vec::with_capacity(order.len());
+        for uri in order {
             let entry = self.entries.remove(&uri).expect("victim is catalogued");
             self.tombstone(uri, "evicted to make room under the host artifact quota");
             self.evicted += 1;
@@ -343,6 +374,16 @@ impl ArtifactStore {
                 artifact
             })
             .collect()
+    }
+
+    /// Files whose deletion failed earlier, for the caller to retry outside the lock.
+    pub fn take_undeleted(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.undeleted)
+    }
+
+    /// Record files the caller failed to delete; retried by a later publish.
+    pub fn defer_delete(&mut self, paths: Vec<PathBuf>) {
+        self.undeleted.extend(paths);
     }
 
     /// A publish failed after [`Self::reserve`]; give the space back.
@@ -709,6 +750,93 @@ mod tests {
         assert_eq!(files(&store), 0);
         assert!(store.list().is_empty());
         assert_eq!(store.usage(&live).count, 0, "reservation returned");
+        let _ = fs::remove_dir_all(base);
+    }
+
+    /// Catalog, tombstone and counter state visible to callers.
+    fn snapshot(store: &mut ArtifactStore, uris: &[String], live: &[String]) -> String {
+        let usage = serde_json::to_string(&store.usage(live)).expect("usage");
+        let opened: Vec<String> = uris
+            .iter()
+            .map(|uri| match store.open_artifact(uri) {
+                Ok((artifact, path)) => format!("{}:{}", artifact.uri, path.exists()),
+                Err(error) => error.to_string(),
+            })
+            .collect();
+        format!("{usage} {opened:?} {:?}", store.tombstones)
+    }
+
+    #[test]
+    fn an_infeasible_reservation_changes_nothing() {
+        // Two artifacts must go for a 2-artifact publish; only one is evictable.
+        let quota = ArtifactQuota {
+            max_count: 3,
+            max_bytes: 1 << 20,
+            lease_seconds: 0,
+        };
+        let (base, mut store) = store("atomic", quota, 1);
+        let live = vec!["a".to_string()];
+        let now = Instant::now();
+        let made = publish(&mut store, "a", &[1, 1, 1], &live, now).expect("fill");
+        store.pin(&made[0].uri, true).expect("pin");
+        store.pin(&made[1].uri, true).expect("pin");
+        let uris: Vec<String> = made.iter().map(|a| a.uri.clone()).collect();
+        let before = snapshot(&mut store, &uris, &live);
+        let error = store
+            .reserve("a", 3, 3, &live, now)
+            .err()
+            .expect("needs three victims, has one");
+        assert_eq!(error.kind(), io::ErrorKind::QuotaExceeded);
+        assert_eq!(snapshot(&mut store, &uris, &live), before);
+        assert_eq!(store.usage(&live).evicted, 0);
+        assert_eq!(files(&store), 3);
+        // The same holds when a concurrent reservation takes the last free capacity.
+        let quota = ArtifactQuota {
+            max_count: 4,
+            max_bytes: 1 << 20,
+            lease_seconds: 3600,
+        };
+        let (base2, mut store2) = self::store("atomic2", quota, 2);
+        let live = vec!["a".to_string(), "b".to_string()];
+        let held = publish(&mut store2, "a", &[1, 1], &live, now).expect("a");
+        let first = store2.reserve("b", 1, 1, &live, now).expect("b first");
+        let second = store2.reserve("b", 1, 1, &live, now).expect("b second");
+        // Store is now full (2 held, 2 reserved) and every entry is leased: b is at its floor.
+        let uris: Vec<String> = held.iter().map(|a| a.uri.clone()).collect();
+        let before = snapshot(&mut store2, &uris, &live);
+        assert!(store2.reserve("b", 1, 1, &live, now).is_err());
+        assert!(store2.reserve("a", 1, 1, &live, now).is_err());
+        assert_eq!(snapshot(&mut store2, &uris, &live), before);
+        store2.abandon(&first);
+        store2.abandon(&second);
+        let _ = fs::remove_dir_all(base);
+        let _ = fs::remove_dir_all(base2);
+    }
+
+    #[test]
+    fn a_write_failure_after_eviction_keeps_the_eviction_and_frees_the_reservation() {
+        let quota = ArtifactQuota {
+            max_count: 2,
+            max_bytes: 1 << 20,
+            lease_seconds: 0,
+        };
+        let (base, mut store) = store("evictfail", quota, 1);
+        let live = vec!["a".to_string()];
+        let now = Instant::now();
+        let old = publish(&mut store, "a", &[1, 1], &live, now).expect("fill");
+        let reservation = store.reserve("a", 1, 1, &live, now).expect("feasible");
+        assert_eq!(reservation.evicted.len(), 1);
+        store.abandon(&reservation);
+        // The evicted URI is expired; the survivor is readable; the slot is free again.
+        let expired = old
+            .iter()
+            .filter(|a| store.open_artifact(&a.uri).is_err())
+            .count();
+        assert_eq!(expired, 1);
+        assert_eq!(store.usage(&live).count, 1);
+        store.defer_delete(reservation.evicted.clone());
+        assert_eq!(store.take_undeleted(), reservation.evicted);
+        assert!(store.take_undeleted().is_empty());
         let _ = fs::remove_dir_all(base);
     }
 

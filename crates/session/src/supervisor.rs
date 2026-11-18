@@ -1259,13 +1259,22 @@ impl Supervisor {
         }
         let live = self.sessions();
         let total = batch.iter().map(|item| item.bytes.len() as u64).sum();
-        let (reservation, directory) = {
+        let (reservation, directory, retry) = {
             let mut store = lock(&self.artifacts);
             let reservation = store.reserve(session, batch.len(), total, &live, Instant::now())?;
-            (reservation, store.directory().to_path_buf())
+            let retry = store.take_undeleted();
+            (reservation, store.directory().to_path_buf(), retry)
         };
-        for path in &reservation.evicted {
-            let _ = fs::remove_file(path);
+        // Evictions are committed; a file that cannot be deleted now is retried next publish.
+        let undeleted: Vec<PathBuf> = retry
+            .into_iter()
+            .chain(reservation.evicted.iter().cloned())
+            .filter(|path| {
+                fs::remove_file(path).is_err_and(|error| error.kind() != io::ErrorKind::NotFound)
+            })
+            .collect();
+        if !undeleted.is_empty() {
+            lock(&self.artifacts).defer_delete(undeleted);
         }
         match crate::artifacts::write_batch(&directory, session, batch) {
             Ok(written) => Ok(lock(&self.artifacts).commit(&reservation, written, Instant::now())),
