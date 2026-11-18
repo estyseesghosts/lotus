@@ -188,6 +188,9 @@ impl LotusWindow {
         cx.on_blur(&focus, window, |view, _, _| view.release_input())
             .detach();
         cx.observe_window_activation(window, |view, window, _| {
+            if let Some(controller) = &view.controller {
+                controller.ui.activation(window.is_window_active());
+            }
             if !window.is_window_active() {
                 view.release_input();
                 view.end_drag();
@@ -418,10 +421,10 @@ impl LotusWindow {
         let Some(controller) = &self.controller else {
             return;
         };
+        let ui = controller.ui.clone();
+        ui.poll_started();
         let (preview, selected, surface) = {
-            let Ok(mut update) = controller.latest.lock() else {
-                return;
-            };
+            let mut update = controller.ui.lock_update(&controller.latest);
             self.sessions = update.sessions.clone();
             self.cards = update.cards.clone();
             self.assets = update.assets.clone();
@@ -462,6 +465,7 @@ impl LotusWindow {
             self.images_session = self.selected.clone();
         }
         if let Some(preview) = preview.filter(|preview| preview.session == self.selected) {
+            ui.preview_installed(preview.sequence);
             let images = preview
                 .frames
                 .into_iter()
@@ -478,6 +482,7 @@ impl LotusWindow {
         {
             self.replace_images(Vec::new(), cx);
         }
+        ui.poll_completed();
     }
 
     /// Replaced frames leave the sprite atlas immediately so streaming stays bounded.
@@ -2555,6 +2560,9 @@ impl LotusWindow {
 
 impl Render for LotusWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(controller) = &self.controller {
+            controller.ui.rendered();
+        }
         let plan = self.plan(window);
         let viewport_height = f32::from(window.viewport_size().height);
         let density = layout::toolbar_density(plan.main);

@@ -44,6 +44,21 @@ B's first preview and inspection arrive in about 70 ms, no kind ever has two
 exchanges on A through A→B→A→B switching, and A's late frame is dropped
 (**verified**, mock workers).
 
+Window-side counters (lotus#74) are published as `frontend_metrics.ui`:
+refresh-task polls started/completed and the heartbeat age, previews installed
+and the newest installed sequence (compare `published_preview_sequence`), GPUI
+render calls and age, and activation/deactivation counts. They are atomics in
+`ui_metrics.rs`, readable over MCP whether or not the window still refreshes. A
+poisoned shared-state mutex is recovered, logged and counted
+(`polls_recovered`) instead of leaving the window stale; the poll used to
+return silently on poison. `tests/test_focus_cycle.py` cycles focus with real
+Alt+Tab, a title-bar click, minimize/restore and rapid Alt+Tab, and names the
+first stage that stops. On this machine (2026-11-17, release build, CITnLO and
+AZAHAR, t03.3dsx) every stage advanced in every phase: installed trailed
+published by at most 2 previews, and renders paused only while minimized. The
+Alt+Tab freeze in lotus#74 did not reproduce here; its cause is **not
+established**.
+
 Only the selected session is previewed; the latest screen
 pair replaces the previous one, and replaced images are dropped from GPUI's
 sprite atlas. Previews come from the worker's shared-memory ring and fall back to

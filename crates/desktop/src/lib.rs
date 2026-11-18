@@ -15,3 +15,4 @@ pub mod presence;
 pub mod screen_geometry;
 pub mod session_tree;
 pub mod theme;
+pub mod ui_metrics;

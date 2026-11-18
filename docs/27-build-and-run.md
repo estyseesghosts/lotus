@@ -196,6 +196,7 @@ Acceptance (outputs go to fresh directories under ignored `runs/`):
 | Benchmark | `python tools/bench.py --worker NAME=<worker> … --rom <abs 3dsx> --output <fresh>` (see its docstring and [34](34-performance-and-issue-triage.md)) |
 | Renderer default | `python tests/test_renderer_default.py <ctr-cli.exe> <worker> <abs 3dsx> <out>` |
 | Hidden-start window | `python tests/test_window_visible.py <lotus-desktop.exe> [--mcp]` |
+| Focus cycle (#74) | `python tests/test_focus_cycle.py <lotus-desktop.exe> <worker> <content> <out>`; moves real focus for ~30 s |
 | Settings | `python tools/settings_acceptance.py <worker> <debugger.3dsx> <gpu.3dsx> <out> [--classes-only]` |
 | Overhead / Vulkan | `tools/overhead_acceptance.py`, `tools/vulkan_acceptance.py` (see `--help`) |
 | MCP | `python tests/test_mcp_<name>.py <abs lotus-mcp.exe> <abs host.json> <asset handles…> <abs out>` |

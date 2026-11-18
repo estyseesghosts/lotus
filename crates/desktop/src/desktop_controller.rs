@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use crate::inspection::{Inspection, Panel};
 use crate::presence::{self, Presence};
+use crate::ui_metrics::UiMetrics;
 use lotus_mcp::server::{Frontend, LotusServer};
 use lotus_protocol::debug::DebugCommand;
 use lotus_session::native_session::{Frame, InputState};
@@ -126,6 +127,8 @@ pub struct DesktopController {
     pub inspection_selection: Arc<Mutex<(Panel, u32)>>,
     /// Discord Rich Presence; configured from the window's preferences.
     pub presence: Arc<Presence>,
+    /// Window-side counters, published as `frontend_metrics.ui` (lotus#74).
+    pub ui: Arc<UiMetrics>,
     host: Arc<Supervisor>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -172,6 +175,8 @@ pub struct LoopMetrics {
     pub saturated: u64,
     /// Operations in flight now, with their age.
     pub pending: Vec<PendingOperation>,
+    /// Sequence of the newest preview handed to the window.
+    pub published_preview_sequence: u64,
 }
 
 /// One outstanding desktop worker operation.
@@ -202,7 +207,9 @@ impl DesktopController {
         let inspection_selection = Arc::new(Mutex::new((Panel::Cpu, 0)));
         let shutdown = Arc::new(AtomicBool::new(false));
         let presence = Arc::new(Presence::start());
+        let ui = Arc::new(UiMetrics::default());
         let context = Loops {
+            ui: ui.clone(),
             presence: presence.clone(),
             host: host.clone(),
             published: latest.clone(),
@@ -229,6 +236,7 @@ impl DesktopController {
             inspector,
             inspection_selection,
             presence,
+            ui,
             host,
             shutdown,
             thread: Some(thread),
@@ -277,6 +285,7 @@ struct Loops {
     /// Sequence of published previews.
     preview_sequence: Arc<AtomicU64>,
     metrics: Arc<Mutex<LoopMetrics>>,
+    ui: Arc<UiMetrics>,
 }
 
 impl Loops {
@@ -357,8 +366,10 @@ impl Loops {
                 metrics.tick_interval_ms = interval;
                 metrics.tick_interval_max_ms = metrics.tick_interval_max_ms.max(interval);
                 metrics.pending = self.pending_operations();
-                self.host
-                    .set_frontend_metrics(serde_json::to_value(&*metrics).unwrap_or_default());
+                metrics.published_preview_sequence = self.preview_sequence.load(Ordering::Acquire);
+                let mut value = serde_json::to_value(&*metrics).unwrap_or_default();
+                value["ui"] = self.ui.snapshot();
+                self.host.set_frontend_metrics(value);
             }
             published_at = Some(now);
             ticker.tick().await;
