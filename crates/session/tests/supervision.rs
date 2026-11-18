@@ -424,9 +424,9 @@ async fn an_owner_change_during_a_stalled_input_is_delivered() {
         buttons: 1,
         ..InputState::default()
     };
-    // Wait out any status exchange already started, then stall the next reply.
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    fixture.stall(id, 800);
+    // Stall only the input reply: a bare stall can land on a periodic status exchange,
+    // leaving "live" queued so "scenario" supersedes it before it is ever sent.
+    std::fs::write(root.join("mock-stall-ms"), "800 input").expect("stall");
     fixture
         .host
         .submit_input(id, pressed, "live", Actor::Desktop)
