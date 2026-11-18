@@ -7,15 +7,29 @@
 use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 use lotus_desktop::desktop_controller::McpMode;
 use lotus_desktop::lotus_window::LotusWindow;
-use lotus_session::supervisor::HostConfig;
+use lotus_session::supervisor::{parse_asset_dir, HostConfig};
 
-const USAGE: &str = "usage: lotus-desktop [--mcp] [host.json]";
+const USAGE: &str = "usage: lotus-desktop [--mcp] [host.json] [--asset-dir handle=path ...]";
 
 fn main() {
     let mut mcp = McpMode::Off;
     let mut config_path = None;
-    for argument in std::env::args_os().skip(1) {
-        if argument == "--mcp" {
+    let mut asset_dirs = Vec::new();
+    let mut arguments = std::env::args_os().skip(1);
+    while let Some(argument) = arguments.next() {
+        if argument == "--asset-dir" {
+            let parsed = arguments
+                .next()
+                .ok_or_else(|| "--asset-dir expects handle=path".to_string())
+                .and_then(|value| parse_asset_dir(&value.to_string_lossy()));
+            match parsed {
+                Ok(entry) => asset_dirs.push(entry),
+                Err(error) => {
+                    eprintln!("{error}\n{USAGE}");
+                    std::process::exit(2);
+                }
+            }
+        } else if argument == "--mcp" {
             mcp = McpMode::Stdio;
         } else if argument == "--help" || argument == "-h" {
             eprintln!("{USAGE}");
@@ -35,11 +49,17 @@ fn main() {
             );
             std::process::exit(2);
         });
-        serde_json::from_str::<HostConfig>(&text).unwrap_or_else(|error| {
+        let mut config = serde_json::from_str::<HostConfig>(&text).unwrap_or_else(|error| {
             eprintln!("invalid host configuration: {error}");
             std::process::exit(2);
-        })
+        });
+        config.asset_directories.extend(asset_dirs.iter().cloned());
+        config
     });
+    if config.is_none() && !asset_dirs.is_empty() {
+        eprintln!("--asset-dir needs a host.json\n{USAGE}");
+        std::process::exit(2);
+    }
     gpui_platform::application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, gpui::size(gpui::px(1280.0), gpui::px(880.0)), cx);
         let handle = cx

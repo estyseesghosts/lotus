@@ -211,6 +211,11 @@ Headless and windowed servers expose the same tools; `lotus_status` reports
 Host configuration gains `asset_directories` (handle → directory; each `.3dsx`
 directly inside is approved as `<handle>/<file>`, re-listed on demand, so
 rebuilt patch variants can be loaded without a restart) and `max_sessions`.
+A directory that does not exist yet is not fatal: it lists nothing, appears in
+`lotus_status.unavailable_asset_directories` with the reason, and is listed once
+created. `--asset-dir handle=path` (repeatable, `lotus-mcp` and `lotus-desktop`)
+adds or replaces a handle from the command line. Other missing paths (`worker`,
+`workers`, `assets`) still fail startup, with the key and path in the error.
 Existing configurations parse unchanged. A desktop user may also open any
 `.3dsx` with the file picker; it is approved as `local/<file>` for that process.
 MCP clients still cannot name paths.

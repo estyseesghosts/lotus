@@ -110,6 +110,16 @@ impl HostConfig {
     }
 }
 
+/// Parse a `--asset-dir handle=path` command-line override.
+pub fn parse_asset_dir(argument: &str) -> Result<(String, PathBuf), String> {
+    match argument.split_once('=') {
+        Some((handle, path)) if !handle.is_empty() && !path.is_empty() => {
+            Ok((handle.to_string(), PathBuf::from(path)))
+        }
+        _ => Err(format!("--asset-dir expects handle=path, got {argument:?}")),
+    }
+}
+
 /// Whether a session's guest writes persist.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -260,12 +270,12 @@ impl Supervisor {
                 format!("max_sessions must be in 1..={MAX_SESSIONS_LIMIT}"),
             ));
         }
-        config.worker = config.worker.canonicalize()?;
-        for worker in config.workers.values_mut() {
-            *worker = worker.canonicalize()?;
+        config.worker = canonical("worker", &config.worker)?;
+        for (name, worker) in &mut config.workers {
+            *worker = canonical(&format!("workers[\"{name}\"]"), worker)?;
         }
-        for path in config.assets.values_mut() {
-            *path = path.canonicalize()?;
+        for (handle, path) in &mut config.assets {
+            *path = canonical(&format!("assets[\"{handle}\"]"), path)?;
         }
         for (handle, path) in &mut config.asset_directories {
             if handle.is_empty() || handle.contains(['/', '\\']) {
@@ -274,10 +284,15 @@ impl Supervisor {
                     "asset directory handles cannot be empty or contain separators",
                 ));
             }
-            *path = path.canonicalize()?;
+            // A directory may be configured before it exists (a build output folder). It
+            // lists nothing until created and is canonicalized again on every use.
+            *path = std::path::absolute(&*path).map_err(|error| {
+                labeled(&format!("asset_directories[\"{handle}\"]"), path, error)
+            })?;
         }
-        fs::create_dir_all(&config.storage_root)?;
-        config.storage_root = config.storage_root.canonicalize()?;
+        fs::create_dir_all(&config.storage_root)
+            .map_err(|error| labeled("storage_root", &config.storage_root, error))?;
+        config.storage_root = canonical("storage_root", &config.storage_root)?;
         let cards = CardStore::open(&config.storage_root)?;
         let artifacts = ArtifactStore::open(
             config.storage_root.join("artifacts"),
@@ -365,7 +380,7 @@ impl Supervisor {
     pub fn assets(&self) -> Vec<String> {
         let mut handles: Vec<String> = self.config.assets.keys().cloned().collect();
         for (handle, directory) in &self.config.asset_directories {
-            let Ok(entries) = fs::read_dir(directory) else {
+            let Ok(entries) = directory.canonicalize().and_then(fs::read_dir) else {
                 continue;
             };
             for entry in entries.flatten() {
@@ -379,6 +394,23 @@ impl Supervisor {
         handles.sort();
         handles.dedup();
         handles
+    }
+
+    /// Configured asset directories that cannot be listed now, with the reason.
+    #[must_use]
+    pub fn unavailable_asset_directories(&self) -> BTreeMap<String, String> {
+        self.config
+            .asset_directories
+            .iter()
+            .filter_map(|(handle, directory)| {
+                let error = match directory.canonicalize() {
+                    Ok(path) if path.is_dir() => return None,
+                    Ok(_) => "not a directory".to_string(),
+                    Err(error) => error.to_string(),
+                };
+                Some((handle.clone(), format!("{}: {error}", directory.display())))
+            })
+            .collect()
     }
 
     /// Approve a file chosen by the local desktop user. Never reachable from MCP.
@@ -1672,6 +1704,7 @@ impl Supervisor {
         if let Some((directory, name)) = handle.split_once('/') {
             if let Some(root) = self.config.asset_directories.get(directory) {
                 if is_content_name(name) && !name.contains(['/', '\\']) && name != ".." {
+                    let root = root.canonicalize()?;
                     let path = root.join(name).canonicalize()?;
                     if path.parent() == Some(root.as_path()) && path.is_file() {
                         return Ok(path);
@@ -1684,6 +1717,16 @@ impl Supervisor {
             "unknown asset handle",
         ))
     }
+}
+
+/// `path.canonicalize()` with an error naming the host configuration key and path.
+fn canonical(key: &str, path: &Path) -> io::Result<PathBuf> {
+    path.canonicalize()
+        .map_err(|error| labeled(key, path, error))
+}
+
+fn labeled(key: &str, path: &Path, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{key}: {}: {error}", path.display()))
 }
 
 /// Holds a session slot and card mount during a slow spawn; released on failure.
@@ -1818,6 +1861,38 @@ mod tests {
             assert!(host.resolve_asset(bad).is_err(), "resolved {bad}");
         }
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn missing_asset_directory_is_listed_once_created() {
+        let base =
+            std::env::temp_dir().join(format!("lotus-host-late-{}", SessionUuid::generate()));
+        let late = base.join("late");
+        let mut config = HostConfig::new(std::env::current_exe().expect("exe"), base.join("store"));
+        config.asset_directories.insert("late".into(), late.clone());
+        let host = Supervisor::new(config).expect("missing directory is not fatal");
+        assert!(host.assets().is_empty());
+        let unavailable = host.unavailable_asset_directories();
+        assert!(unavailable["late"].contains("late"), "{unavailable:?}");
+        assert!(host.resolve_asset("late/demo.3dsx").is_err());
+        fs::create_dir_all(&late).expect("late dir");
+        fs::write(late.join("demo.3dsx"), b"3DSX").expect("content");
+        assert_eq!(host.assets(), vec!["late/demo.3dsx".to_string()]);
+        assert!(host.resolve_asset("late/demo.3dsx").is_ok());
+        assert!(host.unavailable_asset_directories().is_empty());
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn missing_worker_error_names_the_key_and_path() {
+        let config = HostConfig::new("no-such-worker.exe", std::env::temp_dir());
+        let error = Supervisor::new(config).err().expect("missing worker fails");
+        let text = error.to_string();
+        assert!(
+            text.starts_with("worker: ") && text.contains("no-such-worker.exe"),
+            "{text}"
+        );
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]

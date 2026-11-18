@@ -194,6 +194,7 @@ impl LotusServer {
             "cards": host.and_then(|host| host.cards().ok()).unwrap_or_default(),
             "mounted_cards": host.map(Supervisor::mounted_cards).unwrap_or_default(),
             "assets": host.map(Supervisor::assets).unwrap_or_default(),
+            "unavailable_asset_directories": host.map(Supervisor::unavailable_asset_directories).unwrap_or_default(),
             "max_sessions": host.map(Supervisor::max_sessions).unwrap_or(0),
             "guest_refresh_hz": GUEST_REFRESH_HZ,
             "frontend_metrics": host.map(Supervisor::frontend_metrics).unwrap_or_default(),
