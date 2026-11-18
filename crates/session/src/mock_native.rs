@@ -213,7 +213,10 @@ impl Machine {
                     .append(true)
                     .open(self.root.join("inputs.jsonl"))
                 {
-                    let _ = writeln!(log, "{line}");
+                    // One write per line: `writeln!` issues several writes, and tests poll this
+                    // file concurrently, so they could read a partial object.
+                    let _ = log.write_all(format!("{line}
+").as_bytes());
                 }
                 (Status::Ok, self.snapshot())
             }
