@@ -4,7 +4,7 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
-## Unreleased
+## v0.0.5 (2026-11-18)
 
 Pins: integration (AZAHAR) `7cd04970`, experimental (CITnLO) `435684c0`,
 both pushed to the fork's `integration` and `experimental` branches; the
