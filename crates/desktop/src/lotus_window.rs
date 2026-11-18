@@ -166,6 +166,14 @@ pub struct LotusWindow {
     workspace: Snapshot,
     /// Displayed screens of each shown session (lotus#65).
     tiles: BTreeMap<String, TileView>,
+    /// Session the inspector targets, as published by the controller (lotus#71).
+    inspected: String,
+    /// Tile session whose floating inspector is open in a split; `None` when closed.
+    inspect_tile: Option<String>,
+    /// Width of that floating inspector. Not saved: the single-view inspector width in
+    /// preferences is never changed by a split.
+    overlay_width: f32,
+    overlay_drag: bool,
     /// Last split plan, so `Auto` holds its choice near a crossover (lotus#69).
     split_held: Cell<Option<SplitPlan>>,
     /// Last resolved layout handed to the supervisor, to report only changes.
@@ -266,6 +274,10 @@ impl LotusWindow {
             selected: String::new(),
             workspace: Snapshot::default(),
             tiles: BTreeMap::new(),
+            inspected: String::new(),
+            inspect_tile: None,
+            overlay_width: layout::INSPECTOR_DEFAULT,
+            overlay_drag: false,
             split_held: Cell::new(None),
             resolved_sent: Cell::new(None),
             registers: None,
@@ -344,12 +356,26 @@ impl LotusWindow {
     }
 
     fn plan(&self, window: &Window) -> Plan {
-        layout::plan(
+        // A split has no inspector rail; each tile opens its own floating inspector.
+        let inspector = (!self.split()).then(|| self.pane(Pane::Inspector));
+        layout::plan_with(
             f32::from(window.viewport_size().width),
             self.pane(Pane::Sessions),
-            self.pane(Pane::Inspector),
+            inspector,
             self.recent,
         )
+    }
+
+    fn split(&self) -> bool {
+        matches!(self.workspace.layout, Layout::Split { .. })
+    }
+
+    /// Open (or, if already open for it, close) the floating inspector of a tile's
+    /// session. Never selects it, so audio focus and the gauges' selection stay put.
+    fn toggle_tile_inspector(&mut self, session: String) {
+        let next = (self.inspect_tile.as_deref() != Some(session.as_str())).then_some(session);
+        self.inspect_tile.clone_from(&next);
+        self.send(Command::Inspect(next));
     }
 
     /// Show a pane expanded. A pane drawn as its rail only for lack of space
@@ -387,6 +413,31 @@ impl LotusWindow {
         }
     }
 
+    /// Resize the floating inspector from its inner edge; never saved.
+    fn drag_overlay(&mut self, x: f32, window: &Window) {
+        let plan = self.plan(window);
+        let viewport = f32::from(window.viewport_size().width);
+        let width = if self.overlay_left() {
+            x - plan.sessions_width()
+        } else {
+            viewport - x
+        };
+        let room = (plan.main - layout::INSPECTOR_MIN).max(layout::INSPECTOR_MIN);
+        self.overlay_width = width.clamp(layout::INSPECTOR_MIN, layout::INSPECTOR_MAX.min(room));
+    }
+
+    /// The floating inspector covers the side of its own tile: left for the first tile of
+    /// a left/right split, right otherwise.
+    fn overlay_left(&self) -> bool {
+        match &self.workspace.layout {
+            Layout::Split { first, .. } => {
+                self.inspect_tile.as_deref() == Some(first.as_str())
+                    && self.split_held.get().is_some_and(|plan| !plan.vertical)
+            }
+            _ => false,
+        }
+    }
+
     fn drag_to(&mut self, x: f32, window: &Window) {
         let Some(drag) = self.drag else {
             return;
@@ -401,6 +452,7 @@ impl LotusWindow {
     }
 
     fn end_drag(&mut self) {
+        self.overlay_drag = false;
         if self.drag.take().is_some() {
             self.preferences.save();
         }
@@ -475,6 +527,31 @@ impl LotusWindow {
             self.registers = update.registers.clone();
             self.inspection = update.inspection.clone();
             self.workspace.clone_from(&update.workspace);
+            if update.inspected != self.inspected {
+                self.inspected.clone_from(&update.inspected);
+                if let Some(old) = self.surface_image.take() {
+                    cx.drop_image(old, None);
+                }
+            }
+            // The controller clears the tile once it leaves the split or stops; a request
+            // still in the queue keeps the local value until it is applied.
+            if update.inspect_tile.is_none() && self.inspect_tile.is_some() {
+                let requested = self.inspect_tile.as_ref();
+                let shown = self.workspace.layout.visible();
+                if !matches!(self.workspace.layout, Layout::Split { .. })
+                    || !requested.is_some_and(|tile| shown.contains(&tile.as_str()))
+                {
+                    self.inspect_tile = None;
+                }
+            }
+            if let Some(controller) = &self.controller {
+                let open = if matches!(self.workspace.layout, Layout::Split { .. }) {
+                    self.inspect_tile.is_some()
+                } else {
+                    self.preferences.values.inspector_open
+                };
+                controller.inspector.store(open, Ordering::Release);
+            }
             if let Layout::Split { axis, ratio, .. } = update.workspace.layout {
                 let values = &mut self.preferences.values;
                 if (values.split_axis, values.split_ratio) != (axis, ratio) {
@@ -502,7 +579,7 @@ impl LotusWindow {
         if self.keyboard_target() != target {
             self.release_input();
         }
-        if let Some(surface) = surface.filter(|surface| surface.session == self.selected) {
+        if let Some(surface) = surface.filter(|surface| surface.session == self.inspected) {
             if let Some(old) = self.surface_image.take() {
                 cx.drop_image(old, None);
             }
@@ -686,6 +763,11 @@ impl LotusWindow {
         if modifiers.control {
             match key {
                 "b" => self.toggle_pane(Pane::Sessions, window),
+                "i" if self.split() => {
+                    if let Some(session) = self.keyboard_target() {
+                        self.toggle_tile_inspector(session);
+                    }
+                }
                 "i" => self.toggle_pane(Pane::Inspector, window),
                 "[" | "]" => self.show_panel(self.inspection_panel.cycle(key == "]")),
                 digit => {
@@ -2218,6 +2300,171 @@ impl LotusWindow {
             .into_any_element()
     }
 
+    /// Floating inspector for one tile's session (lotus#71): the same panels and debug
+    /// commands as the docked inspector, aimed at [`Self::inspected`], over that tile's side
+    /// of the stage without shrinking either tile. Views, run/pause/step and close in its
+    /// header; resizable from its inner edge.
+    fn render_tile_inspector(
+        &self,
+        plan: &Plan,
+        session: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let width = self.overlay_width.clamp(
+            layout::INSPECTOR_MIN,
+            (plan.main - 48.0).max(layout::INSPECTOR_MIN),
+        );
+        let left = self.overlay_left();
+        let summary = self.sessions.iter().find(|s| s.info.id == session);
+        // Tiles can share a name; the short id is what the session list shows beside it.
+        let label = format!(
+            "{} {}",
+            self.session_name(session),
+            session_tree::short_id(session)
+        );
+        // Data is shown only once the controller targets this session.
+        let ready = self.inspected == session;
+        let loaded =
+            summary.is_some_and(|s| s.info.asset.is_some() && s.telemetry.state.is_active());
+        let playing = summary.is_some_and(|s| s.telemetry.playing);
+        let usable = self.control && loaded && ready;
+        let (run, step) = (session.to_string(), session.to_string());
+        let close = session.to_string();
+        let mut views = div()
+            .id("overlay-views")
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .overflow_x_scroll()
+            .border_b_1()
+            .border_color(theme::border());
+        for panel in Panel::RAIL.into_iter().chain(Panel::OVERFLOW) {
+            views = views.child(
+                rail_button(
+                    SharedString::from(format!("overlay-view-{}", panel.label())),
+                    panel.icon(),
+                    panel == self.inspection_panel,
+                    true,
+                    panel.label(),
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                    view.choose_inspection(panel, 0);
+                })),
+            );
+        }
+        let header = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .h(px(TOOLBAR_HEIGHT))
+            .pl_3()
+            .pr_2()
+            .border_b_1()
+            .border_color(theme::border())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(format!("Inspecting {label}")),
+            )
+            .child(
+                rail_button(
+                    "overlay-run",
+                    if playing { Icon::Pause } else { Icon::Play },
+                    false,
+                    usable,
+                    format!("{} {label}", if playing { "Pause" } else { "Run" }),
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                    if usable {
+                        view.send(if playing {
+                            Command::Pause(run.clone())
+                        } else {
+                            Command::Play(run.clone())
+                        });
+                    }
+                })),
+            )
+            .child(
+                rail_button(
+                    "overlay-step",
+                    Icon::Step,
+                    false,
+                    usable && !playing,
+                    format!("Step {label} one frame"),
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                    if usable && !playing {
+                        view.send(Command::Step(step.clone()));
+                    }
+                })),
+            )
+            .child(
+                icon_button("overlay-close", Icon::Close, "Close inspector (Ctrl+I)").on_click(
+                    cx.listener(move |view, _: &ClickEvent, _, _| {
+                        if view.inspect_tile.as_deref() == Some(close.as_str()) {
+                            view.toggle_tile_inspector(close.clone());
+                        }
+                    }),
+                ),
+            );
+        let edge = div()
+            .id("overlay-divider")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(px(DIVIDER_WIDTH))
+            .when(left, |edge| edge.right_0())
+            .when(!left, |edge| edge.left_0())
+            .cursor_col_resize()
+            .hover(|style| style.bg(theme::surface_active()))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|view, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.release_input();
+                    view.overlay_drag = true;
+                }),
+            );
+        let body = if ready {
+            div()
+                .flex()
+                .flex_1()
+                .min_h_0()
+                .child(self.render_inspector(width, false, cx))
+                .into_any_element()
+        } else {
+            tile_message("Switching inspector…")
+        };
+        div()
+            .id("tile-inspector")
+            .absolute()
+            // Below the stage toolbar so the selected session's controls stay reachable.
+            .top(px(TOOLBAR_HEIGHT))
+            .bottom_0()
+            .when(left, |overlay| overlay.left(px(plan.sessions_width())))
+            .when(!left, |overlay| overlay.right_0())
+            .w(px(width))
+            .flex()
+            .flex_col()
+            .bg(theme::panel())
+            .border_1()
+            .border_color(theme::border_strong())
+            .shadow_lg()
+            .occlude()
+            .child(header)
+            .child(views)
+            .child(body)
+            .child(edge)
+            .into_any_element()
+    }
+
     /// One tile's own gauges (lotus#70): state, FPS, speed, frame (the remaining telemetry
     /// in its tooltip) and the controllers assigned to that session. A column beside a
     /// left/right tile, a row above or below a top/bottom tile.
@@ -2368,7 +2615,7 @@ impl LotusWindow {
                     } else {
                         theme::text_secondary()
                     })
-                    .child(label),
+                    .child(label.clone()),
             )
             .when(focused, |header| {
                 header.child(
@@ -2424,6 +2671,29 @@ impl LotusWindow {
                 description,
             ));
         }
+        let inspecting = self.inspect_tile.as_deref() == Some(session);
+        let target = session.to_string();
+        header = header.child(
+            rail_button(
+                SharedString::from(format!("inspect-{index}")),
+                Icon::Cpu,
+                inspecting,
+                true,
+                format!(
+                    "{} {label} (Ctrl+I on the focused tile)",
+                    if inspecting {
+                        "Close inspector for"
+                    } else {
+                        "Inspect"
+                    }
+                ),
+            )
+            .size(px(24.0))
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                view.toggle_tile_inspector(target.clone());
+            })),
+        );
         header = header.child(
             icon_button(
                 SharedString::from(format!("untile-{index}")),
@@ -2578,12 +2848,12 @@ impl LotusWindow {
         }
     }
     fn debug_command(&mut self, command: D) {
-        if self.selected.is_empty() {
+        if self.inspected.is_empty() {
             return;
         }
         self.choose_inspection(Panel::Result, 0);
         self.send(Command::Debug {
-            session: self.selected.clone(),
+            session: self.inspected.clone(),
             command,
         });
         self.inspection_panel = Panel::Result;
@@ -2611,6 +2881,15 @@ impl LotusWindow {
     fn show_panel(&mut self, panel: Panel) {
         self.menu = Menu::Closed;
         self.choose_inspection(panel, 0);
+        if self.split() {
+            // The focused tile's floating inspector; the docked pane state stays as saved.
+            if self.inspect_tile.is_none() {
+                if let Some(session) = self.keyboard_target() {
+                    self.toggle_tile_inspector(session);
+                }
+            }
+            return;
+        }
         if !self.preferences.values.inspector_open || self.recent != Pane::Inspector {
             self.open_pane(Pane::Inspector);
         }
@@ -2867,7 +3146,12 @@ impl LotusWindow {
         }
     }
 
-    fn render_inspector(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_inspector(
+        &self,
+        width: f32,
+        docked: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let current = self.inspection_panel;
         let mut panel = div()
             .id("inspector")
@@ -2949,13 +3233,15 @@ impl LotusWindow {
             }
             panel = panel.child(actions);
         }
-        panel = panel.child(self.divider(Pane::Inspector, cx));
+        if docked {
+            panel = panel.child(self.divider(Pane::Inspector, cx));
+        }
         // Popovers paint last so the row list never covers them.
         let utility = (self.menu == Menu::InspectorUtility).then(|| self.render_utility_menu(cx));
         let view = self
             .inspection
             .as_ref()
-            .filter(|(session, tab, _)| *session == self.selected && *tab == current);
+            .filter(|(session, tab, _)| *session == self.inspected && *tab == current);
         let Some((_, _, view)) = view else {
             return panel
                 .child(
@@ -3276,6 +3562,11 @@ impl Render for LotusWindow {
                 cx.listener(|view, _, window, cx| window.focus(&view.focus, cx)),
             )
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, window, cx| {
+                if view.overlay_drag {
+                    view.drag_overlay(event.position.x.into(), window);
+                    cx.notify();
+                    return;
+                }
                 if view.drag.is_none() {
                     return;
                 }
@@ -3316,9 +3607,17 @@ impl Render for LotusWindow {
             .child(self.render_sidebar(&plan, cx))
             .child(main)
             .when_some(plan.inspector, |root, width| {
-                root.child(self.render_inspector(width, cx))
+                root.child(self.render_inspector(width, true, cx))
             })
-            .child(self.render_inspector_rail(&plan, cx))
+            .when(plan.inspector_rail, |root| {
+                root.child(self.render_inspector_rail(&plan, cx))
+            })
+            .children(
+                self.inspect_tile
+                    .clone()
+                    .filter(|_| self.split())
+                    .map(|session| self.render_tile_inspector(&plan, &session, cx)),
+            )
             // At the root so it paints over the centre column it overhangs.
             .when(self.menu == Menu::Preferences, |root| {
                 let popover = self.render_preferences(cx);
@@ -3791,7 +4090,7 @@ pub(crate) fn with_tooltip(element: Stateful<Div>, text: impl Into<SharedString>
 fn icon_button(
     id: impl Into<SharedString>,
     glyph: Icon,
-    description: &'static str,
+    description: impl Into<SharedString>,
 ) -> Stateful<Div> {
     let button = div()
         .id(id.into())

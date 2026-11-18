@@ -52,6 +52,9 @@ pub enum Command {
         path: PathBuf,
     },
     Select(String),
+    /// Point the inspector at one tile's session without selecting it (lotus#71); `None`
+    /// returns it to the selection. Ignored unless that session is shown in a split.
+    Inspect(Option<String>),
     Debug {
         session: String,
         command: DebugCommand,
@@ -113,6 +116,13 @@ pub struct Update {
     /// Inspector target: preview of a single view, inspector panels, audio focus. Distinct
     /// from `workspace`, which says what the window shows (lotus#67).
     pub selected: String,
+    /// Session the inspector panels, registers and debug commands target: the tile asked
+    /// for with [`Command::Inspect`] while it stays in a split, otherwise `selected`.
+    /// Opening it never changes `selected`, audio focus or controller assignment.
+    pub inspected: String,
+    /// The tile session the inspector overlay was opened for; cleared by the controller
+    /// once that session leaves the split, stops or the split ends (lotus#71).
+    pub inspect_tile: Option<String>,
     pub workspace: lotus_session::workspace::Snapshot,
     /// Newest preview of each session the workspace shows, replaced whole per session.
     /// Sessions no longer shown are removed. Independent per session (lotus#65).
@@ -239,6 +249,7 @@ impl DesktopController {
             shutdown: shutdown.clone(),
             pending: Arc::new(AtomicUsize::new(0)),
             selected: Arc::new(tokio::sync::watch::channel(String::new()).0),
+            inspected: Arc::new(tokio::sync::watch::channel(String::new()).0),
             generation: Arc::new(AtomicU64::new(0)),
             in_flight: Arc::default(),
             preview_sequence: Arc::default(),
@@ -300,7 +311,9 @@ struct Loops {
     pending: Arc<AtomicUsize>,
     /// The selected session, for the preview, inspector and audio tasks.
     selected: Arc<tokio::sync::watch::Sender<String>>,
-    /// Increments on every selection change; results carry the value they started with.
+    /// The inspected session ([`Update::inspected`]), for the inspector task.
+    inspected: Arc<tokio::sync::watch::Sender<String>>,
+    /// Increments on every inspected-session change; results carry the value they started with.
     generation: Arc<AtomicU64>,
     /// (operation kind, session) -> start, at most one each; for [`Update::waiting`].
     in_flight: Arc<Mutex<BTreeMap<(&'static str, String), Instant>>>,
@@ -379,7 +392,6 @@ impl Loops {
                 let changed = *current != selected;
                 if changed {
                     current.clone_from(&selected);
-                    self.generation.fetch_add(1, Ordering::AcqRel);
                 }
                 changed
             });
@@ -387,6 +399,35 @@ impl Loops {
                 self.host.set_focus(&selected);
             }
             self.show_selected(&selected);
+            let inspected = {
+                let mut update = lock(&self.published);
+                let shown = update.workspace.layout.visible();
+                let split = matches!(
+                    update.workspace.layout,
+                    lotus_session::workspace::Layout::Split { .. }
+                );
+                let valid = update.inspect_tile.as_ref().is_some_and(|tile| {
+                    split
+                        && shown.contains(&tile.as_str())
+                        && update.sessions.iter().any(|s| s.info.id == *tile)
+                });
+                if !valid {
+                    update.inspect_tile = None;
+                }
+                update.inspected = update
+                    .inspect_tile
+                    .clone()
+                    .unwrap_or_else(|| selected.clone());
+                update.inspected.clone()
+            };
+            self.inspected.send_if_modified(|current| {
+                let changed = *current != inspected;
+                if changed {
+                    current.clone_from(&inspected);
+                    self.generation.fetch_add(1, Ordering::AcqRel);
+                }
+                changed
+            });
             let now = Instant::now();
             if let Some(previous) = published_at {
                 let interval = now.duration_since(previous).as_secs_f64() * 1e3;
@@ -477,7 +518,7 @@ impl Loops {
 
     /// Whether a result requested at `generation` for `session` still matches the view.
     fn current(&self, session: &str, generation: u64) -> bool {
-        let current = *self.selected.borrow() == session
+        let current = *self.inspected.borrow() == session
             && self.generation.load(Ordering::Acquire) == generation;
         if !current {
             lock(&self.metrics).stale_dropped += 1;
@@ -571,7 +612,7 @@ impl Loops {
             if !self.inspector.load(Ordering::Acquire) {
                 continue;
             }
-            let selected = self.selected.borrow().clone();
+            let selected = self.inspected.borrow().clone();
             let generation = self.generation.load(Ordering::Acquire);
             let Ok(summary) = self.host.summary(&selected) else {
                 continue;
@@ -769,6 +810,11 @@ impl Loops {
                 lock(&self.published).selected = id;
                 continue;
             }
+            if let Command::Inspect(tile) = command {
+                // Validated against the workspace on the next publish.
+                lock(&self.published).inspect_tile = tile;
+                continue;
+            }
             self.pending.fetch_add(1, Ordering::AcqRel);
             let loops = self.clone();
             tokio::spawn(async move {
@@ -814,7 +860,7 @@ impl Loops {
                 lock(&self.published).selected = session.clone();
                 host.run(&session, actor).await?;
             }
-            Command::Select(_) => {}
+            Command::Select(_) | Command::Inspect(_) => {}
             Command::Debug { session, command } => {
                 let mut value = host.debug(&session, &command, actor).await?;
                 if matches!(
@@ -872,8 +918,8 @@ impl Loops {
                     .await
                     .map_err(io::Error::other)??;
                 let mut update = lock(&self.published);
-                let selected = update.selected.clone();
-                update.inspection = Some((selected, Panel::Result, Arc::new(view)));
+                let inspected = update.inspected.clone();
+                update.inspection = Some((inspected, Panel::Result, Arc::new(view)));
             }
             Command::Play(id) => host.run(&id, actor).await?,
             Command::Pause(id) => {

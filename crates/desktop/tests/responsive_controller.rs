@@ -406,3 +406,105 @@ fn tiled_sessions_preview_independently_while_one_stalls() {
     drop(controller);
     let _ = std::fs::remove_dir_all(base);
 }
+
+/// lotus#71: a tile's inspector targets that tile's session without selecting it, follows
+/// it through a swap, and returns to the selection once the tile leaves the split.
+#[test]
+fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
+    use lotus_session::workspace::{Layout, Operation};
+    let base = std::env::temp_dir().join(format!("lotus-tinsp-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let controller = DesktopController::start(config, McpMode::Off).expect("controller");
+    for _ in 0..2 {
+        controller
+            .commands
+            .send(Command::Create {
+                kind: SessionKind::Secondary { parent: None },
+                asset: Some("demo".into()),
+            })
+            .expect("create");
+    }
+    wait(&controller, "two playing sessions", |update| {
+        update.sessions.len() == 2 && update.sessions.iter().all(|s| s.telemetry.playing)
+    });
+    let ids: Vec<String> = {
+        let update = controller.latest.lock().expect("snapshot");
+        update.sessions.iter().map(|s| s.info.id.clone()).collect()
+    };
+    let (a, b) = (ids[0].clone(), ids[1].clone());
+    let send = |command| controller.commands.send(command).expect("command");
+    send(Command::Select(a.clone()));
+    // Outside a split a tile request is ignored: the inspector follows the selection.
+    send(Command::Inspect(Some(b.clone())));
+    wait(&controller, "inspector on the selection", |update| {
+        update.inspected == a && update.inspect_tile.is_none()
+    });
+    send(Command::Workspace(Operation::Tile {
+        first: a.clone(),
+        second: b.clone(),
+        axis: None,
+        ratio: None,
+        screens: None,
+    }));
+    wait(&controller, "a split of A and B", |update| {
+        update.workspace.layout.visible() == [a.as_str(), b.as_str()]
+    });
+    controller.inspector.store(true, Ordering::Release);
+    send(Command::Inspect(Some(b.clone())));
+    wait(
+        &controller,
+        "B's inspection while A stays selected",
+        |update| {
+            update.inspected == b
+                && update
+                    .inspection
+                    .as_ref()
+                    .is_some_and(|(session, _, _)| *session == b)
+        },
+    );
+    assert_eq!(controller.latest.lock().expect("snapshot").selected, a);
+    send(Command::Workspace(Operation::Swap));
+    wait(&controller, "the swapped split", |update| {
+        update.workspace.layout.visible() == [b.as_str(), a.as_str()]
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    {
+        let update = controller.latest.lock().expect("snapshot");
+        assert_eq!(
+            update.inspected, b,
+            "the inspector follows its session, not the tile slot"
+        );
+        assert_eq!(update.selected, a);
+    }
+    send(Command::Workspace(Operation::Untile {
+        keep: Some(a.clone()),
+    }));
+    wait(
+        &controller,
+        "B's inspector closed with its tile",
+        |update| {
+            matches!(update.workspace.layout, Layout::Single { .. })
+                && update.inspect_tile.is_none()
+                && update.inspected == a
+        },
+    );
+    wait(&controller, "A's inspection after B left", |update| {
+        update
+            .inspection
+            .as_ref()
+            .is_some_and(|(session, _, _)| *session == a)
+    });
+    let update = controller.latest.lock().expect("snapshot");
+    assert!(
+        update.sessions.iter().all(|s| s.telemetry.playing),
+        "a worker stopped"
+    );
+    drop(update);
+    drop(controller);
+    let _ = std::fs::remove_dir_all(&base);
+}

@@ -285,7 +285,7 @@ same state through `Supervisor::update_workspace`; neither keeps its own layout.
   nothing. `revision` increments only when the state changes; a repeated
   operation is a no-op. `expected_revision` refuses a stale request
   (`ResourceBusy`), so an agent cannot overwrite a newer drag.
-- Separate from the workspace, and never changed by it: the inspector target
+- Separate from the workspace, and never changed by it: the selection
   (`Update::selected`), controller input, audio focus and worker execution.
   Outside a split, selecting a session in the sidebar or with
   `lotus_focus_session` shows it via `single`; selection never collapses a split.
@@ -354,6 +354,21 @@ cycles the axis auto → left/right → top/bottom).
   read from the assignment state only (`pairing`), never from pad order, tile
   order or keyboard focus. Gauges follow the session, so a swap moves them with
   it. Single view keeps the bottom strip unchanged.
+- Inspector (#71): a split removes the inspector rail and its width
+  (`layout::plan_with` with no inspector). Each tile header has an inspect
+  button ("Inspect <name>"); it opens a floating inspector for that tile's
+  session, on the tile's side of the stage below the toolbar, so neither tile
+  shrinks. It reuses the docked panels, views and debug commands, resizable from
+  its inner edge (width not saved). Ctrl+I and choosing a view open it for the
+  keyboard-focused tile. The target is `Command::Inspect`, separate from the
+  selection: `Update::inspected` is that tile while it stays visible in a split,
+  otherwise `selected`. The controller clears it when the session leaves the
+  split, stops or the split ends, and inspector replies are dropped by a
+  generation counter bumped on every `inspected` change, so a swap keeps the
+  overlay on its session and an untile never shows the other worker's data.
+  Opening it changes neither selection, audio focus, controller assignment nor
+  whether a worker runs. The saved single-view inspector open state and width
+  are not written while split and return on untile.
 
 Evidence: `responsive_controller.rs`
 `tiled_sessions_preview_independently_while_one_stalls` (mock workers): with A's
@@ -370,6 +385,17 @@ CITnLO `t03` sessions on Vulkan (**emulator**): at 1700x950 `auto` resolved
 left/right stacked at 1.35 on both tiles; at 900x1400 it went top/bottom at 0.81;
 back at 1700x950 it returned to left/right; `set_axis vertical` gave side-by-side
 screens at 1.24, all without restarting a worker.
+
+Inspector evidence: `tile_inspector_targets_its_own_session_and_never_changes_selection`
+(mock workers: ignored outside a split, targets B while `selected` stays A,
+follows B through a swap, falls back to A on untile, workers keep playing) and
+the split case in `layout.rs` (**verified compiled**). Release build, two CITnLO
+`t03` sessions (**emulator**): tiling removed the rail; B's inspect button opened
+"Inspecting content 2a756c" on the right with B's registers while the toolbar
+stayed on A; after `swap` it moved left with B, survived a status call, 30 s
+idle and a second swap; `untile` restored the docked rail showing A's registers.
+In one earlier run the overlay was gone after a swap and was not reproduced
+since. Keyboard activation of the buttons and macOS were not tested.
 
 Gauge evidence: `tile_pairing_comes_from_assignments_only` and
 `split_reserves_each_tiles_outer_gauge_edge` (**verified compiled**). Release

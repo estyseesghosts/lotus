@@ -43,6 +43,8 @@ pub struct Plan {
     pub inspector: Option<f32>,
     /// A pane the user left open that is drawn as its rail for lack of space.
     pub squeezed: Option<Pane>,
+    /// False in a split: the inspector rail and panel are gone, width included (lotus#71).
+    pub inspector_rail: bool,
     pub main: f32,
 }
 
@@ -53,7 +55,11 @@ impl Plan {
     }
     #[must_use]
     pub fn inspector_width(&self) -> f32 {
-        INSPECTOR_RAIL + self.inspector.unwrap_or(0.0)
+        if self.inspector_rail {
+            INSPECTOR_RAIL + self.inspector.unwrap_or(0.0)
+        } else {
+            0.0
+        }
     }
 }
 
@@ -71,14 +77,28 @@ fn limits(pane: Pane) -> (f32, f32) {
 /// window grows. The most recently opened pane is never squeezed.
 #[must_use]
 pub fn plan(viewport: f32, sessions: PaneState, inspector: PaneState, recent: Pane) -> Plan {
+    plan_with(viewport, sessions, Some(inspector), recent)
+}
+
+/// [`plan`] with the inspector rail removed (`inspector` is `None`), as in a split
+/// workspace. The saved inspector state is untouched and returns with single view.
+#[must_use]
+pub fn plan_with(
+    viewport: f32,
+    sessions: PaneState,
+    inspector: Option<PaneState>,
+    recent: Pane,
+) -> Plan {
+    let rail = inspector.is_some();
     let mut s = sessions
         .open
         .then(|| sessions.width.clamp(SESSION_MIN, SESSION_MAX));
     let mut i = inspector
-        .open
-        .then(|| inspector.width.clamp(INSPECTOR_MIN, INSPECTOR_MAX));
+        .filter(|inspector| inspector.open)
+        .map(|inspector| inspector.width.clamp(INSPECTOR_MIN, INSPECTOR_MAX));
+    let rail_width = if rail { INSPECTOR_RAIL } else { 0.0 };
     let main = |s: Option<f32>, i: Option<f32>| {
-        viewport - s.unwrap_or(SESSION_RAIL) - INSPECTOR_RAIL - i.unwrap_or(0.0)
+        viewport - s.unwrap_or(SESSION_RAIL) - rail_width - i.unwrap_or(0.0)
     };
     let order = match recent {
         Pane::Sessions => [Pane::Inspector, Pane::Sessions],
@@ -113,6 +133,7 @@ pub fn plan(viewport: f32, sessions: PaneState, inspector: PaneState, recent: Pa
         sessions: s,
         inspector: i,
         squeezed,
+        inspector_rail: rail,
         main: main(s, i),
     }
 }
@@ -294,6 +315,11 @@ mod tests {
     #[test]
     fn narrowing_shrinks_the_older_pane_first_then_squeezes_it() {
         // 1000: needs 1000-264-44-420 = 272 -> 48 short; sessions (older) gives it.
+        // lotus#71: a split drops the rail and panel and gives their width to the stage.
+        let split = plan_with(1600.0, OPEN_S, None, Pane::Inspector);
+        assert!(split.inspector.is_none() && !split.inspector_rail);
+        assert_eq!(split.inspector_width(), 0.0);
+        assert_eq!(split.main, 1600.0 - split.sessions_width());
         let p = plan(1000.0, OPEN_S, OPEN_I, Pane::Inspector);
         assert_eq!(p.sessions, Some(SESSION_DEFAULT - 48.0));
         assert_eq!(p.inspector, Some(INSPECTOR_DEFAULT));
