@@ -7,6 +7,7 @@
 pub mod desktop_controller;
 pub mod gauges;
 pub mod icons;
+pub mod input_routing;
 pub mod inspection;
 pub mod layout;
 pub mod lotus_window;

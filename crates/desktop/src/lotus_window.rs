@@ -20,7 +20,6 @@ use gpui::{
     Window,
 };
 use image::{Frame, RgbaImage};
-use lotus_session::native_session::InputState;
 use lotus_session::supervisor::{HostConfig, SessionKind, SessionSummary};
 use lotus_session::SessionState;
 use serde_json::Value;
@@ -164,7 +163,10 @@ pub struct LotusWindow {
     waiting: Vec<String>,
     artifacts: Option<lotus_session::artifacts::Usage>,
     focus: FocusHandle,
-    input: InputState,
+    /// Keyboard buttons held (3DS bits) and pointer touch, for the selected session; the
+    /// router composes them with controllers assigned to it (lotus#61).
+    keys: u32,
+    touching: Option<(u16, u16)>,
     bottom_rect: Arc<Mutex<Option<TouchTransform>>>,
     preferences: Store,
     /// The pane opened most recently keeps its width when space runs out.
@@ -254,7 +256,8 @@ impl LotusWindow {
             waiting: Vec::new(),
             artifacts: None,
             focus,
-            input: InputState::default(),
+            keys: 0,
+            touching: None,
             bottom_rect: Arc::default(),
             recent: if preferences.values.inspector_open {
                 Pane::Inspector
@@ -592,17 +595,25 @@ impl LotusWindow {
         .detach();
     }
 
+    /// Keyboard and pointer follow the selected session; controllers keep their own
+    /// assignment, so nothing here releases them.
     fn publish_input(&mut self) {
         let Some(controller) = &self.controller else {
             return;
         };
-        if self.sessions.iter().any(|s| s.info.id == self.selected) {
-            controller.submit_input(&self.selected, self.input);
-        }
+        let target = self
+            .sessions
+            .iter()
+            .any(|s| s.info.id == self.selected)
+            .then_some(self.selected.as_str());
+        let input = controller.input();
+        input.keyboard(target, self.keys);
+        input.pointer(target, self.touching);
     }
 
     fn release_input(&mut self) {
-        self.input = InputState::default();
+        self.keys = 0;
+        self.touching = None;
         self.publish_input();
     }
 
@@ -674,9 +685,9 @@ impl LotusWindow {
             _ => return,
         };
         if down {
-            self.input.buttons |= mask;
+            self.keys |= mask;
         } else {
-            self.input.buttons &= !mask;
+            self.keys &= !mask;
         }
         self.publish_input();
     }
@@ -687,18 +698,12 @@ impl LotusWindow {
             .lock()
             .ok()
             .and_then(|rect| rect.as_ref().and_then(|rect| rect.map_logical(x, y)));
-        if let Some((x, y)) = coordinate {
-            self.input.x = x;
-            self.input.y = y;
-            self.input.touch = true;
-        } else {
-            self.input.touch = false;
-        }
+        self.touching = coordinate;
         self.publish_input();
     }
 
     fn release_touch(&mut self) {
-        self.input.touch = false;
+        self.touching = None;
         self.publish_input();
     }
 
@@ -1875,7 +1880,7 @@ impl LotusWindow {
                 }),
             )
             .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, _| {
-                if view.input.touch && event.dragging() {
+                if view.touching.is_some() && event.dragging() {
                     view.touch(event.position.x.into(), event.position.y.into());
                 }
             }))

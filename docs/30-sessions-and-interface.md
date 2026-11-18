@@ -336,8 +336,8 @@ also clamps the vector to length 1), and it matches gilrs' stick convention
   (`analog_input_is_per_session_and_refused_by_old_workers`). It also covers
   stick coalescing that keeps a tap
   (`stick_moves_coalesce_but_keep_button_edges`).
-- **Not yet**: no controller drives the sticks until routing (#61) and mapping
-  (#63). ZL/ZR (bits 14/15) and Home (16) travel as buttons; Home reaches APT
+- **Not yet**: controllers drive the sticks through routing (#61) with the
+  default layout; remapping is #63. ZL/ZR (bits 14/15) and Home (16) travel as buttons; Home reaches APT
   only with HOME Menu registered (tools/peripheral_acceptance.py).
 
 ## Controllers (#59)
@@ -345,9 +345,8 @@ also clamps the vector to length 1), and it matches gilrs' stick convention
 `lotus-input` owns physical gamepads. `lotus-desktop` starts one
 `ControllerService` per process, on its own `lotus-input` thread, so polling is
 independent of GPUI rendering and of which session is selected. Workers and GPUI
-never enumerate devices. Events are not routed to sessions yet (#61); the
-desktop drains them and reports devices and counters in
-`lotus_status.frontend_metrics.controllers`.
+never enumerate devices. Routing to sessions is the next section; devices,
+counters and assignments are in `lotus_status.frontend_metrics.controllers`.
 
 - **Backend**: gilrs `=0.11.2` behind `ControllerBackend`. Feature `wgi`
   (default) uses Windows Gaming Input; `xinput` uses XInput
@@ -379,6 +378,72 @@ start and WGI initialisation (release, Windows 11).
 from each, repeated hotplug, and the focus matrix (focused, Alt+Tab away,
 minimized; WGI and XInput) — run `lotus-pads 30` from each build. macOS and
 Linux are unbuilt.
+
+## Input routing (#61)
+
+`lotus_input::router::Router` keeps what each source holds and which session
+it targets, and composes one complete guest state per session. Sources are the
+keyboard, the pointer and each controller connection. `desktop::input_routing`
+submits the composed states with owner `live` and keeps the router in step with
+the device service and the session list. A `lotus-input-router` thread applies
+controller events, so routing does not wait on GPUI frames.
+
+- **Targets**: keyboard and pointer follow the selected session while the
+  window has keyboard focus. `release_input` (blur, Tab, selection change)
+  releases only their contribution. Controllers follow explicit assignment
+  (`InputRouting::assign`, which #62's UI builds on). Selection, focus, Settings
+  and layout never move or release them. An unassigned controller routes
+  nowhere.
+- **Composition**: buttons are ORed over sources and touch comes from the
+  pointer only. Each stick takes the source with the largest deflection; ties go
+  to the keyboard, then the pointer, then the lowest connection ID. A state is
+  submitted only when the composition changes, so a keyboard release never
+  sends a zero that drops a held controller button.
+- **Default controller layout**: Azahar's `xinput_to_3ds_mapping`
+  (`input_common/sdl/sdl_impl.cpp`). East is A, south is B, north is X and west
+  is Y. The D-pad maps to the D-pad, the shoulders to L/R, Start to Start, Back
+  to Select and Guide to Home. Azahar leaves ZL/ZR unbound, so the triggers take
+  them here. The left stick is the Circle Pad and the right stick the C-stick.
+  Remapping is #63.
+- **Reassignment and disconnect**: assigning a controller first republishes its
+  old session without it. Buttons held at that moment are ignored on the new
+  session until released, and sticks until centred, so an old hold never
+  arrives there. A disconnect removes only that connection's contribution.
+- **Repair**: when the service's `dropped` counter rises, queued events are
+  applied and then every controller's state is replaced from the service
+  snapshot. After 250 ms without events, connections missing from the device
+  list are removed and unknown ones are added unassigned. Sessions that ended
+  are dropped from every source.
+- **Refusals**: if a submission is refused for a session that still exists, the
+  next change sends the full composed state. A worker without `analog_input`
+  gets the same state without sticks (`analog_dropped`). The worker refuses live
+  input while a scenario owns it (#48), and that input is never replayed.
+  `submit_input` only queues to the per-session mailbox, so a stalled worker
+  delays no other session.
+- **Status**: `frontend_metrics.controllers.routing` reports:
+  - `assignments`: device ID → session, or null.
+  - `router`: `published`, `unknown_device`, `resyncs`.
+  - `submission`: `refused`, `analog_dropped`.
+
+Evidence (**verified compiled**, mock workers):
+
+- The `lotus-input` router unit tests cover a keyboard on A beside a pad on B,
+  ORing and separate release, and the stick policy. They also cover pointer
+  retargeting, reassignment suppression, identical pads, session removal, lost
+  events and change-only publishing.
+- `crates/desktop/tests/input_routing.rs` runs the real supervisor with two
+  `lotus-mock-native` workers and the scripted backend:
+  - The keyboard and pad 1 on A never reach B, which has pad 2.
+  - Losing keyboard focus keeps pad 1's button held.
+  - Unplugging pad 2 releases only B.
+  - Reassignment neutralizes A and leaks nothing to B.
+  - B's input arrives within 1 s while A stalls for 3 s.
+  - Live input under a scenario owner is refused and not replayed after reset.
+  - Stopping B unassigns its pad.
+
+**Unverified**, needs physical controllers: the same run with two real pads,
+and controller input while Settings or another window has focus. WGI needs a
+focused window of this process (see the backend note above).
 
 ## Discord Rich Presence
 

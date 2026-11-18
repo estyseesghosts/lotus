@@ -24,9 +24,11 @@ use crate::presence::{self, Presence};
 use crate::ui_metrics::UiMetrics;
 use lotus_mcp::server::{Frontend, LotusServer};
 use lotus_protocol::debug::DebugCommand;
-use lotus_session::native_session::{Frame, InputState};
+use lotus_session::native_session::Frame;
 use lotus_session::supervisor::{HostConfig, SessionKind, SessionSummary, Supervisor};
 use lotus_session::telemetry::Actor;
+
+use crate::input_routing::InputRouting;
 use lotus_session::SessionState;
 use rmcp::ServiceExt;
 use serde_json::Value;
@@ -132,6 +134,7 @@ pub struct DesktopController {
     pub presence: Arc<Presence>,
     /// Window-side counters, published as `frontend_metrics.ui` (lotus#74).
     pub ui: Arc<UiMetrics>,
+    routing: Arc<InputRouting>,
     host: Arc<Supervisor>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -212,7 +215,8 @@ impl DesktopController {
         let shutdown = Arc::new(AtomicBool::new(false));
         let presence = Arc::new(Presence::start());
         let ui = Arc::new(UiMetrics::default());
-        let controllers = Controllers::start();
+        let routing = InputRouting::new(host.clone());
+        let controllers = Controllers::start(routing.clone(), shutdown.clone());
         let context = Loops {
             controllers,
             ui: ui.clone(),
@@ -237,6 +241,7 @@ impl DesktopController {
                 runtime.block_on(context.run(receiver, mcp));
             })?;
         Ok(Self {
+            routing,
             commands: sender,
             latest,
             inspector,
@@ -249,11 +254,10 @@ impl DesktopController {
         })
     }
 
-    /// Queue a complete live input state for `session`; never waits on the worker.
-    pub fn submit_input(&self, session: &str, state: InputState) {
-        let _ = self
-            .host
-            .submit_input(session, state, "live", Actor::Desktop);
+    /// Keyboard, pointer and controller routing to sessions (lotus#61).
+    #[must_use]
+    pub fn input(&self) -> &Arc<InputRouting> {
+        &self.routing
     }
 
     /// The supervisor shared with MCP, for tests and embedding.
@@ -275,7 +279,7 @@ impl Drop for DesktopController {
 #[derive(Clone)]
 struct Loops {
     host: Arc<Supervisor>,
-    /// Physical controllers (lotus#59). Events are drained and not yet routed (lotus#61).
+    /// Physical controllers (lotus#59), routed by [`InputRouting`] (lotus#61).
     controllers: Option<Arc<Controllers>>,
     presence: Arc<Presence>,
     published: Arc<Mutex<Update>>,
@@ -871,32 +875,41 @@ impl Loops {
 /// Published state is plain data replaced whole; recover rather than cascade.
 /// The host's controller service; one per desktop process, independent of selection.
 struct Controllers {
-    service: lotus_input::ControllerService,
-    events: Mutex<mpsc::Receiver<lotus_input::Event>>,
+    service: Arc<lotus_input::ControllerService>,
+    routing: Arc<InputRouting>,
 }
 
 impl Controllers {
-    fn start() -> Option<Arc<Self>> {
+    /// Starts the device service and the `lotus-input-router` thread that applies its events
+    /// until `shutdown`.
+    fn start(routing: Arc<InputRouting>, shutdown: Arc<AtomicBool>) -> Option<Arc<Self>> {
         use lotus_input::gilrs_backend::GilrsBackend;
-        match lotus_input::ControllerService::start(GilrsBackend::new) {
-            Ok((service, events)) => Some(Arc::new(Self {
-                service,
-                events: Mutex::new(events),
-            })),
+        let (service, events) = match lotus_input::ControllerService::start(GilrsBackend::new) {
+            Ok(started) => started,
             Err(error) => {
                 tracing::warn!(%error, "controller service not started");
-                None
+                return None;
             }
+        };
+        let service = Arc::new(service);
+        let thread_service = service.clone();
+        let thread_routing = routing.clone();
+        let spawned = std::thread::Builder::new()
+            .name("lotus-input-router".into())
+            .spawn(move || thread_routing.run(&thread_service, &events, &shutdown));
+        if let Err(error) = spawned {
+            tracing::warn!(%error, "controller routing not started");
+            return None;
         }
+        Some(Arc::new(Self { service, routing }))
     }
 
-    /// Devices and counters for `frontend_metrics.controllers`; drains pending events.
+    /// Devices, service counters and routing for `frontend_metrics.controllers`.
     fn status(&self) -> Value {
-        let drained = lock(&self.events).try_iter().count();
         serde_json::json!({
             "devices": self.service.devices(),
             "diagnostics": self.service.diagnostics(),
-            "unrouted_events": drained,
+            "routing": self.routing.status(),
         })
     }
 }

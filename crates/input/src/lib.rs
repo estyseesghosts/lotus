@@ -3,7 +3,7 @@
 //! One [`ControllerService`] per LOTUS host process owns the controller backend on its own
 //! thread, so device polling never depends on GPUI render cadence, window selection or a
 //! worker. Workers and GPUI never enumerate gamepads. This crate only discovers devices and
-//! normalizes their events; routing them to sessions is lotus#61/#62.
+//! normalizes their events; [`router`] composes them per session (lotus#61).
 //!
 //! Identity: a [`DeviceId`] names one *connection* of one device for this host run. It is
 //! never reused, and a reconnect gets a new one. The backend's model UUID is reported but is
@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime};
 use serde::Serialize;
 
 pub mod gilrs_backend;
+pub mod router;
 pub mod synthetic;
 
 /// One connection of one physical controller during this host run.
