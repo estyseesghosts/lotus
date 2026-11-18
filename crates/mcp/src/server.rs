@@ -28,7 +28,8 @@ use serde_json::Value;
 use crate::tool_arguments::{
     AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs, GdbOperation,
     InputArgs, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs,
-    SessionArgs, SettingsSchemaArgs, ValidateScenarioArgs,
+    SessionArgs, SettingsArgs, SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs,
+    ValidateScenarioArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -234,6 +235,51 @@ impl LotusServer {
         tool_result(Ok(
             lotus_settings::Registry::builtin().schema(args.scope.map(Into::into))
         ))
+    }
+
+    #[tool(
+        description = "Effective worker settings of a target (global, card, or session) with each value's source: default, global, card, runtime, or managed (host configuration profile, not editable). Lists ignored saved entries and unreadable files under problems. For a primary session, pending lists saved changes that apply at its card's next start."
+    )]
+    pub async fn lotus_settings(
+        &self,
+        Parameters(args): Parameters<SettingsArgs>,
+    ) -> CallToolResult {
+        let result = async { self.require_host()?.settings(&args.target.into()).await }.await;
+        tool_result(result)
+    }
+
+    #[tool(
+        description = "Change settings. Global and card overrides are saved and apply to sessions started afterwards, never to running workers. A secondary session's override is applied to its worker now and discarded when it ends; the worker refuses non-live settings while running. Primary sessions are changed through their card. Requires host control permission."
+    )]
+    pub async fn lotus_settings_change(
+        &self,
+        Parameters(args): Parameters<SettingsChangeArgs>,
+    ) -> CallToolResult {
+        let result = async {
+            let host = self.require_host()?;
+            let target = args.target.into();
+            let key = || {
+                args.key
+                    .as_deref()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "key is required"))
+            };
+            match args.operation {
+                SettingsOperation::Set => {
+                    let value = args.value.clone().ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "value is required for set")
+                    })?;
+                    host.set_setting(&target, key()?, Some(value), Actor::Mcp)
+                        .await?;
+                }
+                SettingsOperation::Unset => {
+                    host.set_setting(&target, key()?, None, Actor::Mcp).await?;
+                }
+                SettingsOperation::Reset => host.reset_settings(&target, Actor::Mcp).await?,
+            }
+            host.settings(&target).await
+        }
+        .await;
+        tool_result(result)
     }
 
     #[tool(description = "Validate a host-approved scenario handle; no filesystem paths accepted.")]
@@ -572,6 +618,79 @@ mod tests {
                 .schema(Some(lotus_settings::Scope::SecondaryRuntime))
         );
         assert!(!secondary.to_string().contains("lotus.desktop."));
+    }
+
+    /// lotus#51: settings reads and changes go through the supervisor's layered stores.
+    #[tokio::test]
+    async fn settings_tools_save_card_overrides_and_need_control() {
+        use crate::tool_arguments::{
+            SettingsArgs, SettingsChangeArgs, SettingsOperation, SettingsTargetArg,
+        };
+        let root = std::env::temp_dir().join(format!("lotus-mcp-set-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("store/cards/a")).unwrap();
+        let worker = std::env::current_exe().unwrap();
+        let change = |operation, value: Option<Value>| SettingsChangeArgs {
+            target: SettingsTargetArg::Card { card: "a".into() },
+            operation,
+            key: Some("volume".into()),
+            value,
+        };
+        let text = |result: CallToolResult| -> (bool, String) {
+            let text = serde_json::to_value(&result.content[0]).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            (result.is_error == Some(true), text)
+        };
+        let read_only = LotusServer::configured(
+            HostConfig::new(worker.clone(), root.join("store")),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let (error, message) = text(
+            read_only
+                .lotus_settings_change(Parameters(change(SettingsOperation::Set, Some(0.5.into()))))
+                .await,
+        );
+        assert!(error && message.contains("control"), "{message}");
+        drop(read_only);
+        let mut config = HostConfig::new(worker, root.join("store"));
+        config.allow_control = true;
+        let server = LotusServer::configured(config, BTreeMap::new()).unwrap();
+        let (error, message) = text(
+            server
+                .lotus_settings_change(Parameters(change(SettingsOperation::Set, Some(0.5.into()))))
+                .await,
+        );
+        assert!(!error, "{message}");
+        let shown: Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(shown["settings"]["volume"]["source"], "card");
+        let (_, message) = text(
+            server
+                .lotus_settings(Parameters(SettingsArgs {
+                    target: SettingsTargetArg::Global,
+                }))
+                .await,
+        );
+        let shown: Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(shown["settings"]["volume"]["source"], "default");
+        let (error, _) = text(
+            server
+                .lotus_settings_change(Parameters(change(SettingsOperation::Set, None)))
+                .await,
+        );
+        assert!(error, "set needs a value");
+        let (error, message) = text(
+            server
+                .lotus_settings_change(Parameters(change(SettingsOperation::Unset, None)))
+                .await,
+        );
+        assert!(!error, "{message}");
+        let shown: Value = serde_json::from_str(&message).unwrap();
+        assert_eq!(shown["settings"]["volume"]["source"], "default");
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// lotus#67: a headless host says it has no window workspace.

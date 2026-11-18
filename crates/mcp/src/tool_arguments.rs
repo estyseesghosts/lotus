@@ -23,6 +23,55 @@ impl From<SettingsScope> for lotus_settings::Scope {
     }
 }
 
+/// Saved global defaults, a primary card's saved overrides, or a running session.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "target", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SettingsTargetArg {
+    Global,
+    Card { card: String },
+    Session { session: String },
+}
+
+impl From<SettingsTargetArg> for lotus_session::supervisor::SettingsTarget {
+    fn from(target: SettingsTargetArg) -> Self {
+        match target {
+            SettingsTargetArg::Global => Self::Global,
+            SettingsTargetArg::Card { card } => Self::Card { card },
+            SettingsTargetArg::Session { session } => Self::Session { session },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsArgs {
+    pub target: SettingsTargetArg,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsOperation {
+    /// Save (global, card) or apply now (secondary session) `key` = `value`.
+    Set,
+    /// Remove the override of `key`, resuming inheritance.
+    Unset,
+    /// Remove every override of the target.
+    Reset,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsChangeArgs {
+    pub target: SettingsTargetArg,
+    pub operation: SettingsOperation,
+    /// Registry key, e.g. `cpu_clock_percentage`; required for set and unset.
+    #[serde(default)]
+    pub key: Option<String>,
+    /// JSON value checked against the registry type and bounds; required for set.
+    #[serde(default)]
+    pub value: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettingsSchemaArgs {

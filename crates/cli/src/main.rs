@@ -53,6 +53,9 @@ Usage:
   ctr-cli pins                 Print the pinned Azahar and GPUI revisions
   ctr-cli settings schema [global|primary|secondary]
                                 Print the settings registry, optionally only one scope's keys
+  ctr-cli settings show|set|unset|reset <host-config> global|card:<name> [key] [json]
+                                Read or change saved global defaults or card overrides;
+                                changes need allow_control in the host configuration
   ctr-cli scenario validate <path>
                                 Validate a scenario file against the execution limits
   ctr-cli scenario run <path> <worker> <artifact-root> [repeat-count]
@@ -68,6 +71,47 @@ fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&lotus_protocol::debug_schema::schema())?
         ),
+        "settings" if args.get(1).is_some_and(|a| a != "schema") => {
+            use lotus_session::supervisor::{HostConfig, SettingsTarget, Supervisor};
+            use lotus_session::telemetry::Actor;
+            const USAGE: &str = "usage: ctr-cli settings show|set|unset|reset <host-config> \
+                                 global|card:<name> [key] [json-value]";
+            let operation = args[1].as_str();
+            let config: HostConfig =
+                serde_json::from_str(&std::fs::read_to_string(args.get(2).context(USAGE)?)?)?;
+            let target = match args.get(3).map(String::as_str).context(USAGE)? {
+                "global" => SettingsTarget::Global,
+                other => match other.strip_prefix("card:") {
+                    Some(card) => SettingsTarget::Card { card: card.into() },
+                    None => bail!("{USAGE}"),
+                },
+            };
+            let key = args.get(4);
+            tokio::runtime::Runtime::new()?.block_on(async {
+                let host = Supervisor::new(config)?;
+                match operation {
+                    "show" => {}
+                    "set" => {
+                        let value: serde_json::Value =
+                            serde_json::from_str(args.get(5).context(USAGE)?)
+                                .context("the value must be JSON, e.g. 100, true or \"text\"")?;
+                        host.set_setting(&target, key.context(USAGE)?, Some(value), Actor::Host)
+                            .await?;
+                    }
+                    "unset" => {
+                        host.set_setting(&target, key.context(USAGE)?, None, Actor::Host)
+                            .await?;
+                    }
+                    "reset" => host.reset_settings(&target, Actor::Host).await?,
+                    _ => bail!("{USAGE}"),
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&host.settings(&target).await?)?
+                );
+                anyhow::Ok(())
+            })?;
+        }
         "settings" => {
             if args.get(1).map(String::as_str) != Some("schema") {
                 bail!("usage: ctr-cli settings schema [global|primary|secondary]");

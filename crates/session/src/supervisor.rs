@@ -157,6 +157,18 @@ pub enum SessionKind {
     Secondary { parent: Option<String> },
 }
 
+/// What a settings read or change addresses (lotus#51).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "snake_case")]
+pub enum SettingsTarget {
+    /// Saved global defaults.
+    Global,
+    /// A primary card's saved overrides.
+    Card { card: String },
+    /// A running session: read for any, change for a secondary only.
+    Session { session: String },
+}
+
 /// Identity of a session as listed by every frontend.
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionInfo {
@@ -210,6 +222,18 @@ struct SessionHandle {
     kill: Arc<Mutex<crate::controlled_worker::KillSwitch>>,
     /// The worker listed `analog_input`, so queued stick states can be delivered.
     analog_input: bool,
+    /// Settings resolved at creation and, for a secondary, its runtime overrides (lotus#51).
+    settings: Mutex<SessionSettings>,
+}
+
+/// A session's settings: what it started with, and what changed since (secondaries only).
+#[derive(Debug, Clone, Default)]
+struct SessionSettings {
+    /// Resolution at creation; `None` for a checkpoint-seeded session, whose settings come
+    /// from the checkpoint.
+    snapshot: Option<crate::settings_store::Resolution>,
+    /// Secondary runtime overrides; never persisted.
+    runtime: BTreeMap<String, serde_json::Value>,
 }
 
 impl SessionHandle {
@@ -290,6 +314,8 @@ pub struct Supervisor {
     budgets: crate::policy::Budgets,
     /// Session whose worker runs at raised priority (`policy.focus_priority`).
     focused: Mutex<Option<String>>,
+    /// Saved global and card settings (lotus#51).
+    settings: crate::settings_store::SettingsStore,
     /// Window layout (lotus#67). Lock order: `registry`, then `workspace`.
     workspace: Mutex<crate::workspace::Workspace>,
     /// Set by a windowed frontend; headless hosts refuse workspace changes.
@@ -335,7 +361,10 @@ impl Supervisor {
             config.max_sessions,
         )?;
         let policy = config.policy.clone();
+        let settings =
+            crate::settings_store::SettingsStore::new(&config.storage_root, &config.profile)?;
         Ok(Self {
+            settings,
             config,
             cards,
             registry: Mutex::default(),
@@ -524,6 +553,29 @@ impl Supervisor {
                 self.clone_card(&id, card).await?
             }
         };
+        // Global, then the card's overrides (a primary's own card, a secondary's parent),
+        // then the host profile. A secondary keeps this snapshot for its lifetime (lotus#51).
+        let resolved = match seed {
+            Some(_) => None,
+            None => {
+                let card = match &kind {
+                    SessionKind::Primary { card } => Some(card.as_str()),
+                    SessionKind::Secondary { parent } => parent.as_deref(),
+                };
+                match self.settings.resolve(card) {
+                    Ok(resolution) => Some(resolution),
+                    Err(error) => {
+                        if matches!(kind, SessionKind::Secondary { .. }) {
+                            let _ = self.cards.discard_scratch(&root, ScratchEnd::Abnormal);
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+        };
+        let resolved_profile = resolved
+            .as_ref()
+            .map(crate::settings_store::Resolution::profile);
         let launch = Instant::now();
         let executable = worker.unwrap_or(&self.config.worker);
         let mut shader_state = "off";
@@ -535,7 +587,11 @@ impl Supervisor {
                 shader_state = self.seed_shaders(executable, &root).await?;
             }
             let mut native = NativeSession::spawn(executable, &root).await?;
-            let profile = seed.map_or(&self.config.profile, |(_, profile)| profile);
+            let profile = match (seed, &resolved_profile) {
+                (Some((_, profile)), _) => profile,
+                (None, Some(profile)) => profile,
+                (None, None) => &self.config.profile,
+            };
             // An explicit Vulkan profile is refused under GPU pressure; Vulkan only preferred
             // starts on software before load, the restartable boundary prefer_vulkan already
             // falls back at (lotus#46).
@@ -616,6 +672,10 @@ impl Supervisor {
             tasks: Mutex::default(),
             kill,
             analog_input,
+            settings: Mutex::new(SessionSettings {
+                snapshot: resolved,
+                runtime: BTreeMap::new(),
+            }),
         });
         handle.start();
         reservation.commit(handle);
@@ -636,6 +696,195 @@ impl Supervisor {
         lock(&handle.info).asset = Some(asset.to_string());
         handle.record(actor, "load");
         Ok(handle.info())
+    }
+
+    fn known_card(&self, card: &str) -> io::Result<()> {
+        crate::card_store::validate_name(card)?;
+        if self.cards.list()?.iter().any(|known| known == card) {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("unknown card '{card}'"),
+        ))
+    }
+
+    /// Effective worker settings of a target with each value's source (lotus#51).
+    ///
+    /// For a session: what it runs with (creation snapshot plus a secondary's runtime
+    /// overrides) and `pending`, the keys whose saved value changed since a primary started.
+    /// Saved changes never reach a running worker; they apply when its card next starts.
+    pub async fn settings(&self, target: &SettingsTarget) -> io::Result<serde_json::Value> {
+        use crate::settings_store::{Layer, Resolution};
+        let report = |resolution: &Resolution, extra: serde_json::Value| {
+            let mut value = serde_json::to_value(resolution).map_err(io::Error::other)?;
+            if let (Some(value), serde_json::Value::Object(extra)) = (value.as_object_mut(), extra)
+            {
+                value.extend(extra);
+            }
+            value["managed"] =
+                serde_json::to_value(self.settings.managed().keys().collect::<Vec<_>>())
+                    .map_err(io::Error::other)?;
+            Ok(value)
+        };
+        match target {
+            SettingsTarget::Global => report(&self.settings.resolve(None)?, serde_json::json!({})),
+            SettingsTarget::Card { card } => {
+                self.known_card(card)?;
+                let mounted = lock(&self.registry).mounted.get(card).cloned();
+                report(
+                    &self.settings.resolve(Some(card))?,
+                    serde_json::json!({ "mounted_by": mounted }),
+                )
+            }
+            SettingsTarget::Session { session } => {
+                let handle = self.handle(session)?;
+                let info = handle.info();
+                let settings = lock(&handle.settings).clone();
+                let Some(mut effective) = settings.snapshot else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        "this session was restored from a checkpoint and runs with its settings",
+                    ));
+                };
+                effective.apply_runtime(&settings.runtime);
+                let pending: Vec<String> = match &info.kind {
+                    SessionKind::Primary { card } => {
+                        let now = self.settings.resolve(Some(card))?;
+                        now.settings
+                            .iter()
+                            .filter(|(key, entry)| {
+                                effective.settings.get(*key).map(|e| &e.value) != Some(&entry.value)
+                            })
+                            .map(|(key, _)| key.clone())
+                            .collect()
+                    }
+                    // A secondary keeps its creation snapshot by design.
+                    SessionKind::Secondary { .. } => Vec::new(),
+                };
+                let runtime: Vec<&String> = effective
+                    .settings
+                    .iter()
+                    .filter(|(_, entry)| entry.source == Layer::Runtime)
+                    .map(|(key, _)| key)
+                    .collect();
+                let runtime = serde_json::to_value(runtime).map_err(io::Error::other)?;
+                report(
+                    &effective,
+                    serde_json::json!({ "session": info, "pending": pending, "runtime": runtime }),
+                )
+            }
+        }
+    }
+
+    /// Set (`Some`) or remove (`None`) one override. Global and card values are saved and
+    /// apply to sessions started afterwards. A secondary's value is applied to its worker
+    /// now and kept until the secondary ends; removing it re-applies its creation value.
+    pub async fn set_setting(
+        &self,
+        target: &SettingsTarget,
+        key: &str,
+        value: Option<serde_json::Value>,
+        actor: Actor,
+    ) -> io::Result<()> {
+        use crate::settings_store::Store;
+        self.require_control()?;
+        match target {
+            SettingsTarget::Global => self.settings.set(&Store::Global, key, value),
+            SettingsTarget::Card { card } => {
+                self.known_card(card)?;
+                self.settings.set(&Store::Card(card.clone()), key, value)
+            }
+            SettingsTarget::Session { session } => {
+                self.set_runtime(session, [(key.to_string(), value)], actor)
+                    .await
+            }
+        }
+    }
+
+    /// Remove every override of a target: a saved file's entries, or a secondary's runtime
+    /// overrides (re-applying its creation values).
+    pub async fn reset_settings(&self, target: &SettingsTarget, actor: Actor) -> io::Result<()> {
+        use crate::settings_store::Store;
+        self.require_control()?;
+        match target {
+            SettingsTarget::Global => self.settings.reset(&Store::Global),
+            SettingsTarget::Card { card } => {
+                self.known_card(card)?;
+                self.settings.reset(&Store::Card(card.clone()))
+            }
+            SettingsTarget::Session { session } => {
+                let handle = self.handle(session)?;
+                let keys: Vec<String> = lock(&handle.settings).runtime.keys().cloned().collect();
+                self.set_runtime(session, keys.into_iter().map(|key| (key, None)), actor)
+                    .await
+            }
+        }
+    }
+
+    async fn set_runtime(
+        &self,
+        session: &str,
+        changes: impl IntoIterator<Item = (String, Option<serde_json::Value>)>,
+        actor: Actor,
+    ) -> io::Result<()> {
+        let handle = self.handle(session)?;
+        if matches!(handle.info().kind, SessionKind::Primary { .. }) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a primary session's settings are its card's overrides: set them on the card",
+            ));
+        }
+        let mut native = handle.native.lock().await;
+        check_lease(&handle, actor_client(actor))?;
+        for (key, value) in changes {
+            let snapshot = lock(&handle.settings).snapshot.clone().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "this session was restored from a checkpoint and runs with its settings",
+                )
+            })?;
+            if self.settings.managed().contains_key(&key) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{key} is managed by the host configuration profile"),
+                ));
+            }
+            let applied = match &value {
+                Some(value) => {
+                    crate::settings_store::check(
+                        &key,
+                        value,
+                        lotus_settings::Scope::SecondaryRuntime,
+                        native.branch(),
+                    )?;
+                    value.clone()
+                }
+                None => snapshot
+                    .settings
+                    .get(&key)
+                    .map(|entry| entry.value.clone())
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("unknown setting {key}"),
+                        )
+                    })?,
+            };
+            let setting: lotus_protocol::debug::SettingValue =
+                serde_json::from_value(applied).map_err(io::Error::other)?;
+            // The worker refuses a non-live class while powered on, naming the class.
+            native
+                .apply_profile(&BTreeMap::from([(key.clone(), setting)]))
+                .await?;
+            let mut settings = lock(&handle.settings);
+            match value {
+                Some(value) => settings.runtime.insert(key, value),
+                None => settings.runtime.remove(&key),
+            };
+        }
+        handle.record(actor, "settings");
+        Ok(())
     }
 
     /// Run continuously: the session's supervision task re-issues bounded runs until paused.

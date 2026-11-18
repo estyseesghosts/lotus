@@ -208,6 +208,8 @@ Headless and windowed servers expose the same tools; `lotus_status` reports
 | `lotus_registers` | r0–r15 and CPSR of one core at a safe point |
 | `lotus_focus_session` | windowed: inspect that session, and show it unless the workspace is split; headless: no effect |
 | `lotus_settings_schema` | the settings registry ([below](#settings-registry-50)), optionally one scope; no host needed |
+| `lotus_settings` | effective worker settings of `global`, a `card` or a `session`, with sources and problems ([layers](#settings-layers-51)) |
+| `lotus_settings_change` | `set`, `unset` or `reset` on the same targets; needs control |
 
 Host configuration gains `asset_directories` (handle → directory; each `.3dsx`
 directly inside is approved as `<handle>/<file>`, re-listed on demand, so
@@ -542,8 +544,57 @@ bounds or choices, default, scopes (`global`, `primary`,
 - **Discovery.** `ctr-cli settings schema [global|primary|secondary]` and
   `lotus_settings_schema` print the same JSON.
 
-The registry does not yet drive any UI or per-session overrides; those are
-#51 onward. Controls and MCP groups have no settings until input presets
+The registry does not drive any UI yet (#53 onward).
+
+## Settings layers (#51)
+
+Worker settings resolve, lowest to highest: registry default (the worker's own
+default) → saved global defaults → saved card overrides → a secondary's runtime
+overrides → host configuration `profile`. `crates/session/src/settings_store.rs`.
+
+| Layer | Stored in | Written by |
+| --- | --- | --- |
+| global | `<storage_root>/settings/global.json` | `global` target |
+| card | `cards/<card>/lotus-settings.json` | `card` target |
+| runtime | memory of the secondary's session | `session` target (secondaries only) |
+| managed | host configuration `profile` | the host JSON; read-only here |
+
+- **Sparse files.** `{"version": 1, "values": {...}}` with only explicit entries;
+  `unset` removes one and inheritance resumes, `reset` empties the file. The card
+  file sits beside `sdmc/`, `nand/` and `sysdata/`; secondaries copy only those
+  (`GUEST_DIRS`), so it never reaches scratch.
+- **Sessions.** A session resolves its settings at creation: a primary from
+  global + its card, a cloned secondary from global + its parent card, a
+  parentless secondary from global. Saved changes never touch a running worker.
+  A primary's report lists them under `pending` until its card next starts. A
+  secondary keeps its creation snapshot. Its runtime changes are applied to the
+  worker immediately (the worker refuses non-live classes while running) and
+  vanish with it; `unset` re-applies the creation value. A primary session is
+  changed through its card. Checkpoint-restored sessions run with the
+  checkpoint's settings and refuse changes.
+- **Managed.** Host `profile` keys win everywhere and refuse edits at every
+  target. A saved entry they shadow is reported as a problem and kept.
+  `lotus.host.*` stay in the host JSON and `lotus.desktop.*` in `desktop.json`;
+  the stores refuse both. Existing host JSON, CLI flags and `desktop.json` load
+  unchanged; there is nothing to migrate, because no worker setting was saved
+  before.
+- **Robustness.** Each write holds `settings/settings.lock` (OS file lock, so
+  other Lotus processes on the storage root wait), re-reads the file, changes
+  one entry and renames a complete temporary file over it. Entries this build
+  cannot use (unknown, excluded, invalid) are reported and kept. A file that
+  does not parse or has another version is reported, listed in `read_only`,
+  and never written.
+- **Frontends.** `lotus_settings` and `lotus_settings_change` (MCP);
+  `ctr-cli settings show|set|unset|reset <host-config> global|card:<name>`.
+  Changes need `allow_control`. Portable builds keep `storage_root` at
+  `data/sessions` (`packaging/windows/launch.ps1`), so both files stay in
+  the release folder.
+
+Evidence: **verified emulator** (mock worker) in
+`crates/session/tests/settings_layers.rs`, unit tests in `settings_store.rs`,
+plus CLI and MCP tests. `debug settings_set` still writes a worker directly
+and is not recorded as a runtime override. Portable packaging was not rebuilt
+for this change (source inspected). Controls and MCP groups have no settings until input presets
 (#57/#63) and automation settings (#56) land.
 
 ## Discord Rich Presence

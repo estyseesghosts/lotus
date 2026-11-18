@@ -276,6 +276,14 @@ impl NativeSession {
         Ok(())
     }
 
+    /// Worker branch from `hello.backend_name`; `None` for other workers (the mock).
+    #[must_use]
+    pub fn branch(&self) -> Option<lotus_settings::Branch> {
+        self.identity["backend"]
+            .as_str()
+            .and_then(lotus_settings::Branch::from_flavor)
+    }
+
     #[must_use]
     pub fn has_settings(&self) -> bool {
         self.settings_api
