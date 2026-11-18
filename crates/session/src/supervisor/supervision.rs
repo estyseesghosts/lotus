@@ -183,11 +183,17 @@ pub(super) struct Queued {
 /// bit. Then the newer state is appended, so a press and release shorter than one exchange
 /// both reach the guest. Touch coordinates are not transitions and always take the newest
 /// value. With [`MAILBOX`] entries queued the tail is overwritten and counted as dropped.
+///
+/// The owner is part of a state (#48): the worker records who set its input, so a state from
+/// a new owner is never coalesced with an equal state of the previous owner, whether queued,
+/// in flight or delivered. A new owner's state discards the old owner's queued states and is
+/// delivered after the in-flight exchange completes; that exchange is never cancelled.
 #[derive(Debug, Default)]
 pub(super) struct Mailbox {
     queue: VecDeque<Queued>,
-    /// State being delivered, taken from the queue after the session lock was acquired.
-    in_flight: Option<InputState>,
+    /// State and owner being delivered, taken from the queue after the session lock was
+    /// acquired.
+    in_flight: Option<(InputState, String)>,
     /// Last state this mailbox delivered; `None` once anything else may have set input.
     sent: Option<(InputState, String)>,
 }
@@ -203,6 +209,15 @@ impl Mailbox {
 
     pub(super) fn submit(&mut self, item: Queued, metrics: &mut InputMetrics) {
         metrics.submitted += 1;
+        let previous_owner = self
+            .queue
+            .back()
+            .map(|queued| &queued.owner)
+            .or(self.in_flight.as_ref().map(|(_, owner)| owner))
+            .or(self.sent.as_ref().map(|(_, owner)| owner));
+        if previous_owner.is_some_and(|owner| *owner != item.owner) {
+            metrics.owner_handoffs += 1;
+        }
         if self.queue.iter().any(|queued| queued.owner != item.owner) {
             metrics.cancelled += self.queue.len() as u64;
             self.queue.clear();
@@ -210,8 +225,9 @@ impl Mailbox {
         let len = self.queue.len();
         let Some(tail) = self.queue.back() else {
             let held = match (&self.in_flight, &self.sent) {
-                (Some(state), _) => same(state, &item.state),
-                (None, Some((state, owner))) => same(state, &item.state) && *owner == item.owner,
+                (Some((state, owner)), _) | (None, Some((state, owner))) => {
+                    same(state, &item.state) && *owner == item.owner
+                }
                 (None, None) => false,
             };
             if held {
@@ -230,7 +246,9 @@ impl Mailbox {
             self.queue[len - 2].state
         } else {
             self.in_flight
-                .or(self.sent.as_ref().map(|(state, _)| *state))
+                .as_ref()
+                .or(self.sent.as_ref())
+                .map(|(state, _)| *state)
                 .unwrap_or_default()
         };
         let changed_buttons = tail.state.buttons ^ before.buttons;
@@ -286,7 +304,7 @@ pub(super) async fn deliver_input(handle: Arc<SessionHandle>) {
                 let Some(item) = mailbox.queue.pop_front() else {
                     break;
                 };
-                mailbox.in_flight = Some(item.state);
+                mailbox.in_flight = Some((item.state, item.owner.clone()));
                 handle.telemetry().input.pending = mailbox.len();
                 item
             };
@@ -429,6 +447,82 @@ mod tests {
         mailbox.cancel(&mut metrics, true);
         assert_eq!(mailbox.len(), 0);
         assert_eq!(metrics.cancelled, 3);
+    }
+
+    fn submit_as(
+        mailbox: &mut Mailbox,
+        metrics: &mut InputMetrics,
+        value: InputState,
+        owner: &str,
+    ) {
+        mailbox.submit(
+            Queued {
+                state: value,
+                owner: owner.into(),
+                actor: Actor::Mcp,
+                submitted: Instant::now(),
+            },
+            metrics,
+        );
+    }
+
+    /// Pop the head as `deliver_input` does; returns what is now in flight.
+    fn start(mailbox: &mut Mailbox) -> Queued {
+        let item = mailbox.queue.pop_front().expect("queued");
+        mailbox.in_flight = Some((item.state, item.owner.clone()));
+        item
+    }
+
+    fn finish(mailbox: &mut Mailbox, item: Queued) {
+        mailbox.in_flight = None;
+        mailbox.sent = Some((item.state, item.owner));
+    }
+
+    fn owners(mailbox: &Mailbox) -> Vec<(u32, String)> {
+        mailbox
+            .queue
+            .iter()
+            .map(|q| (q.state.buttons, q.owner.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_new_owner_with_the_in_flight_state_is_still_delivered() {
+        let (mut mailbox, mut metrics) = (Mailbox::default(), InputMetrics::default());
+        submit_as(&mut mailbox, &mut metrics, state(1, false, 0), "live");
+        let first = start(&mut mailbox);
+        // Same buttons from another owner while live's exchange is stalled.
+        submit_as(&mut mailbox, &mut metrics, state(1, false, 0), "scenario");
+        assert_eq!(owners(&mailbox), vec![(1, "scenario".into())]);
+        assert_eq!(metrics.owner_handoffs, 1);
+        finish(&mut mailbox, first);
+        let second = start(&mut mailbox);
+        assert_eq!(second.owner, "scenario");
+        finish(&mut mailbox, second);
+        // Repeating scenario's delivered state is now a no-op; live's is not.
+        submit_as(&mut mailbox, &mut metrics, state(1, false, 0), "scenario");
+        assert_eq!(mailbox.len(), 0);
+        submit_as(&mut mailbox, &mut metrics, state(1, false, 0), "live");
+        assert_eq!(owners(&mailbox), vec![(1, "live".into())]);
+    }
+
+    #[test]
+    fn rapid_owner_flips_end_with_the_newest_owner_and_state() {
+        let (mut mailbox, mut metrics) = (Mailbox::default(), InputMetrics::default());
+        submit_as(&mut mailbox, &mut metrics, state(1, false, 0), "live");
+        let first = start(&mut mailbox);
+        // Press under A, release under B, touch down/up under A, at queue capacity.
+        submit_as(&mut mailbox, &mut metrics, state(0, false, 0), "scenario");
+        for i in 0..(MAILBOX as u32 + 4) {
+            submit_as(&mut mailbox, &mut metrics, state(0, i % 2 == 0, 3), "live");
+        }
+        submit_as(&mut mailbox, &mut metrics, state(0, false, 3), "scenario");
+        assert_eq!(owners(&mailbox), vec![(0, "scenario".into())]);
+        assert!(!mailbox.queue[0].state.touch, "no stuck touch");
+        assert_eq!(metrics.owner_handoffs, 3);
+        finish(&mut mailbox, first);
+        let last = start(&mut mailbox);
+        assert_eq!((last.state.buttons, last.owner.as_str()), (0, "scenario"));
     }
 
     #[test]

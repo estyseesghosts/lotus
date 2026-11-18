@@ -407,3 +407,50 @@ async fn futures_join(
     }
     results
 }
+
+/// lotus#48: a new owner's state equal to the in-flight one is still delivered, after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_owner_change_during_a_stalled_input_is_delivered() {
+    let fixture = host("owner", 1);
+    let ids = fixture.running(1).await;
+    let id = &ids[0];
+    let root = fixture.root(id);
+    let pressed = InputState {
+        buttons: 1,
+        x: 0,
+        y: 0,
+        touch: false,
+    };
+    // Wait out any status exchange already started, then stall the next reply.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    fixture.stall(id, 800);
+    fixture
+        .host
+        .submit_input(id, pressed, "live", Actor::Desktop)
+        .expect("live");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    fixture
+        .host
+        .submit_input(id, pressed, "scenario", Actor::Mcp)
+        .expect("scenario");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let owners = loop {
+        let owners: Vec<String> = std::fs::read_to_string(root.join("inputs.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).expect("json")["owner"]
+                    .as_str()
+                    .expect("owner")
+                    .to_string()
+            })
+            .collect();
+        if owners.len() >= 2 || Instant::now() > deadline {
+            break owners;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert_eq!(owners, vec!["live".to_string(), "scenario".to_string()]);
+    assert_eq!(inputs(&root), vec![1, 1]);
+    assert_eq!(telemetry(&fixture.host, id).input.owner_handoffs, 1);
+}

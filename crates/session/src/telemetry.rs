@@ -280,6 +280,9 @@ pub struct InputMetrics {
     pub edges_dropped: u64,
     /// Pending states discarded by stop, load, reset, direct input or an owner change.
     pub cancelled: u64,
+    /// Submitted states whose owner differs from the previous queued, in-flight or
+    /// delivered state's owner.
+    pub owner_handoffs: u64,
     pub failed: u64,
     pub pending: usize,
     /// Queue age of the latest delivered state when its exchange started.
