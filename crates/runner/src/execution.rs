@@ -11,11 +11,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::assertions::{
+    self, assertion_filter, AssertionResult, EventFilter, EventLedger, Observations, Outcome,
+};
 use crate::{InputEvent, Scenario};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub frame: u64,
+    /// `frame`, or the event kind of an event-triggered capture.
+    #[serde(default)]
+    pub trigger: Option<String>,
     pub screen: String,
     pub sha256: String,
     pub bytes: usize,
@@ -38,6 +44,25 @@ pub struct RunReport {
     /// is retained next to the report.
     #[serde(default)]
     pub movie: Option<Value>,
+    /// Scenario schema version.
+    #[serde(default = "one")]
+    pub schema_version: u32,
+    /// Per-assertion results (lotus#94).
+    #[serde(default)]
+    pub assertions: Vec<AssertionResult>,
+    /// True only when every assertion passed.
+    #[serde(default)]
+    pub passed: bool,
+    /// Index of the first assertion that did not pass.
+    #[serde(default)]
+    pub first_failure: Option<usize>,
+    /// Event observation window, when the scenario reads worker events.
+    #[serde(default)]
+    pub event_window: Option<EventLedger>,
+}
+
+fn one() -> u32 {
+    1
 }
 
 /// SHA-256 without loading an entire executable/content asset into memory.
@@ -104,17 +129,13 @@ pub fn validate_execution(scenario: &Scenario) -> io::Result<()> {
         validate_event(event)?;
     }
     for capture in &scenario.captures {
-        let frame = capture
+        let when = capture
             .when
             .as_ref()
-            .and_then(|when| when.frame)
-            .ok_or_else(|| invalid("only frame capture triggers are supported"))?;
-        if frame == 0
-            || frame > scenario.stop.max_frames
-            || capture
-                .when
-                .as_ref()
-                .is_some_and(|when| when.event.is_some())
+            .ok_or_else(|| invalid("capture needs a trigger"))?;
+        if when
+            .frame
+            .is_some_and(|frame| frame == 0 || frame > scenario.stop.max_frames)
             || capture
                 .include
                 .iter()
@@ -122,16 +143,43 @@ pub fn validate_execution(scenario: &Scenario) -> io::Result<()> {
             || capture.max_bytes.is_some_and(|bytes| bytes < 691200)
         {
             return Err(invalid(
-                "capture requires bounded native top/bottom screens",
+                "capture requires bounded native top/bottom screens at a frame in 1..=max_frames",
             ));
         }
+        if when.event.is_some() && scenario.version < 2 {
+            return Err(invalid("event capture triggers need scenario version 2"));
+        }
+        if when.frame.is_none() && when.event.is_none() {
+            return Err(invalid("capture needs a frame or event trigger"));
+        }
     }
-    if scenario
-        .assertions
-        .iter()
-        .any(|assertion| !matches!(assertion.kind.as_str(), "no_worker_crash" | "frame_count"))
+    if scenario.version < 2
+        && scenario
+            .assertions
+            .iter()
+            .any(|assertion| !matches!(assertion.kind.as_str(), "no_worker_crash" | "frame_count"))
     {
-        return Err(invalid("event assertions require the future trace backend"));
+        return Err(invalid(
+            "version 1 executes only no_worker_crash and frame_count; use scenario version 2",
+        ));
+    }
+    let experimental = scenario.profile.worker_flavor == crate::WorkerFlavor::Experimental;
+    let event_capture = scenario.captures.iter().any(|capture| {
+        capture
+            .when
+            .as_ref()
+            .is_some_and(|when| when.event.is_some())
+    });
+    if !experimental
+        && (event_capture
+            || scenario
+                .assertions
+                .iter()
+                .any(|assertion| assertions::needs_experimental(&assertion.kind)))
+    {
+        return Err(invalid(
+            "event, coverage and event-capture checks need worker_flavor experimental (CITnLO event history and breakpoint counters)",
+        ));
     }
     Ok(())
 }
@@ -275,13 +323,216 @@ async fn finish_movie(
     }))
 }
 
+/// Filters the run must count: event assertions plus event capture triggers.
+fn event_filters(scenario: &Scenario) -> Vec<EventFilter> {
+    let mut filters: Vec<EventFilter> = Vec::new();
+    let triggers = scenario.captures.iter().filter_map(|capture| {
+        let when = capture.when.as_ref()?;
+        Some(EventFilter {
+            kind: when.event.clone()?,
+            text: when.text_contains.clone(),
+        })
+    });
+    for filter in scenario
+        .assertions
+        .iter()
+        .filter_map(assertion_filter)
+        .chain(triggers)
+    {
+        if !filters.contains(&filter) {
+            filters.push(filter);
+        }
+    }
+    filters
+}
+
+/// Drains the worker's event history into the ledger. The stream returns at most 128 events per
+/// page and the history holds 1024 (`debug.h` `Stream`/`Record`), so nine pages always empty it;
+/// needing more means the worker is still recording faster than we read, which counts as loss.
+async fn drain(
+    session: &mut NativeSession,
+    ledger: &mut EventLedger,
+    frame: u64,
+) -> io::Result<()> {
+    use lotus_protocol::debug::DebugCommand;
+    for _ in 0..9 {
+        let reply = session
+            .debug(&DebugCommand::Events {
+                after: ledger.after,
+                limit: 128,
+            })
+            .await?;
+        if !ledger.absorb(&reply, frame) {
+            return Ok(());
+        }
+    }
+    ledger
+        .loss
+        .get_or_insert_with(|| format!("event history did not drain at frame {frame}"));
+    Ok(())
+}
+
+/// Memory/register reads due at `frame`.
+async fn read_values(
+    session: &mut NativeSession,
+    scenario: &Scenario,
+    frame: u64,
+    seen: &mut Observations,
+) -> io::Result<()> {
+    use lotus_protocol::debug::DebugCommand;
+    for (index, assertion) in scenario.assertions.iter().enumerate() {
+        if assertion.at_frame != Some(frame) {
+            continue;
+        }
+        match assertion.kind.as_str() {
+            "memory" => {
+                let width = assertion.width.unwrap_or(4);
+                let reply = session
+                    .debug(&DebugCommand::ReadMemory {
+                        address: assertion.address.expect("validated address"),
+                        length: width,
+                    })
+                    .await?;
+                let bytes: Vec<u8> = serde_json::from_value(reply["bytes"].clone())
+                    .map_err(|_| io::Error::other("read_memory reply has no bytes"))?;
+                if bytes.len() != width as usize {
+                    return Err(io::Error::other("read_memory returned a short read"));
+                }
+                let value = bytes
+                    .iter()
+                    .rev()
+                    .fold(0u64, |value, byte| value << 8 | u64::from(*byte));
+                seen.values.insert(index, value);
+            }
+            "register" => {
+                let reply = session
+                    .debug(&DebugCommand::Registers {
+                        core: assertion.core.unwrap_or(0),
+                    })
+                    .await?;
+                let register = assertion.register.expect("validated register");
+                // `debug.h` `Registers`: `registers` is cpu_registers r0..r15; cpsr is separate.
+                let value = if register == 16 {
+                    reply["cpsr"].as_u64()
+                } else {
+                    reply["registers"][register as usize].as_u64()
+                };
+                let value =
+                    value.ok_or_else(|| io::Error::other("registers reply is incomplete"))?;
+                seen.values.insert(index, value);
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+async fn capture_screens(
+    session: &mut NativeSession,
+    output: &Path,
+    frame: u64,
+    trigger: Option<String>,
+    checkpoints: &mut Vec<Checkpoint>,
+) -> io::Result<()> {
+    for captured in session.capture().await? {
+        let prefix = trigger
+            .as_ref()
+            .map_or(String::new(), |trigger| format!("{trigger}-"));
+        let filename = format!("{prefix}{frame}-{}.bgra", captured.lease.screen);
+        let hash = format!("{:x}", Sha256::digest(&captured.bgra));
+        fs::write(output.join(&filename), &captured.bgra)?;
+        checkpoints.push(Checkpoint {
+            frame,
+            trigger: trigger.clone(),
+            screen: captured.lease.screen,
+            sha256: hash,
+            bytes: captured.bgra.len(),
+            artifact: filename,
+        });
+    }
+    Ok(())
+}
+
+/// Sets one non-stopping execute breakpoint per coverage assertion.
+async fn arm_coverage(
+    session: &mut NativeSession,
+    scenario: &Scenario,
+) -> io::Result<BTreeMap<usize, u64>> {
+    use lotus_protocol::debug::{BreakpointKind, DebugCommand};
+    let mut coverage = BTreeMap::new();
+    for (index, assertion) in scenario.assertions.iter().enumerate() {
+        if !matches!(assertion.kind.as_str(), "reached" | "not_reached") {
+            continue;
+        }
+        let address = assertion.address.expect("validated address");
+        // Bit 0 marks a Thumb target; Thumb instructions are 2 bytes.
+        let (address, length) = if address & 1 == 1 {
+            (address & !1, 2)
+        } else {
+            (address, 4)
+        };
+        let set = session
+            .debug(&DebugCommand::BreakpointSet {
+                address,
+                kind: BreakpointKind::Execute,
+                length,
+            })
+            .await?;
+        let id = set["id"]
+            .as_u64()
+            .ok_or_else(|| io::Error::other("breakpoint_set returned no id"))?;
+        session
+            .debug(&DebugCommand::BreakpointConfigure {
+                id,
+                process: None,
+                hit_after: u64::MAX,
+                condition: None,
+                log: None,
+            })
+            .await?;
+        coverage.insert(index, id);
+    }
+    Ok(coverage)
+}
+
+/// Restricts history to the categories the run reads, before load. Returns whether SVC/IPC
+/// tracing is needed.
+async fn configure_events(
+    session: &mut NativeSession,
+    filters: &[EventFilter],
+) -> io::Result<bool> {
+    use lotus_protocol::debug::{DebugCommand, EventCategory};
+    let mut history: Vec<EventCategory> = Vec::new();
+    let mut trace = false;
+    for filter in filters {
+        let name = assertions::category(&filter.kind).expect("validated kind");
+        trace |= matches!(name, "svc" | "ipc");
+        let category: EventCategory =
+            serde_json::from_value(Value::from(name)).map_err(io::Error::other)?;
+        if !history.contains(&category) {
+            history.push(category);
+        }
+    }
+    session
+        .debug(&DebugCommand::EventsConfigure {
+            notify: None,
+            history: Some(history),
+        })
+        .await?;
+    Ok(trace)
+}
+
 /// One fresh root, one worker, one bounded run. Always attempt stop; Drop kills on failure.
+///
+/// The run writes `report.json` and `report.txt` whenever the worker completed the schedule; a
+/// run with any assertion that is not `pass` also writes `failure.json` and returns an error.
 pub async fn run(
     scenario: &Scenario,
     scenario_directory: &Path,
     executable: &Path,
     output: &Path,
 ) -> io::Result<RunReport> {
+    use lotus_protocol::debug::DebugCommand;
     validate_execution(scenario)?;
     let content = scenario_directory
         .join(&scenario.content.path_handle)
@@ -305,11 +556,25 @@ pub async fn run(
         .movie
         .as_ref()
         .is_some_and(|movie| movie.mode == "play");
+    let filters = event_filters(scenario);
     let result = tokio::time::timeout(
         Duration::from_secs(scenario.stop.wall_timeout_seconds),
         async {
             prepare(&mut session, scenario, scenario_directory).await?;
+            let mut ledger = None;
+            let mut trace = false;
+            if !filters.is_empty() {
+                trace = configure_events(&mut session, &filters).await?;
+                ledger = Some(EventLedger::new(filters.clone()));
+            }
             session.load(&content).await?;
+            if trace {
+                // SVC and IPC events are only built while tracing (`debug.h` category note).
+                session
+                    .debug(&DebugCommand::Trace { enabled: true })
+                    .await?;
+            }
+            let coverage = arm_coverage(&mut session, scenario).await?;
             if !playing {
                 session.input(InputState::default(), "scenario").await?;
             }
@@ -326,6 +591,33 @@ pub async fn run(
                     schedule.entry(release.at_frame).or_default().push(release);
                 }
             }
+            let stops: Vec<u64> = scenario
+                .captures
+                .iter()
+                .filter_map(|capture| capture.when.as_ref().and_then(|when| when.frame))
+                .chain(
+                    scenario
+                        .assertions
+                        .iter()
+                        .filter_map(|assertion| assertion.at_frame),
+                )
+                .collect();
+            let mut pending: Vec<(usize, EventFilter)> = scenario
+                .captures
+                .iter()
+                .enumerate()
+                .filter_map(|(index, capture)| {
+                    let when = capture.when.as_ref()?;
+                    Some((
+                        index,
+                        EventFilter {
+                            kind: when.event.clone()?,
+                            text: when.text_contains.clone(),
+                        },
+                    ))
+                })
+                .collect();
+            let mut seen = Observations::default();
             let mut checkpoints = Vec::new();
             let mut frame = 0;
             let mut input = InputState::default();
@@ -336,23 +628,37 @@ pub async fn run(
                     }
                     session.input(input, "scenario").await?;
                 }
-                if frame > 0
-                    && (frame == scenario.stop.max_frames
-                        || scenario.captures.iter().any(|capture| {
-                            capture.when.as_ref().and_then(|when| when.frame) == Some(frame)
-                        }))
-                {
-                    for captured in session.capture().await? {
-                        let filename = format!("{frame}-{}.bgra", captured.lease.screen);
-                        let hash = format!("{:x}", Sha256::digest(&captured.bgra));
-                        fs::write(output.join(&filename), &captured.bgra)?;
-                        checkpoints.push(Checkpoint {
-                            frame,
-                            screen: captured.lease.screen,
-                            sha256: hash,
-                            bytes: captured.bgra.len(),
-                            artifact: filename,
+                if frame > 0 {
+                    if let Some(ledger) = ledger.as_mut() {
+                        drain(&mut session, ledger, frame).await?;
+                        let mut fired = Vec::new();
+                        pending.retain(|(index, filter)| {
+                            let hit = ledger.count(filter).is_some_and(|count| count.count > 0);
+                            if hit {
+                                fired.push((*index, filter.kind.clone()));
+                            }
+                            !hit
                         });
+                        for (index, kind) in fired {
+                            capture_screens(
+                                &mut session,
+                                output,
+                                frame,
+                                Some(format!("capture{index}-{kind}")),
+                                &mut checkpoints,
+                            )
+                            .await?;
+                        }
+                    }
+                    read_values(&mut session, scenario, frame, &mut seen).await?;
+                    if frame == scenario.stop.max_frames || stops.contains(&frame) {
+                        let before = checkpoints.len();
+                        capture_screens(&mut session, output, frame, None, &mut checkpoints)
+                            .await?;
+                        seen.hashes
+                            .extend(checkpoints[before..].iter().map(|point| {
+                                (point.frame, point.screen.clone(), point.sha256.clone())
+                            }));
                     }
                 }
                 if frame == scenario.stop.max_frames {
@@ -363,16 +669,18 @@ pub async fn run(
                     .next()
                     .map(|(key, _)| *key)
                     .unwrap_or(scenario.stop.max_frames);
-                let next_capture = scenario
-                    .captures
+                let next_stop = stops
                     .iter()
-                    .filter_map(|capture| capture.when.as_ref().and_then(|when| when.frame))
+                    .copied()
                     .filter(|next| *next > frame)
                     .min()
                     .unwrap_or(scenario.stop.max_frames);
-                let next = (frame + 60)
+                // An event-triggered capture is taken at the end of the frame its event is
+                // recorded in, so the run advances one frame at a time while one is pending.
+                let step = if pending.is_empty() { 60 } else { 1 };
+                let next = (frame + step)
                     .min(next_input)
-                    .min(next_capture)
+                    .min(next_stop)
                     .min(scenario.stop.max_frames);
                 let status = session.advance((next - frame) as u16).await?;
                 if status["frames"].as_u64() != Some(next) {
@@ -380,18 +688,38 @@ pub async fn run(
                 }
                 frame = next;
             }
-            for assertion in &scenario.assertions {
-                if assertion.kind == "frame_count"
-                    && assertion.minimum.is_some_and(|minimum| frame < minimum)
-                {
-                    return Err(io::Error::other("frame count assertion failed"));
+            seen.frames = frame;
+            if !coverage.is_empty() {
+                let reply = session.debug(&DebugCommand::Breakpoints).await?;
+                let listed = reply["breakpoints"].as_array().cloned().unwrap_or_default();
+                for (index, id) in &coverage {
+                    if let Some(hits) = listed
+                        .iter()
+                        .find(|entry| entry["id"].as_u64() == Some(*id))
+                        .and_then(|entry| entry["hits"].as_u64())
+                    {
+                        seen.hits.insert(*index, hits);
+                    }
                 }
             }
+            seen.events = ledger;
+            let mut results = assertions::evaluate(scenario, &seen);
+            let lost = seen
+                .events
+                .as_ref()
+                .is_some_and(|ledger| ledger.loss.is_some());
+            results.extend(pending.iter().map(|(index, filter)| {
+                assertions::unfired_trigger(scenario.assertions.len() + index, *index, filter, lost)
+            }));
             let movie = match &scenario.movie {
                 Some(movie) => Some(finish_movie(&mut session, movie, output).await?),
                 None => None,
             };
             let status = session.status().await?;
+            let first_failure = results
+                .iter()
+                .find(|result| result.outcome != Outcome::Pass)
+                .map(|result| result.index);
             Ok(RunReport {
                 name: scenario.name.clone(),
                 backend: status["backend_name"].as_str().unwrap_or("unknown").into(),
@@ -404,6 +732,11 @@ pub async fn run(
                 host_elapsed_ms: started.elapsed().as_millis(),
                 evidence: "verified emulator; no hardware claim".into(),
                 movie,
+                schema_version: scenario.version,
+                passed: first_failure.is_none(),
+                first_failure,
+                assertions: results,
+                event_window: seen.events,
             })
         },
     )
@@ -416,23 +749,56 @@ pub async fn run(
         )),
     };
     let stop = session.stop().await;
-    match result {
-        Ok(report) => {
-            stop?;
-            fs::write(
-                output.join("report.json"),
-                serde_json::to_vec_pretty(&report).map_err(io::Error::other)?,
-            )?;
-            Ok(report)
-        }
+    let report = match result {
+        Ok(report) => report,
         Err(error) => {
             fs::write(
                 output.join("failure.json"),
                 serde_json::json!({"error": error.to_string()}).to_string(),
             )?;
-            Err(error)
+            return Err(error);
         }
-    }
+    };
+    stop?;
+    write_report(&report, output)?;
+    Ok(report)
+}
+
+/// Writes `report.json` and `report.txt`; a report that did not pass also gets `failure.json`
+/// and becomes an error, so no caller can mistake it for a pass.
+fn write_report(report: &RunReport, output: &Path) -> io::Result<()> {
+    fs::write(
+        output.join("report.json"),
+        serde_json::to_vec_pretty(report).map_err(io::Error::other)?,
+    )?;
+    fs::write(
+        output.join("report.txt"),
+        format!(
+            "{} {} worker {} content {}\n{}",
+            report.name,
+            if report.passed { "PASS" } else { "FAIL" },
+            report.worker_executable_sha256,
+            report.content_sha256,
+            assertions::render(&report.assertions)
+        ),
+    )?;
+    let Some(index) = report.first_failure else {
+        return Ok(());
+    };
+    let failed = report
+        .assertions
+        .iter()
+        .find(|result| result.index == index)
+        .expect("first failure is listed");
+    let message = format!(
+        "assertion {index} ({}) {:?}: expected {} actual {}",
+        failed.kind, failed.outcome, failed.expected, failed.actual
+    );
+    fs::write(
+        output.join("failure.json"),
+        serde_json::json!({"error": message, "assertion": failed}).to_string(),
+    )?;
+    Err(io::Error::other(message))
 }
 
 /// Repeat with fresh storage; compare guest pixel hashes, excluding host telemetry.
@@ -473,12 +839,48 @@ pub async fn repeat(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn proposed_trace_scenario_cannot_silently_execute() {
-        let scenario = Scenario::load(
+    fn example() -> Scenario {
+        Scenario::load(
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../specs/scenario-example.yaml"),
         )
-        .expect("example");
+        .expect("example")
+    }
+
+    #[test]
+    fn example_executes_only_on_the_experimental_worker() {
+        let mut scenario = example();
+        assert!(validate_execution(&scenario).is_ok());
+        scenario.profile.worker_flavor = crate::WorkerFlavor::Integration;
+        let error = validate_execution(&scenario).unwrap_err().to_string();
+        assert!(error.contains("experimental"), "{error}");
+        // Memory, register and frame checks alone run on AZAHAR.
+        scenario
+            .assertions
+            .retain(|assertion| !assertions::needs_experimental(&assertion.kind));
+        scenario.captures.retain(|capture| {
+            capture
+                .when
+                .as_ref()
+                .is_some_and(|when| when.frame.is_some())
+        });
+        assert!(validate_execution(&scenario).is_ok());
+    }
+
+    #[test]
+    fn version_1_keeps_its_executable_subset() {
+        let mut scenario = example();
+        scenario.version = 1;
+        scenario.captures.retain(|capture| {
+            capture
+                .when
+                .as_ref()
+                .is_some_and(|when| when.frame.is_some())
+        });
+        scenario
+            .assertions
+            .retain(|assertion| assertion.kind == "no_worker_crash");
+        assert!(validate_execution(&scenario).is_ok());
+        scenario.assertions.push(example().assertions[2].clone());
         assert!(validate_execution(&scenario).is_err());
     }
 }

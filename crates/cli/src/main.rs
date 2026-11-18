@@ -180,8 +180,8 @@ fn main() -> Result<()> {
                         .context("usage: ctr-cli scenario validate <path>")?;
                     let scenario = Scenario::load(path)
                         .with_context(|| format!("cannot load scenario {path}"))?;
-                    scenario
-                        .validate()
+                    // Same check as MCP lotus_validate_scenario: schema plus executor support.
+                    lotus_runner::execution::validate_execution(&scenario)
                         .with_context(|| format!("scenario {path} is invalid"))?;
                     println!("scenario {} is valid", scenario.name);
                 }

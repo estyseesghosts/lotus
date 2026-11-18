@@ -11,8 +11,8 @@ The external fixture is not distributed. `specs/native-smoke.yaml` resolves its
 path relative to the YAML; set its optional SHA-256 to require exact identity.
 Execution supports Old 3DS/software, HLE DSP/discard, ticks 0, empty private
 storage, exclusive scenario input, frame captures and frame/no-crash assertions.
-Unsupported profiles, snapshots, capture types and trace assertions fail before
-launch. `scenario-example.yaml` remains a proposed Wave 3 trace example.
+Unsupported profiles, snapshots and capture types fail before launch. Version 2
+assertions are described below.
 
 Each run creates a fresh root. Inputs apply before the frame following their
 checkpoint; `press` releases one frame later. Touch uses native coordinates.
@@ -39,6 +39,77 @@ These are host observations, not a throughput benchmark or guest timing result.
 The fixture submitted no audio in these runs; audio-ring unit checks do not
 prove audio playback. No hardware verification or timing improvement is claimed.
 
-Source: `runner::execution`, `session::native_session`; upstream frame layout
+## Version 2 assertions (lotus#94)
+
+**Verified emulator**, CITnLO `experimental` worker (SHA-256
+`a8f9f49d4ca93ca1b54c331b6e49f2f92e3724d484fbac8b17f51a99da0d3766`) and the AZAHAR
+integration worker, 2026-11-18, via `tests/test_scenario_assertions.py`.
+
+`version: 2` adds these assertion types; `specs/scenario-example.yaml` uses each
+one against the owned debugger fixture. Version 1 files keep their old meaning.
+
+| Type | Fields | Observation | Workers |
+|---|---|---|---|
+| `memory` | `at_frame`, `address`, `width` 1/2/4, `equals` or `minimum`/`maximum` | `read_memory` at the frame checkpoint, little-endian | both |
+| `register` | `at_frame`, `core`, `register` 0..16 (16 = cpsr), bounds | `registers` at the checkpoint | both |
+| `frame_hash` | `at_frame`, `screen`, `sha256` | raw BGRA capture; needs a frame capture there | both |
+| `event_seen` / `no_event` / `event_count` | `event`, `text_contains`, `count_at_least` or bounds | worker event history from load to `max_frames` | CITnLO |
+| `reached` / `not_reached` | `address` (bit 0 = Thumb), `count_at_least` | execute-breakpoint hit counter | CITnLO |
+
+Event kinds are `guest_log`, `hio_stdout`, `native_log`, `stopped`,
+`svc_enter`, `svc_exit` and `ipc` (the last three enable `trace`). `pica` is
+rejected because scenarios do not configure GPU capture, so the absence of
+`pica` events would mean nothing. Before load the runner sets the worker's
+event history to the needed categories and drains `events` at every checkpoint.
+Any `lost_total`, `pending_lost_total` or `history_gap` in the window, or a
+history that does not drain in nine 128-event pages, makes every event
+assertion `inconclusive`. Overflow is never reported as absence.
+
+Coverage sets an execute breakpoint with `hit_after = u64::MAX`. The worker
+increments `hits` before it compares against `hit_after`, so the breakpoint
+counts without stopping or logging. The source is the execute path in
+`azahar-experimental/src/ctr_worker/debug.h`. In the fixture run, `tick`
+counted 4,716,968 hits by frame 60. That is the fixture's `counter` (4,716,969)
+minus its initial value of 1.
+
+`captures[].when` takes either `frame` or `event` (+ `text_contains`). An
+event capture is taken at the end of the frame in which the event is recorded.
+While one is pending the run advances one frame per request. A trigger that
+never fires adds a `capture_trigger` result of `fail` (`inconclusive` if
+events were lost).
+
+Each assertion ends `pass`, `fail` or `inconclusive`, with expected, actual
+and provenance. A run passes only when all assertions pass. `report.json` adds
+`schema_version`, `assertions`, `passed`, `first_failure` and `event_window`.
+`report.txt` gives one line per assertion. A run that does not pass also
+writes `failure.json` and exits non-zero. A host deadline or a worker error
+writes only `failure.json`.
+
+Event, coverage and event-capture checks on `worker_flavor: integration` are
+rejected before launch. If the flavor is declared wrongly, AZAHAR refuses
+`events_configure` at runtime (`does not support event_subscriptions`) and
+no report is written. `ctr-cli scenario validate` and MCP
+`lotus_validate_scenario` both call `validate_execution`.
+
+Acceptance (`python tests/test_scenario_assertions.py ctr-cli.exe <experimental
+worker> <integration worker> <out>`, 28 s). The script builds the fixture and
+resolves symbols with `llvm-nm`. The passing scenario runs twice and repeat mode
+matches the hashes. These cases fail with the expected assertion named:
+
+- a changed frame hash
+- a changed memory expectation (actual `0xcafebabe`)
+- `reached deadlock_main` (0 hits)
+- an event trigger that never fires
+
+A 2-second host deadline and the AZAHAR runtime refusal produce no report.
+`native-smoke.yaml` still passes on AZAHAR.
+
+Not implemented: guest markers (#83) and fault receipts (#92/#93) are rejected
+by name until those exist. Predicate and breakpoint-stop capture triggers are
+not offered: they stop mid-frame and would break exact frame checkpoints.
+Timing assertions are also not offered. Draw counts need GPU capture
+configuration that scenarios do not expose.
+
+Source: `runner::execution`, `runner::assertions`, `session::native_session`; upstream frame layout
 comes from `video_core/renderer_software/renderer_software.cpp` at the stock pin.
 Rollback: stop using `scenario run`; validation and stock oracle remain available.

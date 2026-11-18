@@ -1,41 +1,45 @@
-# Proposed format: illustrative and NOT executable until a runner implements it.
-version: 1
-name: gpu-command-capture-smoke
+# Version 2 scenario (lotus#94) against the owned debugger fixture. Build it with
+#   python tools/build-debug-fixture.py build/fixture-debugger
+# Addresses are the fixture's symbols (`llvm-nm build/fixture-debugger/debugger.elf`); they
+# change if fixtures/debugger/fixture.c or the compiler changes. Event, coverage and
+# event-capture checks need the experimental (CITnLO) worker. tests/test_scenario_assertions.py
+# generates the same scenario with freshly resolved addresses and runs it.
+version: 2
+name: debugger-fixture-assertions
 content:
   kind: homebrew_3dsx
-  path_handle: fixtures/basic-draw.3dsx
-  sha256: "<fill-from-built-fixture>"
+  path_handle: ../build/fixture-debugger/debugger.3dsx
 profile:
   model: old3ds
   renderer: software
-  worker_flavor: integration
-  deterministic_initial_ticks: 12345
-  audio_output: discard  # DSP still runs
+  worker_flavor: experimental
+  audio_output: discard
 storage:
   mode: isolated_copy
-  base_snapshot: empty-homebrew
 input:
   owner: scenario
-  schedule:
-    - at_frame: 30
-      button: A
-      action: down
-    - at_frame: 32
-      button: A
-      action: up
+  schedule: []
 stop:
-  max_frames: 120
-  wall_timeout_seconds: 45
+  max_frames: 60
+  wall_timeout_seconds: 60
 captures:
-  - when: { frame: 80 }
-    include: [top_raw_frame, bottom_raw_frame, gpu_command_list, cpu_registers]
-    max_bytes: 16777216
+  - when: { frame: 30 }
+    include: [top_raw_frame, bottom_raw_frame]
+  # Taken at the end of the frame in which the fixture's svcOutputDebugString is recorded.
+  - when: { event: guest_log, text_contains: "lotus-fixture:ready" }
+    include: [top_raw_frame, bottom_raw_frame]
 assertions:
-  - type: event_seen
-    event: gpu.submit_cmdlist
-    count_at_least: 1
-  - type: no_worker_crash
-  - type: frame_count
-    minimum: 120
+  - { type: no_worker_crash }
+  - { type: frame_count, minimum: 60 }
+  # canary[0] (D canary) is never written.
+  - { type: memory, at_frame: 30, address: 0x00102008, width: 4, equals: 0xcafebabe }
+  # counter (D counter) increments once per tick().
+  - { type: memory, at_frame: 60, address: 0x00102004, minimum: 2 }
+  - { type: register, at_frame: 60, core: 0, register: 15, minimum: 0x00100000, maximum: 0x00110000 }
+  - { type: event_seen, event: guest_log, text_contains: "lotus-fixture:ready" }
+  - { type: no_event, event: hio_stdout }
+  # tick (T tick) runs in main's loop; deadlock_main only in mode 6.
+  - { type: reached, address: 0x00100254, count_at_least: 100 }
+  - { type: not_reached, address: 0x00100054 }
 outputs:
-  retain: [manifest, event_log, image_hashes, screenshots]
+  retain: [manifest, image_hashes, screenshots]

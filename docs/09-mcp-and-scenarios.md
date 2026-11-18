@@ -44,7 +44,7 @@ Requirements:
 - Inputs are sampled at explicit guest boundaries or frame IDs. If replay requires exact instruction tick timing, only claim it when supported; frame-anchored input is a weaker level.
 - Detect desync at checkpoints using targeted stable state (PC/thread, memory ranges, framebuffer hash, GPU state). Hashes must exclude volatile fields unless relevant.
 - For gameplay checks, show script coverage and which branch actually executed; a passing fixture for an unused fast path isn't evidence that optimization helped the game.
-- Assertions can be `equal`, `within_tolerance`, `monotonic`, `event_seen`, `no_event`, `frame_count`, `resource_limit`, `stop_reason`, etc., with explicit confidence of signal.
+- Assertions can be `equal`, `within_tolerance`, `monotonic`, `event_seen`, `no_event`, `frame_count`, `resource_limit`, `stop_reason`, etc., with explicit confidence of signal. Implemented subset: document 22, "Version 2 assertions".
 
 ## Agent ergonomics
 

@@ -567,6 +567,39 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
     }
 
+    /// MCP and `ctr-cli scenario validate` both call `validate_execution` (lotus#94).
+    #[tokio::test]
+    async fn scenario_validation_matches_the_cli() {
+        let root = std::env::temp_dir().join(format!("lotus-mcp-scenario-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("temp dir");
+        let example = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../specs/scenario-example.yaml");
+        let text = std::fs::read_to_string(&example).expect("example");
+        let azahar = root.join("azahar.yaml");
+        std::fs::write(
+            &azahar,
+            text.replace("worker_flavor: experimental", "worker_flavor: integration"),
+        )
+        .expect("variant");
+        let server = LotusServer {
+            scenarios: BTreeMap::from([
+                ("example".to_string(), example.clone()),
+                ("azahar".to_string(), azahar.clone()),
+            ]),
+            ..LotusServer::new()
+        };
+        for (handle, path) in [("example", &example), ("azahar", &azahar)] {
+            let cli = lotus_runner::execution::validate_execution(&Scenario::load(path).unwrap());
+            let mcp = server
+                .lotus_validate_scenario(Parameters(ValidateScenarioArgs {
+                    path: handle.into(),
+                }))
+                .await;
+            assert_eq!(mcp.is_error == Some(true), cli.is_err(), "{handle}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     #[test]
     fn create_defaults_to_disposable_secondary() {
         let args: CreateArgs = serde_json::from_str("{}").expect("defaults");

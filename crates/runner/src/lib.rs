@@ -9,6 +9,7 @@ use lotus_session::worker::WorkerFlavor;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
+pub mod assertions;
 pub mod execution;
 
 /// Maximum frames a scenario may request.
@@ -145,8 +146,12 @@ pub struct Stop {
 pub struct CaptureWhen {
     /// Frame the capture is taken at.
     pub frame: Option<u64>,
-    /// Event name that triggers the capture.
+    /// Event kind that triggers the capture (version 2): the capture is taken at the end of
+    /// the first frame in which a matching event is recorded.
     pub event: Option<String>,
+    /// Substring an event's `text`, `message` or `reason` must contain.
+    #[serde(default)]
+    pub text_contains: Option<String>,
 }
 
 /// A single capture request.
@@ -174,9 +179,39 @@ pub struct Assertion {
     /// Minimum count for `event_seen`.
     #[serde(default)]
     pub count_at_least: Option<u64>,
-    /// Minimum frame count for `frame_count`.
+    /// Lower bound: `frame_count`, and `memory`/`register`/`event_count` ranges.
     #[serde(default)]
     pub minimum: Option<u64>,
+    /// Upper bound of a `memory`/`register`/`event_count` range.
+    #[serde(default)]
+    pub maximum: Option<u64>,
+    /// Exact expected value of a `memory`/`register` read.
+    #[serde(default)]
+    pub equals: Option<u64>,
+    /// Frame checkpoint of a `memory`, `register` or `frame_hash` assertion.
+    #[serde(default)]
+    pub at_frame: Option<u64>,
+    /// Guest virtual address: `memory` reads, `reached`/`not_reached` targets.
+    #[serde(default)]
+    pub address: Option<u32>,
+    /// `memory` read width in bytes: 1, 2 or 4 (default 4), little-endian.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// `register` core (default 0).
+    #[serde(default)]
+    pub core: Option<u32>,
+    /// `register` index: r0..r15, 16 = cpsr.
+    #[serde(default)]
+    pub register: Option<u32>,
+    /// Event filter substring of `text`, `message` or `reason`.
+    #[serde(default)]
+    pub text_contains: Option<String>,
+    /// `frame_hash` screen: `top` or `bottom`.
+    #[serde(default)]
+    pub screen: Option<String>,
+    /// `frame_hash` expected SHA-256 of the raw BGRA capture.
+    #[serde(default)]
+    pub sha256: Option<String>,
 }
 
 /// Output retention policy.
@@ -231,7 +266,7 @@ impl Scenario {
 
     /// Validate the scenario against the project's execution limits.
     pub fn validate(&self) -> Result<(), ScenarioError> {
-        if self.version != 1 {
+        if !matches!(self.version, 1 | 2) {
             return Err(ScenarioError::Invalid(format!(
                 "unsupported scenario version {}",
                 self.version
@@ -289,8 +324,23 @@ impl Scenario {
             }
         }
 
+        if self.version == 2 {
+            return assertions::validate(self);
+        }
+        for capture in &self.captures {
+            if capture
+                .when
+                .as_ref()
+                .is_some_and(|when| when.text_contains.is_some())
+            {
+                return Err(ScenarioError::Invalid(
+                    "capture text_contains needs scenario version 2".to_string(),
+                ));
+            }
+        }
         for assertion in &self.assertions {
             match assertion.kind.as_str() {
+                // Version 1 named lotus-trace categories; it never executed (lotus#94).
                 "event_seen" => {
                     let event = assertion.event.as_deref().ok_or_else(|| {
                         ScenarioError::Invalid("event_seen assertion has no event".to_string())
@@ -304,7 +354,7 @@ impl Scenario {
                 "no_worker_crash" | "frame_count" => {}
                 other => {
                     return Err(ScenarioError::Invalid(format!(
-                        "unknown assertion type: {other}"
+                        "unknown assertion type for version 1: {other}"
                     )))
                 }
             }
@@ -324,11 +374,30 @@ mod tests {
             .to_path_buf()
     }
 
+    fn assertion() -> Assertion {
+        Assertion {
+            kind: String::new(),
+            event: None,
+            count_at_least: None,
+            minimum: None,
+            maximum: None,
+            equals: None,
+            at_frame: None,
+            address: None,
+            width: None,
+            core: None,
+            register: None,
+            text_contains: None,
+            screen: None,
+            sha256: None,
+        }
+    }
+
     #[test]
     fn example_scenario_loads_and_validates() {
         let scenario = Scenario::load(example_path()).expect("example scenario must load");
-        assert_eq!(scenario.version, 1);
-        assert_eq!(scenario.profile.worker_flavor, WorkerFlavor::Integration);
+        assert_eq!(scenario.version, 2);
+        assert_eq!(scenario.profile.worker_flavor, WorkerFlavor::Experimental);
         assert!(scenario.validate().is_ok());
     }
 
@@ -348,8 +417,7 @@ mod tests {
         scenario.assertions.push(Assertion {
             kind: "expect_magic".to_string(),
             event: None,
-            count_at_least: None,
-            minimum: None,
+            ..assertion()
         });
         assert!(scenario.validate().is_err());
     }
@@ -361,7 +429,7 @@ mod tests {
             kind: "event_seen".to_string(),
             event: Some("gpu.not_a_real_event".to_string()),
             count_at_least: Some(1),
-            minimum: None,
+            ..assertion()
         });
         assert!(scenario.validate().is_err());
     }
