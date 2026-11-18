@@ -23,6 +23,7 @@ lotus-debugger = { workspace = true }
 lotus-hardware = { workspace = true }
 lotus-mcp = { workspace = true }
 lotus-protocol = { workspace = true }
+lotus-settings = { workspace = true }
 lotus-session = { workspace = true }
 lotus-input = { workspace = true }
 lotus-trace = { workspace = true }

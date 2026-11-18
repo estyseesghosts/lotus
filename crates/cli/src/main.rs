@@ -51,6 +51,8 @@ Usage:
   ctr-cli version              Print the Lotus version and worker protocol version
   ctr-cli mock <worker-executable> Query a mock worker over private pipes
   ctr-cli pins                 Print the pinned Azahar and GPUI revisions
+  ctr-cli settings schema [global|primary|secondary]
+                                Print the settings registry, optionally only one scope's keys
   ctr-cli scenario validate <path>
                                 Validate a scenario file against the execution limits
   ctr-cli scenario run <path> <worker> <artifact-root> [repeat-count]
@@ -66,6 +68,22 @@ fn main() -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&lotus_protocol::debug_schema::schema())?
         ),
+        "settings" => {
+            if args.get(1).map(String::as_str) != Some("schema") {
+                bail!("usage: ctr-cli settings schema [global|primary|secondary]");
+            }
+            let scope = match args.get(2).map(String::as_str) {
+                None => None,
+                Some("global") => Some(lotus_settings::Scope::Global),
+                Some("primary") => Some(lotus_settings::Scope::Primary),
+                Some("secondary") => Some(lotus_settings::Scope::SecondaryRuntime),
+                Some(other) => bail!("unknown scope {other:?}"),
+            };
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&lotus_settings::Registry::builtin().schema(scope))?
+            );
+        }
         "version" => {
             println!("lotus {}", env!("CARGO_PKG_VERSION"));
             println!("worker protocol {}", protocol_id());

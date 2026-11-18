@@ -207,6 +207,7 @@ Headless and windowed servers expose the same tools; `lotus_status` reports
 | `lotus_list_cards` | cards and which session mounts each |
 | `lotus_registers` | r0–r15 and CPSR of one core at a safe point |
 | `lotus_focus_session` | windowed: inspect that session, and show it unless the workspace is split; headless: no effect |
+| `lotus_settings_schema` | the settings registry ([below](#settings-registry-50)), optionally one scope; no host needed |
 
 Host configuration gains `asset_directories` (handle → directory; each `.3dsx`
 directly inside is approved as `<handle>/<file>`, re-listed on demand, so
@@ -498,6 +499,52 @@ Evidence (**verified compiled**, mock workers):
 The sidebar list is **verified compiled** only: no screenshot run.
 **Unverified** with physical pads: two real controllers on two sessions, and
 hotplug.
+
+## Settings registry (#50)
+
+`lotus-settings` describes every setting a person or client can see: the 173
+Azahar worker settings and the Lotus host (`lotus.host.*`, `HostConfig`) and
+desktop (`lotus.desktop.*`, `desktop.json`) settings. Each descriptor has a
+stable key, owner, intent group and subgroup, label, description, type with
+bounds or choices, default, scopes (`global`, `primary`,
+`secondary_runtime`), apply class, availability and source citations.
+
+- **Azahar half.** Generated from `crates/settings/azahar-inventory.json`,
+  which `tools/settings_inventory.py` dumps from both pinned workers'
+  `settings_list` (it records each worker's SHA-256 and pin). Types, ranges,
+  choices, defaults, apply classes and consumer citations come from the
+  worker; groups are an explicit table in `azahar.rs`. One key exists only on
+  CITnLO and is marked `branch_only`.
+- **Exclusions.** Excluded settings are listed with a reason and settable at no
+  scope: keys the worker refuses (`use_gdbstub`, `gdbstub_port`,
+  `enable_rpc_server`, `use_custom_storage`, `output_type`), `inert` settings,
+  and settings whose cited consumers are all in `renderer_opengl` (Lotus runs
+  software or Vulkan) or all in frontend layout code (captures use
+  `frames.h` `ScreenLayout`, single-screen layouts with 3D off). The generator
+  keeps at most six citations per setting, so a setting with six is never
+  excluded on that basis: further consumers may exist.
+- **Lotus half.** `lotus.rs`. Defaults are checked against `HostConfig::new`,
+  `Policy::default`, `ArtifactQuota::default` and `Preferences::default`, and
+  the width/ratio bounds against `layout.rs` and `workspace.rs`, by tests in
+  the owning crates. Where the code checks only a lower bound, the descriptor
+  has no upper bound.
+- **Host profile.** `Supervisor::new` refuses a `profile` key that is unknown,
+  excluded, a Lotus key, or has an invalid value, with the reason. The
+  configured workers' branch is unknown before they start, so a CITnLO-only key
+  passes here and an AZAHAR worker refuses it at `settings_set`. A
+  configuration that previously set an excluded or misspelled key now fails
+  startup instead of being ignored or refused per session.
+- **Drift.** At session start, after `settings_list`, a worker whose
+  `backend_name` is `AZAHAR` or `CITnLO` is compared with the registry.
+  `settings_drift` in `native-manifest.json` lists keys the registry lacks and
+  registry keys the worker no longer binds; a non-empty result is logged.
+  Other workers (the mock) record `null`.
+- **Discovery.** `ctr-cli settings schema [global|primary|secondary]` and
+  `lotus_settings_schema` print the same JSON.
+
+The registry does not yet drive any UI or per-session overrides; those are
+#51 onward. Controls and MCP groups have no settings until input presets
+(#57/#63) and automation settings (#56) land.
 
 ## Discord Rich Presence
 

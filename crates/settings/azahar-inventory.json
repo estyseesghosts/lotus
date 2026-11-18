@@ -1,0 +1,2369 @@
+{
+ "generated_by": "tools/settings_inventory.py",
+ "pins": {
+  "integration": {},
+  "experimental": {}
+ },
+ "sources": {
+  "integration": {
+   "flavor": null,
+   "worker_sha256": "6986b5d54721d27c2212bdce0b0803ed81f0e27401158995fe894f172d181212",
+   "source": "b04d8a6c969f074500e29af5ac2ff5562e7fa16b",
+   "total": 172
+  },
+  "experimental": {
+   "flavor": null,
+   "worker_sha256": "4988feba3494205892f5e4b7c34441674a40f327a69e0735023335e793cd54df",
+   "source": "c3422b0a712b14cdeabc638693a55d733b43e524",
+   "total": 173
+  }
+ },
+ "settings": [
+  {
+   "name": "allow_plugin_loader",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/core.cpp:707;src/core/core.cpp:942"
+  },
+  {
+   "name": "anaglyph_shader_name",
+   "type": "string",
+   "default": "Dubois (builtin)",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:414;src/video_core/renderer_opengl/renderer_opengl.cpp:418"
+  },
+  {
+   "name": "antialiasing",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_base.cpp:34"
+  },
+  {
+   "name": "apply_region_free_patch",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/file_sys/archive_ncch.cpp:139"
+  },
+  {
+   "name": "aspect_ratio",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:137"
+  },
+  {
+   "name": "async_custom_loading",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/custom_textures/custom_tex_manager.cpp:59"
+  },
+  {
+   "name": "async_fs_operations",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/fs/directory.cpp:76;src/core/hle/service/fs/directory.cpp:92;src/core/hle/service/fs/file.cpp:291;src/core/hle/service/fs/file.cpp:320;src/core/hle/service/fs/file.cpp:351;src/core/hle/service/fs/fs_user.cpp:72"
+  },
+  {
+   "name": "async_presentation",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/vk_platform.cpp:360;src/video_core/renderer_vulkan/vk_present_window.cpp:113"
+  },
+  {
+   "name": "async_shader_compilation",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/vk_rasterizer.cpp:78"
+  },
+  {
+   "name": "audio_bitrate",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:477"
+  },
+  {
+   "name": "audio_emulation",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2
+   ],
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:669"
+  },
+  {
+   "name": "audio_encoder",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:468"
+  },
+  {
+   "name": "audio_encoder_options",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:510"
+  },
+  {
+   "name": "audio_muted",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "battery_charging",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/ptm/ptm.cpp:341"
+  },
+  {
+   "name": "battery_level",
+   "type": "integer",
+   "default": 0,
+   "range": {
+    "max": 4,
+    "min": 0
+   },
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/mcu/mcu_hwc.cpp:82;src/core/hle/service/ptm/ptm.cpp:332"
+  },
+  {
+   "name": "battery_state_source",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1
+   ],
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/mcu/mcu_hwc.cpp:75;src/core/hle/service/ptm/ptm.cpp:321;src/core/hle/service/ptm/ptm.cpp:336"
+  },
+  {
+   "name": "bg_blue",
+   "type": "float",
+   "default": 0.0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:352;src/video_core/renderer_opengl/renderer_opengl.cpp:687;src/video_core/renderer_vulkan/renderer_vulkan.cpp:259;src/video_core/renderer_vulkan/renderer_vulkan.cpp:1023"
+  },
+  {
+   "name": "bg_green",
+   "type": "float",
+   "default": 0.0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:351;src/video_core/renderer_opengl/renderer_opengl.cpp:686;src/video_core/renderer_vulkan/renderer_vulkan.cpp:258;src/video_core/renderer_vulkan/renderer_vulkan.cpp:1022"
+  },
+  {
+   "name": "bg_red",
+   "type": "float",
+   "default": 0.0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:351;src/video_core/renderer_opengl/renderer_opengl.cpp:686;src/video_core/renderer_vulkan/renderer_vulkan.cpp:257;src/video_core/renderer_vulkan/renderer_vulkan.cpp:1021"
+  },
+  {
+   "name": "bypass_audio_effects",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/audio_core/cubeb_sink.cpp:53"
+  },
+  {
+   "name": "camera_config",
+   "type": "array",
+   "default": [
+    "",
+    "",
+    ""
+   ],
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/cam/cam.cpp:1172"
+  },
+  {
+   "name": "camera_flip",
+   "type": "array",
+   "default": [
+    0,
+    0,
+    0
+   ],
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/cam/cam.cpp:1173"
+  },
+  {
+   "name": "camera_name",
+   "type": "array",
+   "default": [
+    "",
+    "",
+    ""
+   ],
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/cam/cam.cpp:1172"
+  },
+  {
+   "name": "cardboard_screen_size",
+   "type": "integer",
+   "default": 85,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:581"
+  },
+  {
+   "name": "cardboard_x_shift",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:630"
+  },
+  {
+   "name": "cardboard_y_shift",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:633"
+  },
+  {
+   "name": "cfg.00030001",
+   "type": "string",
+   "default": "0000000000000000",
+   "range": {
+    "encoded_bytes": 8,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00050001",
+   "type": "string",
+   "default": "0002",
+   "range": {
+    "encoded_bytes": 2,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00050005",
+   "type": "string",
+   "default": "00007842008090439a999942ec513842000020410000a040ec515e425c8fac41",
+   "range": {
+    "encoded_bytes": 32,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00050009",
+   "type": "string",
+   "default": "0000000000000000",
+   "range": {
+    "encoded_bytes": 8,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00070001",
+   "type": "string",
+   "default": "01",
+   "range": {
+    "encoded_bytes": 1,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00090000",
+   "type": "string",
+   "default": "0000000000000000",
+   "range": {
+    "encoded_bytes": 8,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00090001",
+   "type": "string",
+   "default": "0000000000000000",
+   "range": {
+    "encoded_bytes": 8,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00090002",
+   "type": "string",
+   "default": "00000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000a0000",
+   "type": "string",
+   "default": "41005a00410048004100520000000000000000000000000000000000",
+   "range": {
+    "encoded_bytes": 28,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000a0001",
+   "type": "string",
+   "default": "0b07",
+   "range": {
+    "encoded_bytes": 2,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000a0002",
+   "type": "string",
+   "default": "01",
+   "range": {
+    "encoded_bytes": 1,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000b0000",
+   "type": "string",
+   "default": "00000231",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000b0001",
+   "type": "string",
+   "default": "55006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e006900740065006400200053007400610074006500730000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000055006e0069007400650064002000530074006100740065007300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "range": {
+    "encoded_bytes": 2048,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000b0002",
+   "type": "string",
+   "default": "570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000570061007300680069006e00670074006f006e00200044004300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "range": {
+    "encoded_bytes": 2048,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000b0003",
+   "type": "string",
+   "default": "00000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000c0000",
+   "type": "string",
+   "default": "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "range": {
+    "encoded_bytes": 192,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000c0001",
+   "type": "string",
+   "default": "0000000000000000000000000000000000000000",
+   "range": {
+    "encoded_bytes": 20,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000c0002",
+   "type": "string",
+   "default": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "range": {
+    "encoded_bytes": 512,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000d0000",
+   "type": "string",
+   "default": "7f7f0000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000e0000",
+   "type": "string",
+   "default": "00",
+   "range": {
+    "encoded_bytes": 1,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000f0004",
+   "type": "string",
+   "default": "04000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.000f0006",
+   "type": "string",
+   "default": "00000000000000000000000000000000000000000000000000000000000000000000000000000000",
+   "range": {
+    "encoded_bytes": 40,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00110000",
+   "type": "string",
+   "default": "01000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00130000",
+   "type": "string",
+   "default": "00000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00150000",
+   "type": "string",
+   "default": "00000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00150002",
+   "type": "string",
+   "default": "4c310000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00160000",
+   "type": "string",
+   "default": "00000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.00170000",
+   "type": "string",
+   "default": "00000000",
+   "range": {
+    "encoded_bytes": 4,
+    "format": "hex"
+   },
+   "choices": null,
+   "apply": {
+    "integration": "cfg-savedata",
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg_defaults.cpp"
+  },
+  {
+   "name": "cfg.play_coins",
+   "type": "integer",
+   "default": 0,
+   "range": {
+    "maximum": 300,
+    "minimum": 0
+   },
+   "choices": null,
+   "apply": {
+    "experimental": "cfg-savedata"
+   },
+   "consumer_sources": "src/core/hle/service/ptm/ptm.cpp"
+  },
+  {
+   "name": "compress_cia_installs",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/am/am.cpp:138"
+  },
+  {
+   "name": "cpu_clock_percentage",
+   "type": "integer",
+   "default": 100,
+   "range": {
+    "max": 400,
+    "min": 5
+   },
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/core.cpp:629;src/core/core.cpp:909"
+  },
+  {
+   "name": "current_input_profile",
+   "type": "object",
+   "default": {
+    "analogs": [
+     "",
+     ""
+    ],
+    "buttons": [
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     ""
+    ],
+    "controller_touch_device": "",
+    "maptype": 2,
+    "motion_device": "",
+    "name": "",
+    "touch_device": "",
+    "touch_from_button_map_index": 0,
+    "udp_input_address": "",
+    "udp_input_port": 0,
+    "udp_pad_index": 0,
+    "use_touch_from_button": false,
+    "use_touchpad": false
+   },
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/apt/applet_manager.cpp:1709;src/core/hle/service/apt/applet_manager.cpp:1711;src/core/hle/service/hid/hid.cpp:119;src/core/hle/service/hid/hid.cpp:121;src/core/hle/service/hid/hid.cpp:125;src/core/hle/service/hid/hid.cpp:127"
+  },
+  {
+   "name": "current_input_profile_index",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "custom_bottom_height",
+   "type": "integer",
+   "default": 480,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:404;src/core/frontend/framebuffer_layout.cpp:475"
+  },
+  {
+   "name": "custom_bottom_width",
+   "type": "integer",
+   "default": 640,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:399;src/core/frontend/framebuffer_layout.cpp:471"
+  },
+  {
+   "name": "custom_bottom_x",
+   "type": "integer",
+   "default": 80,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:396;src/core/frontend/framebuffer_layout.cpp:470"
+  },
+  {
+   "name": "custom_bottom_y",
+   "type": "integer",
+   "default": 500,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:401;src/core/frontend/framebuffer_layout.cpp:474"
+  },
+  {
+   "name": "custom_portrait_bottom_height",
+   "type": "integer",
+   "default": 480,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:403;src/core/frontend/framebuffer_layout.cpp:442"
+  },
+  {
+   "name": "custom_portrait_bottom_width",
+   "type": "integer",
+   "default": 640,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:398;src/core/frontend/framebuffer_layout.cpp:438"
+  },
+  {
+   "name": "custom_portrait_bottom_x",
+   "type": "integer",
+   "default": 80,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:395;src/core/frontend/framebuffer_layout.cpp:437"
+  },
+  {
+   "name": "custom_portrait_bottom_y",
+   "type": "integer",
+   "default": 500,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:400;src/core/frontend/framebuffer_layout.cpp:441"
+  },
+  {
+   "name": "custom_portrait_top_height",
+   "type": "integer",
+   "default": 480,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:393;src/core/frontend/framebuffer_layout.cpp:440"
+  },
+  {
+   "name": "custom_portrait_top_width",
+   "type": "integer",
+   "default": 800,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:389;src/core/frontend/framebuffer_layout.cpp:436"
+  },
+  {
+   "name": "custom_portrait_top_x",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:387;src/core/frontend/framebuffer_layout.cpp:435"
+  },
+  {
+   "name": "custom_portrait_top_y",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:391;src/core/frontend/framebuffer_layout.cpp:439"
+  },
+  {
+   "name": "custom_second_layer_opacity",
+   "type": "integer",
+   "default": 100,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:381"
+  },
+  {
+   "name": "custom_textures",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:550;src/core/core.cpp:1041"
+  },
+  {
+   "name": "custom_top_height",
+   "type": "integer",
+   "default": 480,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:394;src/core/frontend/framebuffer_layout.cpp:473"
+  },
+  {
+   "name": "custom_top_width",
+   "type": "integer",
+   "default": 800,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:390;src/core/frontend/framebuffer_layout.cpp:469"
+  },
+  {
+   "name": "custom_top_x",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:388;src/core/frontend/framebuffer_layout.cpp:468"
+  },
+  {
+   "name": "custom_top_y",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:392;src/core/frontend/framebuffer_layout.cpp:472"
+  },
+  {
+   "name": "delay_game_render_thread_us",
+   "type": "integer",
+   "default": 0,
+   "range": {
+    "max": 65000,
+    "min": 0
+   },
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/gsp/gsp_gpu.cpp:860;src/core/hle/service/gsp/gsp_gpu.cpp:889"
+  },
+  {
+   "name": "delay_start_for_lle_modules",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/kernel/thread.cpp:488"
+  },
+  {
+   "name": "deterministic_async_operations",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/am/am.cpp:1901;src/core/hle/service/am/am.cpp:1955;src/core/hle/service/am/am.cpp:2040;src/core/hle/service/fs/file.cpp:151;src/core/hle/service/fs/fs_user.cpp:113;src/core/hle/service/fs/fs_user.cpp:229"
+  },
+  {
+   "name": "disable_right_eye_render",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/right_eye_disabler.cpp:61"
+  },
+  {
+   "name": "disable_spirv_optimizer",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp:111;src/video_core/renderer_vulkan/vk_shader_util.cpp:208"
+  },
+  {
+   "name": "dump_command_buffers",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/vk_instance.cpp:145"
+  },
+  {
+   "name": "dump_textures",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:547"
+  },
+  {
+   "name": "enable_audio_stretching",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/core.cpp:679;src/core/core.cpp:912"
+  },
+  {
+   "name": "enable_exception_handler",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/memory.cpp:580"
+  },
+  {
+   "name": "enable_gamemode",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "enable_realtime_audio",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/csnd/csnd_snd.cpp:173;src/audio_core/hle/hle.cpp:500"
+  },
+  {
+   "name": "enable_required_online_lle_modules",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/service.cpp:203"
+  },
+  {
+   "name": "enable_rpc_server",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:718"
+  },
+  {
+   "name": "factor_3d",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/kernel/shared_page.cpp:88;src/core/hle/service/hid/hid.cpp:329;src/core/hle/service/hid/hid.cpp:330"
+  },
+  {
+   "name": "filter_mode",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:587;src/video_core/renderer_opengl/renderer_opengl.cpp:657;src/video_core/renderer_vulkan/renderer_vulkan.cpp:197;src/video_core/renderer_vulkan/vk_present_window.cpp:479"
+  },
+  {
+   "name": "format_options",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:692"
+  },
+  {
+   "name": "frame_limit",
+   "type": "float",
+   "default": 100.0,
+   "range": {
+    "max": 1000.0,
+    "min": 0.0
+   },
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/kernel/svc.cpp:1878"
+  },
+  {
+   "name": "gdbstub_port",
+   "type": "integer",
+   "default": 24689,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:894"
+  },
+  {
+   "name": "graphics_api",
+   "type": "integer",
+   "default": 2,
+   "range": {
+    "max": 2,
+    "min": 0
+   },
+   "choices": [
+    0,
+    1,
+    2
+   ],
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/rpc/rpc_server.cpp:170"
+  },
+  {
+   "name": "init_clock",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1
+   ],
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/kernel/shared_page.cpp:40;src/core/hle/kernel/shared_page.cpp:63;src/core/movie.cpp:607"
+  },
+  {
+   "name": "init_ticks_override",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core_timing.cpp:39"
+  },
+  {
+   "name": "init_ticks_type",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1
+   ],
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core_timing.cpp:38"
+  },
+  {
+   "name": "init_time",
+   "type": "integer",
+   "default": 946681277,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/kernel/shared_page.cpp:61;src/core/movie.cpp:616"
+  },
+  {
+   "name": "init_time_offset",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/kernel/shared_page.cpp:50;src/core/movie.cpp:608"
+  },
+  {
+   "name": "input_device",
+   "type": "string",
+   "default": "Auto",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/mic/mic_u.cpp:380"
+  },
+  {
+   "name": "input_profiles",
+   "type": "array",
+   "default": [],
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "input_type",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6
+   ],
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/mic/mic_u.cpp:379"
+  },
+  {
+   "name": "instant_debug_log",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "is_new_3ds",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:408;src/core/core.cpp:441;src/core/core.cpp:468;src/core/file_sys/archive_ncch.cpp:109;src/core/file_sys/archive_ncch.cpp:114;src/core/hle/kernel/kernel.cpp:184"
+  },
+  {
+   "name": "large_screen_proportion",
+   "type": "float",
+   "default": 4.0,
+   "range": {
+    "max": 16.0,
+    "min": 1.0
+   },
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:243;src/core/frontend/framebuffer_layout.cpp:355;src/core/frontend/framebuffer_layout.cpp:502;src/core/frontend/framebuffer_layout.cpp:505;src/core/frontend/framebuffer_layout.cpp:524;src/core/frontend/framebuffer_layout.cpp:720"
+  },
+  {
+   "name": "layout_option",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:73;src/core/frontend/emu_window.cpp:192;src/core/frontend/framebuffer_layout.cpp:464;src/core/frontend/framebuffer_layout.cpp:610;src/video_core/renderer_opengl/renderer_opengl.cpp:129;src/video_core/renderer_vulkan/renderer_vulkan.cpp:1134"
+  },
+  {
+   "name": "layouts_to_cycle",
+   "type": "array",
+   "default": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "lle_applets",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/apt/applet_manager.cpp:624;src/core/hle/service/apt/applet_manager.cpp:657"
+  },
+  {
+   "name": "lle_modules",
+   "type": "object",
+   "default": {},
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/service.cpp:205"
+  },
+  {
+   "name": "log_filter",
+   "type": "string",
+   "default": "*:Info",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "log_regex_filter",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "mono_render_option",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:781;src/video_core/renderer_vulkan/renderer_vulkan.cpp:919"
+  },
+  {
+   "name": "network_token",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "output_device",
+   "type": "string",
+   "default": "Auto",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/core.cpp:678;src/core/core.cpp:911"
+  },
+  {
+   "name": "output_format",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:671"
+  },
+  {
+   "name": "output_type",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6
+   ],
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/core.cpp:677;src/core/core.cpp:910;src/audio_core/dsp_interface.cpp:112"
+  },
+  {
+   "name": "physical_device",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/renderer_vulkan.cpp:115"
+  },
+  {
+   "name": "pica_debugging",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "plugin_loader_enabled",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/core.cpp:706;src/core/core.cpp:941;src/core/hle/service/plgldr/plgldr.cpp:206"
+  },
+  {
+   "name": "portrait_layout_option",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:200;src/core/frontend/framebuffer_layout.cpp:432;src/core/frontend/framebuffer_layout.cpp:594"
+  },
+  {
+   "name": "pp_shader_name",
+   "type": "string",
+   "default": "None (builtin)",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:430;src/video_core/renderer_opengl/renderer_opengl.cpp:434"
+  },
+  {
+   "name": "preload_textures",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "record_frame_times",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/perf_stats.cpp:37"
+  },
+  {
+   "name": "region_value",
+   "type": "integer",
+   "default": -1,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/cfg/cfg.cpp:414;src/core/hle/service/cfg/cfg.cpp:419;src/core/hle/service/cfg/cfg.cpp:1208;src/core/loader/artic.cpp:269;src/core/loader/ncch.cpp:253"
+  },
+  {
+   "name": "render_3d",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:70;src/core/frontend/emu_window.cpp:282;src/video_core/renderer_opengl/renderer_opengl.cpp:364"
+  },
+  {
+   "name": "render_3d_which_display",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:80"
+  },
+  {
+   "name": "renderer_debug",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/gl_driver.cpp:77;src/video_core/renderer_opengl/gl_texture_runtime.cpp:808;src/video_core/renderer_opengl/gl_texture_runtime.cpp:809;src/video_core/renderer_opengl/gl_texture_runtime.cpp:817;src/video_core/renderer_vulkan/vk_instance.cpp:144;src/video_core/renderer_vulkan/vk_platform.cpp:421"
+  },
+  {
+   "name": "resolution_factor",
+   "type": "integer",
+   "default": 1,
+   "range": {
+    "max": 18,
+    "min": 0
+   },
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_base.cpp:28"
+  },
+  {
+   "name": "screen_bottom_leftright_padding",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:165;src/core/frontend/framebuffer_layout.cpp:167"
+  },
+  {
+   "name": "screen_bottom_stretch",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:159"
+  },
+  {
+   "name": "screen_bottom_topbottom_padding",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:166;src/core/frontend/framebuffer_layout.cpp:168"
+  },
+  {
+   "name": "screen_gap",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:198;src/core/frontend/framebuffer_layout.cpp:428"
+  },
+  {
+   "name": "screen_top_leftright_padding",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:161;src/core/frontend/framebuffer_layout.cpp:163"
+  },
+  {
+   "name": "screen_top_stretch",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:158"
+  },
+  {
+   "name": "screen_top_topbottom_padding",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:162;src/core/frontend/framebuffer_layout.cpp:164"
+  },
+  {
+   "name": "secondary_display_layout",
+   "type": "integer",
+   "default": 4,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:343"
+  },
+  {
+   "name": "shaders_accurate_mul",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/gpu.cpp:448"
+  },
+  {
+   "name": "simulate_3ds_gpu_timings",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/gsp/gsp_gpu.cpp:675"
+  },
+  {
+   "name": "simulate_headphones_plugged",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/dsp/dsp_dsp.cpp:293"
+  },
+  {
+   "name": "small_screen_position",
+   "type": "integer",
+   "default": 2,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:244;src/core/frontend/framebuffer_layout.cpp:356;src/core/frontend/framebuffer_layout.cpp:507;src/core/frontend/framebuffer_layout.cpp:509;src/core/frontend/framebuffer_layout.cpp:525;src/core/frontend/framebuffer_layout.cpp:723"
+  },
+  {
+   "name": "spirv_shader_gen",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/vk_pipeline_cache.cpp:112"
+  },
+  {
+   "name": "steps_per_hour",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/ptm/ptm.cpp:85"
+  },
+  {
+   "name": "swap_eyes_3d",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:769;src/video_core/renderer_opengl/renderer_opengl.cpp:770;src/video_core/renderer_vulkan/renderer_vulkan.cpp:908;src/video_core/renderer_vulkan/renderer_vulkan.cpp:909"
+  },
+  {
+   "name": "swap_screen",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:74;src/core/frontend/emu_window.cpp:75;src/core/frontend/emu_window.cpp:196;src/core/frontend/emu_window.cpp:215;src/core/frontend/emu_window.cpp:220;src/core/frontend/emu_window.cpp:224"
+  },
+  {
+   "name": "texture_filter",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/gl_blit_helper.cpp:219;src/video_core/renderer_vulkan/vk_blit_helper.cpp:767"
+  },
+  {
+   "name": "texture_sampling",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": [
+    0,
+    1,
+    2
+   ],
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "toggle_unique_data_console_type",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/hle/service/am/am.cpp:3400"
+  },
+  {
+   "name": "touch_from_button_maps",
+   "type": "array",
+   "default": [],
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "turbo_limit",
+   "type": "float",
+   "default": 200.0,
+   "range": {
+    "max": 1000.0,
+    "min": 0.0
+   },
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "upright_screen",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/emu_window.cpp:204;src/core/frontend/emu_window.cpp:216;src/core/frontend/emu_window.cpp:225;src/core/frontend/emu_window.cpp:237;src/core/frontend/emu_window.cpp:242;src/core/frontend/emu_window.cpp:249"
+  },
+  {
+   "name": "use_artic_base_controller",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/loader/artic.cpp:611"
+  },
+  {
+   "name": "use_cpu_jit",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/arm/exclusive_monitor.cpp:19;src/core/core.cpp:638"
+  },
+  {
+   "name": "use_custom_storage",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "use_disk_shader_cache",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/gpu.cpp:597;src/video_core/renderer_opengl/gl_shader_disk_cache.cpp:115;src/video_core/renderer_opengl/gl_shader_disk_cache.cpp:450;src/video_core/renderer_vulkan/vk_pipeline_cache.cpp:204;src/video_core/renderer_vulkan/vk_pipeline_cache.cpp:211;src/video_core/renderer_vulkan/vk_pipeline_cache.cpp:265"
+  },
+  {
+   "name": "use_display_refresh_rate_detection",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/renderer_vulkan.cpp:68"
+  },
+  {
+   "name": "use_fastinterp",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:652"
+  },
+  {
+   "name": "use_gdbstub",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/core.cpp:895"
+  },
+  {
+   "name": "use_gles",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  },
+  {
+   "name": "use_hw_shader",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/pica/pica_core.cpp:1068;src/video_core/renderer_opengl/gl_shader_disk_cache.cpp:115"
+  },
+  {
+   "name": "use_integer_scaling",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/core/frontend/framebuffer_layout.cpp:144;src/core/frontend/framebuffer_layout.cpp:146;src/core/frontend/framebuffer_layout.cpp:221"
+  },
+  {
+   "name": "use_limit_frames_ahead_of_gpu",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_base.cpp:61"
+  },
+  {
+   "name": "use_shader_jit",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/pica/pica_core.cpp:73"
+  },
+  {
+   "name": "use_skip_duplicate_frames",
+   "type": "boolean",
+   "default": false,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_opengl/renderer_opengl.cpp:110;src/video_core/renderer_vulkan/renderer_vulkan.cpp:247"
+  },
+  {
+   "name": "use_virtual_sd",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/file_sys/archive_sdmc.cpp:375;src/core/file_sys/archive_sdmcwriteonly.cpp:64;src/core/hle/service/fs/fs_user.cpp:846;src/core/hle/service/fs/fs_user.cpp:854"
+  },
+  {
+   "name": "use_vsync",
+   "type": "boolean",
+   "default": true,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "renderer",
+    "experimental": "renderer"
+   },
+   "consumer_sources": "src/video_core/renderer_vulkan/vk_present_window.cpp:110;src/video_core/renderer_vulkan/vk_present_window.cpp:397;src/video_core/renderer_vulkan/vk_swapchain.cpp:190"
+  },
+  {
+   "name": "video_bitrate",
+   "type": "integer",
+   "default": 0,
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:174"
+  },
+  {
+   "name": "video_encoder",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:165"
+  },
+  {
+   "name": "video_encoder_options",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "boot",
+    "experimental": "boot"
+   },
+   "consumer_sources": "src/core/dumping/ffmpeg_backend.cpp:183"
+  },
+  {
+   "name": "volume",
+   "type": "float",
+   "default": 1.0,
+   "range": {
+    "max": 1.0,
+    "min": 0.0
+   },
+   "choices": null,
+   "apply": {
+    "integration": "live",
+    "experimental": "live"
+   },
+   "consumer_sources": "src/core/hle/service/hid/hid.cpp:666"
+  },
+  {
+   "name": "web_api_url",
+   "type": "string",
+   "default": "",
+   "range": null,
+   "choices": null,
+   "apply": {
+    "integration": "inert",
+    "experimental": "inert"
+   },
+   "consumer_sources": "src/common/settings.h"
+  }
+ ]
+}

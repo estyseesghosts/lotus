@@ -21,6 +21,8 @@
 //!   `gpu_configure` are accepted.
 //! - `debug` `settings_set` stores the value and `settings_list` returns every stored one
 //!   (`debug_api` is true in hello); `status.renderer` is the stored `graphics_api`.
+//! - `mock-backend-name`: its text is `backend_name` (default `mock-native`), so a test can pose
+//!   as an AZAHAR or CITnLO worker for settings drift (lotus#50).
 //! - `mock-gpu-memory`: its JSON is `status.gpu_memory` (lotus#46).
 //! - `mock-gpu-error`: on the next request, write `worker_gpu_error: <its JSON>` to stderr and
 //!   exit with 4, like `ExitOnGpuFailure` in `ctr_worker/control.h`.
@@ -101,7 +103,9 @@ impl Machine {
 
     fn snapshot(&self) -> serde_json::Value {
         serde_json::json!({
-            "backend_name": "mock-native", "source": "mock", "frames": self.frames,
+            "backend_name": std::fs::read_to_string(self.root.join("mock-backend-name"))
+                .unwrap_or_else(|_| "mock-native".into()),
+            "source": "mock", "frames": self.frames,
             "stop": self.stop_reason.map(|reason| serde_json::json!({"reason": reason})),
             "last_error": "", "input_owner": self.owner, "buttons": self.buttons,
             "touch_down": self.touch, "audio_samples": 0, "audio_dropped": 0,

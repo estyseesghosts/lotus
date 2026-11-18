@@ -1,6 +1,36 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Where a setting is set (`lotus_settings::Scope`).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingsScope {
+    /// Host configuration and the desktop window.
+    Global,
+    /// A card's primary session.
+    Primary,
+    /// A running secondary session.
+    SecondaryRuntime,
+}
+
+impl From<SettingsScope> for lotus_settings::Scope {
+    fn from(scope: SettingsScope) -> Self {
+        match scope {
+            SettingsScope::Global => Self::Global,
+            SettingsScope::Primary => Self::Primary,
+            SettingsScope::SecondaryRuntime => Self::SecondaryRuntime,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SettingsSchemaArgs {
+    /// Only settings settable at this scope; omitted lists every setting.
+    #[serde(default)]
+    pub scope: Option<SettingsScope>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ValidateScenarioArgs {

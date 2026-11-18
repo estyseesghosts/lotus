@@ -127,6 +127,9 @@ hardware accuracy claim.
   `cfg-savedata`, 15 `inert`; each cites its consumer lines. Non-live classes
   are refused on a running session with the class named; `battery_*`,
   `steps_per_hour` and `audio_muted` apply live.
+  Correction (#50): `use_vsync` was bound twice, once per arm of
+  `#ifdef ANDROID` in `settings.h`. The generator now dedupes by name: 173
+  bindings, 66 `renderer`.
 - **GPU setting observables** (T37, same run, software and Vulkan): guest ticks
   at successive PICA draws shift with `simulate_3ds_gpu_timings` (second draw
   134,639,954 → 134,682,037) and `delay_game_render_thread_us` (first draw

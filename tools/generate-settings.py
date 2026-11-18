@@ -18,7 +18,12 @@ root = Path(sys.argv[1]).resolve()
 header = (root / "src/common/settings.h").read_text()
 values = header[header.index("struct Values {"):header.index("extern Values values")]
 pattern = r"(?:Switchable)?Setting<([^;]+?)>\s+(\w+)\s*\{"
-fields = [(m.group(1), m.group(2)) for m in re.finditer(pattern, values)]
+fields = []
+for m in re.finditer(pattern, values):
+    # A member declared in both arms of an #ifdef (use_vsync, settings.h ANDROID/else) is one
+    # setting; only one arm compiles. Bind it once.
+    if m.group(2) not in [name for _, name in fields]:
+        fields.append((m.group(1), m.group(2)))
 live = {"cpu_clock_percentage", "volume", "frame_limit", "turbo_limit",
         "simulate_headphones_plugged", "factor_3d",
         # Read inside service handlers or periodic callbacks.

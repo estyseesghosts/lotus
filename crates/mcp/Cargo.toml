@@ -20,6 +20,7 @@ path = "src/main.rs"
 lotus-gdb.workspace = true
 lotus-debugger = { workspace = true }
 lotus-protocol = { workspace = true }
+lotus-settings = { workspace = true }
 lotus-runner = { workspace = true }
 lotus-session = { workspace = true }
 lotus-trace = { workspace = true }

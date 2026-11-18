@@ -110,6 +110,33 @@ impl HostConfig {
     }
 }
 
+/// Check `HostConfig.profile` against the settings registry (lotus#50): every key must be an
+/// Azahar worker setting that is not excluded, settable globally, with a valid value. The
+/// configured workers' branch is not known before they start, so a CITnLO-only key passes
+/// here and the AZAHAR worker refuses it at `settings_set`.
+pub fn validate_profile(
+    profile: &BTreeMap<String, lotus_protocol::debug::SettingValue>,
+) -> io::Result<()> {
+    use lotus_settings::{Branch, Owner, Registry, Scope};
+    let invalid = |message: String| {
+        io::Error::new(io::ErrorKind::InvalidInput, format!("profile: {message}"))
+    };
+    for (key, value) in profile {
+        let value = serde_json::to_value(value).map_err(io::Error::other)?;
+        let registry = Registry::builtin();
+        let checked = registry
+            .validate(key, &value, Scope::Global, Some(Branch::Integration))
+            .or_else(|_| registry.validate(key, &value, Scope::Global, Some(Branch::Experimental)))
+            .map_err(|error| invalid(error.to_string()))?;
+        if checked.owner != Owner::Azahar {
+            return Err(invalid(format!(
+                "{key} is a Lotus setting, not a worker setting"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Parse a `--asset-dir handle=path` command-line override.
 pub fn parse_asset_dir(argument: &str) -> Result<(String, PathBuf), String> {
     match argument.split_once('=') {
@@ -277,6 +304,7 @@ impl Supervisor {
                 format!("max_sessions must be in 1..={MAX_SESSIONS_LIMIT}"),
             ));
         }
+        validate_profile(&config.profile)?;
         config.worker = canonical("worker", &config.worker)?;
         for (name, worker) in &mut config.workers {
             *worker = canonical(&format!("workers[\"{name}\"]"), worker)?;

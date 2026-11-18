@@ -28,7 +28,7 @@ use serde_json::Value;
 use crate::tool_arguments::{
     AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs, GdbOperation,
     InputArgs, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs,
-    SessionArgs, ValidateScenarioArgs,
+    SessionArgs, SettingsSchemaArgs, ValidateScenarioArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -222,6 +222,18 @@ impl LotusServer {
                 "mounted": host.mounted_cards(),
             }))
         }))
+    }
+
+    #[tool(
+        description = "Settings registry: every Lotus host/desktop and Azahar worker setting with label, group, type and bounds, default, scopes, apply class (live, renderer, boot, cfg_savedata, ...), availability per worker branch with exclusion reasons, and consumer citations. Optional scope: global, primary or secondary_runtime. Read-only."
+    )]
+    pub async fn lotus_settings_schema(
+        &self,
+        Parameters(args): Parameters<SettingsSchemaArgs>,
+    ) -> CallToolResult {
+        tool_result(Ok(
+            lotus_settings::Registry::builtin().schema(args.scope.map(Into::into))
+        ))
     }
 
     #[tool(description = "Validate a host-approved scenario handle; no filesystem paths accepted.")]
@@ -526,6 +538,40 @@ mod tests {
             "a CLI/MCP debug operation was omitted from the public schema"
         );
         assert!(actual.is_array());
+    }
+
+    /// lotus#50: the registry is readable without a host and matches the CLI output.
+    #[tokio::test]
+    async fn settings_schema_needs_no_host_and_filters_by_scope() {
+        use crate::tool_arguments::{SettingsSchemaArgs, SettingsScope};
+        let server = LotusServer::new();
+        let read = |result: CallToolResult| -> Value {
+            assert_ne!(result.is_error, Some(true));
+            let text = serde_json::to_value(&result.content[0]).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            serde_json::from_str(&text).unwrap()
+        };
+        let all = read(
+            server
+                .lotus_settings_schema(Parameters(SettingsSchemaArgs::default()))
+                .await,
+        );
+        assert_eq!(all, lotus_settings::Registry::builtin().schema(None));
+        let secondary = read(
+            server
+                .lotus_settings_schema(Parameters(SettingsSchemaArgs {
+                    scope: Some(SettingsScope::SecondaryRuntime),
+                }))
+                .await,
+        );
+        assert_eq!(
+            secondary,
+            lotus_settings::Registry::builtin()
+                .schema(Some(lotus_settings::Scope::SecondaryRuntime))
+        );
+        assert!(!secondary.to_string().contains("lotus.desktop."));
     }
 
     /// lotus#67: a headless host says it has no window workspace.

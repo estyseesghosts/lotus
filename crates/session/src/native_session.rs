@@ -338,8 +338,31 @@ impl NativeSession {
         let mut manifest: Value =
             serde_json::from_slice(&fs::read(&path)?).map_err(io::Error::other)?;
         manifest["profile_hash"] = self.profile_hash.clone().into();
-        manifest["settings"] = serde_json::to_value(values).map_err(io::Error::other)?;
+        manifest["settings"] = serde_json::to_value(&values).map_err(io::Error::other)?;
         manifest["identity"] = self.identity.clone();
+        // Registry drift (lotus#50): worker settings the registry does not describe, or
+        // registry settings the worker no longer binds. Branch from `hello.backend_name`
+        // (scripts/build-azahar.ps1 sets AZAHAR/CITnLO); other workers are not compared.
+        manifest["settings_drift"] = match self.identity["backend"]
+            .as_str()
+            .and_then(lotus_settings::Branch::from_flavor)
+        {
+            Some(branch) => {
+                let drift = lotus_settings::Registry::builtin()
+                    .drift(branch, values.keys().map(String::as_str));
+                if !drift.is_empty() {
+                    eprintln!(
+                        "lotus: settings drift in {}: {} unknown to the registry, {} missing \
+                         from the worker (settings_drift in native-manifest.json)",
+                        self.root.display(),
+                        drift.unknown_to_registry.len(),
+                        drift.missing_from_worker.len()
+                    );
+                }
+                serde_json::to_value(drift).map_err(io::Error::other)?
+            }
+            None => Value::Null,
+        };
         fs::write(
             path,
             serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?,

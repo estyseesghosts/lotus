@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 lotus-gdb.workspace = true
 lotus-protocol = { workspace = true }
+lotus-settings = { workspace = true }
 lotus-runner = { workspace = true }
 lotus-session = { workspace = true }
 anyhow = { workspace = true }

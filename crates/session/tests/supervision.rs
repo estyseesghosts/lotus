@@ -881,6 +881,44 @@ async fn requests_needing_unadvertised_features_are_refused() {
     );
 }
 
+/// lotus#50: a session whose worker names a known flavor records registry drift in its
+/// manifest; an unknown flavor records none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn session_start_records_settings_drift() {
+    let fixture = host("drift", 2);
+    let store = fixture.base.join("store").canonicalize().expect("store");
+    let manifest = |root: std::path::PathBuf| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(root.join("native-manifest.json")).expect("manifest"))
+            .expect("json")
+    };
+    let card = store.join("cards/azahar");
+    std::fs::create_dir_all(&card).expect("card");
+    std::fs::write(card.join("mock-backend-name"), "AZAHAR").expect("flavor");
+    fixture
+        .host
+        .create(
+            SessionKind::Primary {
+                card: "azahar".into(),
+            },
+            Some("demo"),
+            Actor::Host,
+        )
+        .await
+        .expect("azahar");
+    // The mock lists only settings it was sent (graphics_api from prefer_vulkan), so every
+    // other registry key is reported missing; it lists nothing the registry lacks.
+    let drift = &manifest(card)["settings_drift"];
+    assert_eq!(drift["unknown_to_registry"], serde_json::json!([]));
+    let missing = drift["missing_from_worker"].as_array().expect("missing");
+    assert!(missing.len() >= 171, "{}", missing.len());
+    assert!(!missing.contains(&serde_json::json!("graphics_api")));
+    let plain = fixture.running(1).await;
+    assert_eq!(
+        manifest(fixture.root(&plain[0]))["settings_drift"],
+        serde_json::Value::Null
+    );
+}
+
 /// lotus#67: the workspace is refused headless, needs control from MCP, never touches a
 /// worker, and collapses to the sibling when a tiled session stops.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

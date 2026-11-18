@@ -12,6 +12,7 @@ description = "Worker process lifecycle, isolation and session state for the Rus
 lotus-debugger.workspace = true
 tokio = { workspace = true }
 lotus-protocol = { workspace = true }
+lotus-settings = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

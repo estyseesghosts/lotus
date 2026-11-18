@@ -128,6 +128,44 @@ impl Store {
 mod tests {
     use super::*;
 
+    /// lotus#50: `lotus.desktop.*` descriptors carry these defaults and the layout bounds.
+    #[test]
+    fn registry_matches_defaults_and_bounds() {
+        use crate::layout::{INSPECTOR_MAX, INSPECTOR_MIN, SESSION_MAX, SESSION_MIN};
+        use lotus_session::workspace::{RATIO_MAX, RATIO_MIN};
+        use lotus_settings::{Kind, Owner, Registry};
+        let defaults = serde_json::to_value(Preferences::default()).unwrap();
+        let fields = defaults.as_object().unwrap();
+        let desktop: Vec<_> = Registry::builtin()
+            .descriptors()
+            .iter()
+            .filter(|d| d.owner == Owner::Desktop)
+            .collect();
+        assert_eq!(desktop.len(), fields.len());
+        for d in desktop {
+            let field = d.key.strip_prefix("lotus.desktop.").unwrap();
+            assert_eq!(fields.get(field), Some(&d.default), "{}", d.key);
+        }
+        for (key, min, max) in [
+            ("sessions_width", SESSION_MIN, SESSION_MAX),
+            ("inspector_width", INSPECTOR_MIN, INSPECTOR_MAX),
+            ("split_ratio", RATIO_MIN, RATIO_MAX),
+        ] {
+            let d = Registry::builtin()
+                .get(&format!("lotus.desktop.{key}"))
+                .unwrap();
+            let Kind::Float {
+                min: Some(low),
+                max: Some(high),
+            } = d.kind
+            else {
+                panic!("{key} is {:?}", d.kind)
+            };
+            // The window stores f32; compare at that precision.
+            assert_eq!((low as f32, high as f32), (min, max), "{key}");
+        }
+    }
+
     #[test]
     fn round_trips_and_never_overwrites_an_unreadable_file() {
         let dir = std::env::temp_dir().join(format!("lotus-prefs-{}", std::process::id()));
