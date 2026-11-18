@@ -212,7 +212,9 @@ impl DesktopController {
         let shutdown = Arc::new(AtomicBool::new(false));
         let presence = Arc::new(Presence::start());
         let ui = Arc::new(UiMetrics::default());
+        let controllers = Controllers::start();
         let context = Loops {
+            controllers,
             ui: ui.clone(),
             presence: presence.clone(),
             host: host.clone(),
@@ -273,6 +275,8 @@ impl Drop for DesktopController {
 #[derive(Clone)]
 struct Loops {
     host: Arc<Supervisor>,
+    /// Physical controllers (lotus#59). Events are drained and not yet routed (lotus#61).
+    controllers: Option<Arc<Controllers>>,
     presence: Arc<Presence>,
     published: Arc<Mutex<Update>>,
     inspector: Arc<AtomicBool>,
@@ -374,6 +378,9 @@ impl Loops {
                 metrics.published_preview_sequence = self.preview_sequence.load(Ordering::Acquire);
                 let mut value = serde_json::to_value(&*metrics).unwrap_or_default();
                 value["ui"] = self.ui.snapshot();
+                if let Some(controllers) = &self.controllers {
+                    value["controllers"] = controllers.status();
+                }
                 self.host.set_frontend_metrics(value);
             }
             published_at = Some(now);
@@ -862,6 +869,38 @@ impl Loops {
 }
 
 /// Published state is plain data replaced whole; recover rather than cascade.
+/// The host's controller service; one per desktop process, independent of selection.
+struct Controllers {
+    service: lotus_input::ControllerService,
+    events: Mutex<mpsc::Receiver<lotus_input::Event>>,
+}
+
+impl Controllers {
+    fn start() -> Option<Arc<Self>> {
+        use lotus_input::gilrs_backend::GilrsBackend;
+        match lotus_input::ControllerService::start(GilrsBackend::new) {
+            Ok((service, events)) => Some(Arc::new(Self {
+                service,
+                events: Mutex::new(events),
+            })),
+            Err(error) => {
+                tracing::warn!(%error, "controller service not started");
+                None
+            }
+        }
+    }
+
+    /// Devices and counters for `frontend_metrics.controllers`; drains pending events.
+    fn status(&self) -> Value {
+        let drained = lock(&self.events).try_iter().count();
+        serde_json::json!({
+            "devices": self.service.devices(),
+            "diagnostics": self.service.diagnostics(),
+            "unrouted_events": drained,
+        })
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }

@@ -300,6 +300,46 @@ requests leave the state unchanged, removal fallback) and
 `workspace_writes_from_mcp_need_control` against `lotus-mock-native` workers
 (**verified compiled**).
 
+## Controllers (#59)
+
+`lotus-input` owns physical gamepads. `lotus-desktop` starts one
+`ControllerService` per process, on its own `lotus-input` thread, so polling is
+independent of GPUI rendering and of which session is selected. Workers and GPUI
+never enumerate devices. Events are not routed to sessions yet (#61); the
+desktop drains them and reports devices and counters in
+`lotus_status.frontend_metrics.controllers`.
+
+- **Backend**: gilrs `=0.11.2` behind `ControllerBackend`. Feature `wgi`
+  (default) uses Windows Gaming Input; `xinput` uses XInput
+  (`--no-default-features --features xinput`). gilrs-core refuses both at once
+  (`platform/mod.rs`). gilrs' README: WGI "requires an in focus window to be
+  associated with the process to receive events". gilrs' default filters
+  (deadzone, jitter, D-pad axes as buttons) stay on.
+- **Identity**: `DeviceId` (`pad-N`) is one connection during one host run,
+  never reused; a reconnect is a new ID. The backend model UUID is reported as
+  `model_uuid` and is not identity, since identical pads share it.
+- **Events**: `connected {info, state}` carries everything held at connect, so
+  a consumer resynchronizes; `disconnected` means release everything that
+  device held; `button {button, pressed}` (repeated edges are dropped) and
+  `axis {axis, value}` in -1..1, sticks positive right/up. Buttons are
+  positional (south/east/north/west, SDL layout).
+- **Bounds**: 1024 queued events, then drops counted in `dropped`. The thread
+  blocks in gilrs' `next_event_blocking` for at most 50 ms (both Windows
+  backends wait on a channel, `recv_timeout`), so shutdown joins within that.
+  A connect for a slot still listed retires the old connection first.
+
+Evidence (**verified compiled**): `lotus-input` unit tests with the synthetic
+backend (distinct IDs for identical pads, reconnect resync, duplicate edges,
+missed disconnect, full queue, shutdown). Both backends build with MinGW and
+start: `lotus-pads 2` reports `running: true`, no devices (no controller is
+attached to the build machine). Idle: 0.047 s CPU in 9 s, including process
+start and WGI initialisation (release, Windows 11).
+
+**Unverified**, needs physical controllers: two pads listed with live input
+from each, repeated hotplug, and the focus matrix (focused, Alt+Tab away,
+minimized; WGI and XInput) — run `lotus-pads 30` from each build. macOS and
+Linux are unbuilt.
+
 ## Discord Rich Presence
 
 Opt-in (preferences gear → Discord Rich Presence; off by default). Owned by

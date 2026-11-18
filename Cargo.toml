@@ -12,6 +12,7 @@ members = [
     "crates/gdb",
     "crates/cli",
     "crates/desktop",
+    "crates/input",
 ]
 
 [workspace.package]
@@ -34,6 +35,7 @@ lotus-accuracy = { path = "crates/accuracy", version = "0.0.5" }
 lotus-mcp = { path = "crates/mcp", version = "0.0.5" }
 
 lotus-gdb = { path = "crates/gdb", version = "0.0.5" }
+lotus-input = { path = "crates/input", version = "0.0.5" }
 
 # External crates.
 serde = { version = "1", features = ["derive"] }
