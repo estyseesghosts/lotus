@@ -184,14 +184,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tests/test_portable.py "build/dist/LOTUS-v$version-windows-x64.zip"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # lotus#42: the ZIP's host against both of its workers on the owned debugger fixture
+          # (clang from the runner image). Publication needs this job, so a failure blocks it.
+          python tools/build-debug-fixture.py build/fixture
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/test_packaged.py --zip "build/dist/LOTUS-v$version-windows-x64.zip" build/fixture/debugger.3dsx build/fixture/debugger.elf build/packaged
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item build/packaged/packaged.json "build/dist/LOTUS-v$version-packaged-acceptance.json"
           python scripts/archive-source.py "build/dist/LOTUS-v$version-source.zip"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Get-ChildItem build/dist/*.zip | ForEach-Object { "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" } | Set-Content build/dist/SHA256SUMS.txt
+          Get-ChildItem build/dist/*.zip, build/dist/*.json | ForEach-Object { "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" } | Set-Content build/dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: LOTUS-windows-x64
           path: |
             build/dist/*.zip
+            build/dist/*-packaged-acceptance.json
             build/dist/SHA256SUMS.txt
           if-no-files-found: error
           retention-days: 30
@@ -220,6 +228,6 @@ jobs:
           $tag = "v$version"
           $verify = @()
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $tag = $env:GITHUB_REF_NAME; $verify = @('--verify-tag') }
-          $assets = @(Get-ChildItem build/dist/*.zip | ForEach-Object FullName)
+          $assets = @(Get-ChildItem build/dist/*.zip, build/dist/*-packaged-acceptance.json | ForEach-Object FullName)
           gh release create $tag @assets build/dist/SHA256SUMS.txt @verify --target $env:GITHUB_SHA --title "LOTUS $tag" --notes-file packaging/release-notes.md
           exit $LASTEXITCODE

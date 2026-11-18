@@ -679,3 +679,64 @@ async fn a_worker_gpu_error_is_typed_and_isolated() {
         "sibling progresses"
     );
 }
+
+/// lotus#42: a request that needs a feature the worker did not list in `hello.features` is
+/// refused with `Unsupported` before it is sent; listed features pass through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn requests_needing_unadvertised_features_are_refused() {
+    use lotus_protocol::debug::{DebugCommand, GpuCapture};
+    let fixture = host("features", 1);
+    let id = fixture.running(1).await.remove(0);
+    let hash = DebugCommand::StateHash {
+        chunk_kib: 64,
+        sections: true,
+        dump: None,
+    };
+    let error = fixture
+        .host
+        .debug(&id, &hash, Actor::Host)
+        .await
+        .expect_err("not advertised");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(
+        error.to_string().contains("does not support state_hash")
+            && error
+                .to_string()
+                .contains("flush_storage, gpu_capture_levels"),
+        "{error}"
+    );
+    let events = DebugCommand::EventsConfigure {
+        notify: None,
+        history: None,
+    };
+    assert_eq!(
+        fixture
+            .host
+            .debug(&id, &events, Actor::Host)
+            .await
+            .expect_err("not advertised")
+            .kind(),
+        std::io::ErrorKind::Unsupported
+    );
+    let counters = DebugCommand::GpuConfigure {
+        enabled: true,
+        stop_events: vec![],
+        capture: Some(GpuCapture::Counters),
+        draw_range: None,
+        max_draws: None,
+        resources: None,
+    };
+    fixture
+        .host
+        .debug(&id, &counters, Actor::Host)
+        .await
+        .expect("advertised");
+    let manifest: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(fixture.root(&id).join("native-manifest.json")).expect("manifest"),
+    )
+    .expect("json");
+    assert_eq!(
+        manifest["features"],
+        serde_json::json!(["flush_storage", "gpu_capture_levels"])
+    );
+}

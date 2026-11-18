@@ -4,10 +4,57 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## Unreleased
+
+Pins: integration (AZAHAR) `7cd04970`, experimental (CITnLO) `435684c0`,
+both pushed to the fork's `integration` and `experimental` branches; the
+`vendor/azahar` gitlink is the integration commit (#42). These are the first
+pins that contain the native side of the v0.0.4 features below.
+
+Workers list their optional control features in `hello`/`status` `features`,
+and the host refuses a request that needs a missing one with a typed
+`Unsupported` naming it, instead of sending a field an older worker ignores
+(docs/23). Feature matrix of these pins:
+
+| feature | AZAHAR | CITnLO |
+| --- | --- | --- |
+| `flush_storage` (card copy at one instant, #28) | yes | yes |
+| `deterministic_async` setting (#29) | yes, off by default | yes, on by default |
+| `preview_nonblocking` (#25) | with the shared-memory preview | with the shared-memory preview |
+| `gpu_memory` (#46) | Vulkan builds | Vulkan builds |
+| `event_subscriptions` (#26) | no | yes |
+| `gpu_capture_levels` (#24) | no | yes |
+| `state_hash` (#29) | no | yes |
+
+Release builds run `tests/test_packaged.py` on the assembled ZIP: its
+`lotus-mcp` against both of its workers on the debugger fixture (handshake and
+pinned source commit, the feature list per backend, GPU counters, stops-only
+subscription under a log flood, card copy, preview, and two CITnLO copies
+reaching the same `state_hash`). Publication depends on it; the report is
+published as `LOTUS-v<version>-packaged-acceptance.json`.
+
+- Vulkan allocation failure and device loss are reported as typed session
+  failures instead of aborting the worker, and new Vulkan sessions are
+  admitted on device-memory headroom (#46).
+- `GeometryEmitter` state, PICA shader uniforms (`Uniforms::f`/`b`/`i`) and HLE
+  DSP source frames (`current_frame`, `backup_frame`) are value-initialized on
+  both branches. They are serialized but had no initializers, so uninitialized
+  heap bytes made two copies of one card differ in `gpu` (about 1 in 8 to 14
+  runs) and `dsp` (about 1 in 150) after 30 frames. With all three, 300 of 300
+  pairs matched (#42).
+
 ## v0.0.4 (2026-11-17)
 
 Changes since v0.0.3 (2026-11-16). Pins are unchanged: integration (AZAHAR)
 `b4b9f0c2`, experimental (CITnLO) `559f3f4d`.
+
+**Correction (#42).** The v0.0.4 ZIP was built from those v0.0.3 pins, so its
+workers lack the native side of several items below: the stops-only
+subscription (they ignore `hello.subscriptions` and push every event), GPU
+capture levels (they ignore `capture`), `state_hash`, `flush_storage`, the
+non-blocking Vulkan preview, and the paused-wait and stdin latency fixes
+(#22). The host side shipped; the worker side ships with the next release
+(see Unreleased).
 
 ### Concurrent sessions
 

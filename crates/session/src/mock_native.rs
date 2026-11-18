@@ -11,7 +11,9 @@
 //! - `mock-stall-ms`: before the next reply, sleep that many milliseconds (file is consumed);
 //!   `<ms> <method>` (e.g. `5000 capture`) stalls only the next reply to that method.
 //! - `mock-async-pending`: `flush_storage` answers `async_fs_pending` that many times.
-//! - `mock-no-flush`: `flush_storage` is unsupported, like a worker that predates it.
+//! - `mock-no-flush`: `flush_storage` is unsupported and not listed in `features`, like a
+//!   worker that predates it. `features` otherwise lists `flush_storage` and
+//!   `gpu_capture_levels` (lotus#42).
 //! - `capture` writes both screens to `frames/<screen>-<sequence % 3>.bgra` (LTRF header,
 //!   solid colour by frame) like the native ring files.
 //! - `mock-exit-code`: on the next request, exit with that code without replying.
@@ -103,6 +105,11 @@ impl Machine {
             "last_error": "", "input_owner": self.owner, "buttons": self.buttons,
             "touch_down": self.touch, "audio_samples": 0, "audio_dropped": 0,
             "preview": "capture", "debug_api": true,
+            "features": if self.root.join("mock-no-flush").exists() {
+                serde_json::json!(["gpu_capture_levels"])
+            } else {
+                serde_json::json!(["flush_storage", "gpu_capture_levels"])
+            },
             "renderer": self.settings.get("graphics_api"),
             "gpu_memory": std::fs::read_to_string(self.root.join("mock-gpu-memory"))
                 .ok()

@@ -62,6 +62,8 @@ pub struct NativeSession {
     executable: PathBuf,
     /// Every setting applied through [`Self::apply_profile`], replayed on a replacement.
     applied: std::collections::BTreeMap<String, lotus_protocol::debug::SettingValue>,
+    /// Optional control features the worker listed in its hello reply (lotus#42).
+    features: std::collections::BTreeSet<String>,
     /// Worker serves `preview` from shared memory (`preview: shared_memory_v1` in hello).
     shared_preview: bool,
     /// The mapped ring, reopened whenever the worker reports a different section.
@@ -97,7 +99,7 @@ impl NativeSession {
                 "protocol": lotus_protocol::protocol_id(), "backend": reply.backend,
                 "source": reply.data["source"], "backend_name": reply.data["backend_name"],
                 "session": reply.session, "pid": worker.pid(), "epoch": reply.epoch,
-                "lifecycle": "active",
+                "lifecycle": "active", "features": reply.data["features"],
                 "profile": "old3ds/software/hle/dsp-muted/ticks-0/time-2000-01-01",
             }))
             .map_err(io::Error::other)?,
@@ -110,6 +112,12 @@ impl NativeSession {
             "worker_sha256":file_hash(executable)?}),
             vulkan_fallback_armed: false,
             settings_api: reply.data["debug_api"] == true,
+            features: reply.data["features"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|feature| feature.as_str().map(str::to_string))
+                .collect(),
             renderer_fallback: None,
             executable: executable.to_path_buf(),
             applied: std::collections::BTreeMap::new(),
@@ -129,11 +137,35 @@ impl NativeSession {
         Ok(session)
     }
 
+    /// Features the worker advertised.
+    #[must_use]
+    pub fn features(&self) -> &std::collections::BTreeSet<String> {
+        &self.features
+    }
+
+    /// `Unsupported` naming `feature` when the worker did not advertise it.
+    pub fn require(&self, feature: &str) -> io::Result<()> {
+        if self.features.contains(feature) {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!(
+                "worker {} does not support {feature}; it advertises [{}]",
+                self.identity["backend"].as_str().unwrap_or("?"),
+                self.features.iter().cloned().collect::<Vec<_>>().join(", ")
+            ),
+        ))
+    }
+
     pub async fn debug(
         &mut self,
         command: &lotus_protocol::debug::DebugCommand,
     ) -> io::Result<Value> {
         command.validate().map_err(io::Error::other)?;
+        if let Some(feature) = command.required_feature() {
+            self.require(feature)?;
+        }
         if matches!(
             command,
             lotus_protocol::debug::DebugCommand::SaveState { .. }
@@ -359,6 +391,7 @@ impl NativeSession {
         if self.state() == SessionState::Idle {
             return Ok(());
         }
+        self.require(lotus_protocol::capabilities::feature::FLUSH_STORAGE)?;
         let reply = self
             .worker
             .command(Method::FlushStorage, Value::Null)

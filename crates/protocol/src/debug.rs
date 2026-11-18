@@ -493,6 +493,26 @@ fn default_true() -> bool {
 }
 
 impl DebugCommand {
+    /// The worker feature ([`crate::capabilities::feature`]) this command needs beyond the base
+    /// debug API, if any. `gpu_configure` without `capture` is the base full capture.
+    #[must_use]
+    pub fn required_feature(&self) -> Option<&'static str> {
+        use crate::capabilities::feature;
+        match self {
+            Self::GpuConfigure {
+                capture: Some(_), ..
+            } => Some(feature::GPU_CAPTURE_LEVELS),
+            Self::EventsConfigure { .. } => Some(feature::EVENT_SUBSCRIPTIONS),
+            Self::StateHash { .. } => Some(feature::STATE_HASH),
+            Self::SettingsSet { name, .. } if name == "deterministic_async_operations" => {
+                Some(feature::DETERMINISTIC_ASYNC)
+            }
+            _ => None,
+        }
+    }
+}
+
+impl DebugCommand {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
             Self::BootHomeMenu { region } if *region > 6 => Err("HOME region 0..6"),

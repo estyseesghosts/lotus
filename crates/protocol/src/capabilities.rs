@@ -89,6 +89,39 @@ impl Capabilities {
     }
 }
 
+/// Optional control features a native worker lists in `hello`/`status` `features` (lotus#42).
+///
+/// Each worker builds the list from what it implements (`ctr_worker/control.h` `Features`).
+/// The host refuses a request that needs a missing feature with `Unsupported` before sending
+/// it, because older workers ignore unknown fields (`gpu_configure.capture`,
+/// `hello.subscriptions`) instead of rejecting them. A worker without the field has none.
+pub mod feature {
+    /// `flush_storage` writes guest stdio buffers out for a card copy (#28).
+    pub const FLUSH_STORAGE: &str = "flush_storage";
+    /// `hello.subscriptions` and `events_configure` select pushed and kept categories (#26).
+    pub const EVENT_SUBSCRIPTIONS: &str = "event_subscriptions";
+    /// `gpu_configure.capture` levels `counters`, `draws`, `full` (#24).
+    pub const GPU_CAPTURE_LEVELS: &str = "gpu_capture_levels";
+    /// `debug` `state_hash` (#29).
+    pub const STATE_HASH: &str = "state_hash";
+    /// The shared-memory preview never waits for the GPU while running (#25).
+    pub const PREVIEW_NONBLOCKING: &str = "preview_nonblocking";
+    /// The `deterministic_async_operations` setting is bound (#29).
+    pub const DETERMINISTIC_ASYNC: &str = "deterministic_async";
+    /// `status.gpu_memory` (#46).
+    pub const GPU_MEMORY: &str = "gpu_memory";
+    /// Every feature this host knows, for manifests and release notes.
+    pub const ALL: [&str; 7] = [
+        FLUSH_STORAGE,
+        EVENT_SUBSCRIPTIONS,
+        GPU_CAPTURE_LEVELS,
+        STATE_HASH,
+        PREVIEW_NONBLOCKING,
+        DETERMINISTIC_ASYNC,
+        GPU_MEMORY,
+    ];
+}
+
 /// Free-form feature map used by tooling that wants a stable, name keyed view.
 pub type FeatureMap = BTreeMap<String, bool>;
 
