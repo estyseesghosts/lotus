@@ -7,7 +7,7 @@ untested. Rationale and release contents: [26](26-portable-release.md).
 
 ## 0. Just run it
 
-Extract `LOTUS-v0.0.5-windows-x64.zip` from the GitHub release into a writable
+Extract `LOTUS-v0.0.6-windows-x64.zip` from the GitHub release into a writable
 folder (spaces are fine). Run `LOTUS.cmd` (CITnLO) or `LOTUS-AZAHAR.cmd`; pick
 your own `.3dsx`. No installer, registry or toolchain. Data stays in `data/`;
 keep it when upgrading. Verify the download against `SHA256SUMS.txt`. Binaries
@@ -107,9 +107,9 @@ ROMs, firmware or captures are committed or uploaded.
 python scripts/package-windows.py rust --binary-dir target/release --metadata build/metadata.json --output build/rust-artifact --dll-dir build/tools/winlibs/mingw64/bin
 python scripts/package-windows.py runtime --build build/native-integration --output build/azahar-artifact --dll-dir build/tools/winlibs/mingw64/bin
 python scripts/package-windows.py runtime --build build/native-experimental --output build/citnlo-artifact --dll-dir build/tools/winlibs/mingw64/bin
-python scripts/package-windows.py assemble --rust build/rust-artifact --azahar build/azahar-artifact --citnlo build/citnlo-artifact --output build/dist --version 0.0.5
-python tests/test_portable.py build/dist/LOTUS-v0.0.5-windows-x64.zip
-python scripts/archive-source.py build/dist/LOTUS-v0.0.5-source.zip
+python scripts/package-windows.py assemble --rust build/rust-artifact --azahar build/azahar-artifact --citnlo build/citnlo-artifact --output build/dist --version 0.0.6
+python tests/test_portable.py build/dist/LOTUS-v0.0.6-windows-x64.zip
+python scripts/archive-source.py build/dist/LOTUS-v0.0.6-source.zip
 ```
 
 `build/metadata.json` is `cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-gnu`.

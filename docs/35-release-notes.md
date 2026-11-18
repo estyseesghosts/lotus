@@ -4,6 +4,30 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## v0.0.6 (2026-11-18)
+
+Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
+(CITnLO) `c3422b0a`. The integration pin binds `use_vsync` once (#50).
+
+- One transactional window workspace model shared by every window (#67).
+- Host-owned gilrs controller service (#59); keyboard, pointer and
+  controllers routed per session (#61); controller pairing policy, identify
+  and reconnect (#62).
+- Circle Pad and C-stick carried through the fast input path (`analog_input`
+  feature, #60).
+- Scenario memory, event and coverage assertions execute (#94).
+- Settings registry of every Azahar and Lotus setting with apply class,
+  scope and bounds; drift checks against the worker; `ctr-cli settings
+  schema` and MCP `lotus_settings_schema` (#50).
+- Saved global and per-card settings layers plus secondary runtime
+  overrides; `ctr-cli settings show|set|unset|reset`, MCP `lotus_settings`
+  and `lotus_settings_change` (#51). Saved changes do not reach a running
+  worker; they are listed as pending until the session is recreated.
+
+Controller paths are verified against tests and the mock worker only; real
+controller testing is still pending. Apply-class enforcement for running
+sessions (#52) is not in this release.
+
 ## v0.0.5 (2026-11-18)
 
 Pins: integration (AZAHAR) `7cd04970`, experimental (CITnLO) `435684c0`,
