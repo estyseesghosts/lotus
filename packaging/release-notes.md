@@ -5,7 +5,8 @@ upstream-tracking backend; the default launcher uses CITnLO.
 Includes the GPUI desktop, headless CLI, local MCP server, both native software
 runtimes, license notices and build/source manifests. The source ZIP includes
 LOTUS and its recursive native dependencies. No installer or developer toolchain
-is needed to run; data stays beside the application under `data/`.
+is needed to run; data stays beside the application under `data/` unless
+`LOTUS.cmd -SetDataDir <path>` or a `lotus.json` points elsewhere.
 
 Requires Windows 11 x64 and Direct3D 11. This is an unsigned, early developer
 build: software rendering and muted audio. No ROMs, Nintendo firmware, keys or
