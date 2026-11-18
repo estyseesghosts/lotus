@@ -3,7 +3,8 @@
 //! A preset binds stable action IDs to portable binding descriptors: GPUI key names for the
 //! keyboard (the strings `lotus_window.rs` matches today, not platform scancodes) and the
 //! positional [`Button`]/[`Axis`] names for controllers (not backend IDs). Layers resolve like
-//! worker settings (lotus#51): builtin → global → card → a secondary's ephemeral overrides.
+//! worker settings (lotus#51): preset → global → card → a secondary's ephemeral overrides,
+//! with the settings store choosing the winning layer per action ([`resolve`]).
 //! See `docs/30-sessions-and-interface.md` "Input layouts (#57)".
 
 use std::collections::BTreeMap;
@@ -240,7 +241,12 @@ impl Preset {
                 bindings.entry(*action).or_default().push(pad(button));
             }
         }
+        // Trigger axes as ZL/ZR past the threshold, as Azahar's SDL default binds them
+        // (`sdl_impl.cpp` `BuildButtonParamPackageForButton`), for backends that report
+        // triggers as axes rather than as `LeftTrigger`/`RightTrigger` buttons.
         for (action, a, d) in [
+            (Action::Zl, Axis::LeftZ, Positive),
+            (Action::Zr, Axis::RightZ, Positive),
             (Action::CirclePadUp, Axis::LeftY, Positive),
             (Action::CirclePadDown, Axis::LeftY, Negative),
             (Action::CirclePadLeft, Axis::LeftX, Negative),
@@ -322,118 +328,114 @@ fn parse_bindings(map: &Map<String, Value>) -> (BTreeMap<Action, Vec<Binding>>, 
             problems.push(Problem::UnknownAction(id.clone()));
             continue;
         };
-        let mut parsed = Vec::new();
-        for binding in list.as_array().into_iter().flatten() {
-            match serde_json::from_value::<Binding>(binding.clone()) {
-                Ok(b) if !parsed.contains(&b) => parsed.push(b),
-                Ok(_) => {}
-                Err(_) => problems.push(Problem::InvalidBinding {
-                    action,
-                    binding: binding.clone(),
-                }),
-            }
-        }
+        let (parsed, mut more) = parse_list(action, list);
+        problems.append(&mut more);
         out.insert(action, parsed);
     }
     (out, problems)
 }
 
-/// Sparse per-action replacements. An entry replaces that action's whole binding list; an
-/// empty list unbinds it. Removing the entry (reset) inherits again.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-#[serde(transparent)]
-pub struct Overrides(pub BTreeMap<Action, Vec<Binding>>);
-
-impl Overrides {
-    /// Parse a stored overrides object; see [`Preset::import`] for what is dropped.
-    #[must_use]
-    pub fn import(value: &Value) -> (Self, Vec<Problem>) {
-        let empty = Map::new();
-        let (map, problems) = parse_bindings(value.as_object().unwrap_or(&empty));
-        (Self(map), problems)
+/// Parse one action's stored binding list (a settings value). Unparseable entries are
+/// dropped and reported; duplicates collapse.
+#[must_use]
+pub fn parse_list(action: Action, value: &Value) -> (Vec<Binding>, Vec<Problem>) {
+    let mut problems = Vec::new();
+    let mut parsed = Vec::new();
+    for binding in value.as_array().into_iter().flatten() {
+        match serde_json::from_value::<Binding>(binding.clone()) {
+            Ok(b) if !parsed.contains(&b) => parsed.push(b),
+            Ok(_) => {}
+            Err(_) => problems.push(Problem::InvalidBinding {
+                action,
+                binding: binding.clone(),
+            }),
+        }
     }
+    (parsed, problems)
 }
 
-/// A saved layer: an optional preset selection and overrides on top of it.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
-pub struct Selection {
-    pub preset: Option<String>,
-    pub overrides: Overrides,
-}
-
-/// Where a resolved action's bindings came from, lowest first.
+/// Where a resolved action's bindings came from, lowest first. The settings layers (lotus#51)
+/// decide which override wins; this only records it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Layer {
-    /// The selected preset (builtin, or one the global or card layer selected).
+    /// The selected preset.
     Preset,
     Global,
     Card,
+    /// A secondary's ephemeral override.
     Session,
 }
 
-/// The layout one session uses.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Resolved {
-    /// Name of the preset the layers start from.
-    pub preset: String,
-    pub bindings: BTreeMap<Action, (Vec<Binding>, Layer)>,
-    pub problems: Vec<Problem>,
+/// Effective per-action overrides: a replacement binding list (empty unbinds) and its layer.
+pub type Overrides = BTreeMap<Action, (Vec<Binding>, Layer)>;
+
+/// Presets shipped with Lotus; read-only. `default` is positional: 3DS A on the right face
+/// button as on the 3DS, which is also where Nintendo pads print A, and the same positions
+/// Azahar's own SDL default uses (`sdl_impl.cpp` `xinput_to_3ds_mapping`). `xbox-labels`
+/// follows the printed Xbox labels instead (3DS A on the bottom face button). DualSense
+/// buttons are printed with symbols, so position is their only meaning and `default` fits.
+#[must_use]
+pub fn builtins() -> Vec<Preset> {
+    let default = Preset::builtin();
+    let mut xbox = default.clone();
+    xbox.name = "xbox-labels".into();
+    for (action, button) in [
+        (Action::A, Button::South),
+        (Action::B, Button::East),
+        (Action::X, Button::West),
+        (Action::Y, Button::North),
+    ] {
+        let list = xbox.bindings.entry(action).or_default();
+        list.retain(|b| !matches!(b, Binding::Button { .. }));
+        list.push(pad(button));
+    }
+    vec![default, xbox]
 }
 
-/// Resolve one session's layout. The base preset is the card's selection, else the global
-/// one, else [`BUILTIN`]. Global overrides are edits of the global preset, so a card that
-/// selects a different preset drops them; card overrides then apply, then a secondary's
-/// ephemeral `session` overrides. Nothing here writes a layer, so a secondary's edits cannot
-/// reach its parent card or the global layer.
+/// Whether `name` belongs to a builtin preset, which cannot be saved over or deleted.
 #[must_use]
-pub fn resolve(
-    library: &[Preset],
-    global: &Selection,
-    card: Option<&Selection>,
-    session: Option<&Overrides>,
-) -> Resolved {
+pub fn is_builtin(name: &str) -> bool {
+    builtins().iter().any(|p| p.name == name)
+}
+
+/// Resolve a session's layout from the effective `preset` selection (`None`: [`BUILTIN`])
+/// and the effective per-action `overrides`. A selected preset found in neither the builtins
+/// nor `library` falls back to [`BUILTIN`] with a [`Problem::MissingPreset`].
+#[must_use]
+pub fn resolve(library: &[Preset], preset: Option<&str>, overrides: &Overrides) -> Resolved {
     let mut problems = Vec::new();
-    let card_selects = card
-        .and_then(|c| c.preset.as_deref())
-        .filter(|name| Some(*name) != global.preset.as_deref());
-    let wanted = card_selects.or(global.preset.as_deref());
-    let base = match wanted {
-        None | Some(BUILTIN) => Preset::builtin(),
-        Some(name) => library
-            .iter()
-            .find(|p| p.name == name)
-            .cloned()
-            .unwrap_or_else(|| {
-                problems.push(Problem::MissingPreset(name.into()));
-                Preset::builtin()
-            }),
-    };
+    let name = preset.unwrap_or(BUILTIN);
+    let base = builtins()
+        .into_iter()
+        .chain(library.iter().cloned())
+        .find(|p| p.name == name)
+        .unwrap_or_else(|| {
+            problems.push(Problem::MissingPreset(name.into()));
+            Preset::builtin()
+        });
     let mut bindings: BTreeMap<Action, (Vec<Binding>, Layer)> = base
         .bindings
         .iter()
         .map(|(a, list)| (*a, (list.clone(), Layer::Preset)))
         .collect();
-    let mut layers = Vec::new();
-    if card_selects.is_none() {
-        layers.push((Layer::Global, &global.overrides));
-    }
-    if let Some(card) = card {
-        layers.push((Layer::Card, &card.overrides));
-    }
-    if let Some(session) = session {
-        layers.push((Layer::Session, session));
-    }
-    for (layer, overrides) in layers {
-        for (action, list) in &overrides.0 {
-            bindings.insert(*action, (list.clone(), layer));
-        }
+    for (action, entry) in overrides {
+        bindings.insert(*action, entry.clone());
     }
     Resolved {
         preset: base.name,
         bindings,
         problems,
     }
+}
+
+/// The layout one session uses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Resolved {
+    /// Name of the preset the overrides apply to.
+    pub preset: String,
+    pub bindings: BTreeMap<Action, (Vec<Binding>, Layer)>,
+    pub problems: Vec<Problem>,
 }
 
 impl Resolved {
@@ -464,6 +466,269 @@ impl Resolved {
             .map(|(binding, actions)| (binding.clone(), actions))
             .collect()
     }
+
+    /// Actions with no binding on any device.
+    #[must_use]
+    pub fn unbound(&self) -> Vec<Action> {
+        self.bindings
+            .iter()
+            .filter(|(_, (list, _))| list.is_empty())
+            .map(|(action, _)| *action)
+            .collect()
+    }
+}
+
+/// Analog shaping for one 3DS stick.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct StickProfile {
+    /// Radial dead zone in 0..0.99, applied on top of gilrs' own filter with Azahar's
+    /// rescaling (`sdl_impl.cpp` `SDLAnalog::GetStatus`); Azahar's default is 0.
+    pub deadzone: f32,
+    /// Output scale; the result is clamped to the unit circle.
+    pub sensitivity: f32,
+    pub invert_y: bool,
+}
+
+impl Default for StickProfile {
+    fn default() -> Self {
+        Self {
+            deadzone: 0.0,
+            sensitivity: 1.0,
+            invert_y: false,
+        }
+    }
+}
+
+/// Per-session shaping that is not a binding.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Profile {
+    /// Circle Pad, C-stick.
+    pub sticks: [StickProfile; 2],
+    /// Axis travel that presses an axis-to-digital binding. Azahar binds ZL/ZR to the trigger
+    /// axes at 0.5 (`sdl_impl.cpp` `BuildButtonParamPackageForButton`).
+    pub threshold: f32,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            sticks: [StickProfile::default(); 2],
+            threshold: 0.5,
+        }
+    }
+}
+
+/// Stick direction actions per 3DS stick, in `[up, down, left, right]` order.
+const STICK_ACTIONS: [[Action; 4]; 2] = [
+    [
+        Action::CirclePadUp,
+        Action::CirclePadDown,
+        Action::CirclePadLeft,
+        Action::CirclePadRight,
+    ],
+    [
+        Action::CStickUp,
+        Action::CStickDown,
+        Action::CStickLeft,
+        Action::CStickRight,
+    ],
+];
+
+/// Offset a digitally pressed stick direction adds, in [`STICK_ACTIONS`] order.
+const DIRECTION_DELTA: [[i8; 2]; 4] = [[0, 1], [0, -1], [-1, 0], [1, 0]];
+
+/// What one digital input does: button bits plus a push on each 3DS stick.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct Press {
+    bits: u32,
+    sticks: [[i8; 2]; 2],
+}
+
+impl Press {
+    fn add(&mut self, action: Action) {
+        if let Some(bit) = action.bit() {
+            self.bits |= bit;
+            return;
+        }
+        for (stick, actions) in STICK_ACTIONS.iter().enumerate() {
+            if let Some(d) = actions.iter().position(|a| *a == action) {
+                self.sticks[stick][0] += DIRECTION_DELTA[d][0];
+                self.sticks[stick][1] += DIRECTION_DELTA[d][1];
+            }
+        }
+    }
+
+    fn merge(&mut self, other: &Press) {
+        self.bits |= other.bits;
+        for stick in 0..2 {
+            for c in 0..2 {
+                self.sticks[stick][c] =
+                    self.sticks[stick][c].saturating_add(other.sticks[stick][c]);
+            }
+        }
+    }
+}
+
+/// Guest buttons and the two sticks one source contributes.
+pub type Output = (u32, [[f32; 2]; 2]);
+
+/// A [`Resolved`] layout compiled for the router. Controller lookups are fixed-size tables
+/// indexed by [`Button::index`], so evaluating a sample allocates nothing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Mapping {
+    buttons: [Press; 17],
+    /// Analog source per 3DS stick and component (x, y): axis and sign.
+    analog: [[Option<(Axis, f32)>; 2]; 2],
+    /// Axis bindings that act digitally past the threshold.
+    axis_presses: Vec<(Axis, Direction, Press)>,
+    keys: BTreeMap<String, Press>,
+    profile: Profile,
+}
+
+impl Default for Mapping {
+    fn default() -> Self {
+        Self::new(&resolve(&[], None, &Overrides::new()), Profile::default())
+    }
+}
+
+fn sign(direction: Direction) -> f32 {
+    match direction {
+        Direction::Positive => 1.0,
+        Direction::Negative => -1.0,
+    }
+}
+
+impl Mapping {
+    /// An axis bound to a stick's right (x) or up (y) action drives that component in
+    /// analog, as does one bound to left/down with the sign flipped; the first such binding
+    /// wins. Every other axis binding is digital, pressed past [`Profile::threshold`].
+    #[must_use]
+    pub fn new(layout: &Resolved, profile: Profile) -> Self {
+        let list = |action: Action| -> &[Binding] {
+            layout
+                .bindings
+                .get(&action)
+                .map_or(&[], |(list, _)| list.as_slice())
+        };
+        let first_axis = |action: Action, flip: f32| {
+            list(action).iter().find_map(|b| match b {
+                Binding::Axis { axis, direction } => Some((*axis, sign(*direction) * flip)),
+                _ => None,
+            })
+        };
+        let mut analog = [[None; 2]; 2];
+        for (stick, [up, down, left, right]) in STICK_ACTIONS.iter().enumerate() {
+            analog[stick][0] = first_axis(*right, 1.0).or_else(|| first_axis(*left, -1.0));
+            analog[stick][1] = first_axis(*up, 1.0).or_else(|| first_axis(*down, -1.0));
+        }
+        let is_analog = |action: Action, axis: Axis| {
+            STICK_ACTIONS.iter().enumerate().any(|(stick, actions)| {
+                let component = match actions.iter().position(|a| *a == action) {
+                    Some(0 | 1) => 1,
+                    Some(_) => 0,
+                    None => return false,
+                };
+                analog[stick][component].is_some_and(|(a, _)| a == axis)
+            })
+        };
+        let mut buttons = [Press::default(); 17];
+        let mut axis_presses: Vec<(Axis, Direction, Press)> = Vec::new();
+        let mut keys: BTreeMap<String, Press> = BTreeMap::new();
+        for (action, (bindings, _)) in &layout.bindings {
+            for binding in bindings {
+                match binding {
+                    Binding::Keyboard { key } => keys.entry(key.clone()).or_default().add(*action),
+                    Binding::Button { button } => buttons[button.index()].add(*action),
+                    Binding::Axis { axis, direction } => {
+                        if is_analog(*action, *axis) {
+                            continue;
+                        }
+                        let index = axis_presses
+                            .iter()
+                            .position(|(a, d, _)| a == axis && d == direction)
+                            .unwrap_or_else(|| {
+                                axis_presses.push((*axis, *direction, Press::default()));
+                                axis_presses.len() - 1
+                            });
+                        axis_presses[index].2.add(*action);
+                    }
+                }
+            }
+        }
+        Self {
+            buttons,
+            analog,
+            axis_presses,
+            keys,
+            profile,
+        }
+    }
+
+    #[must_use]
+    pub fn profile(&self) -> Profile {
+        self.profile
+    }
+
+    /// A controller's contribution. `held` and `axis` already leave out suppressed inputs.
+    #[must_use]
+    pub fn controller(&self, held: impl Fn(Button) -> bool, axis: impl Fn(Axis) -> f32) -> Output {
+        let mut digital = Press::default();
+        for button in Button::ALL {
+            if held(button) {
+                digital.merge(&self.buttons[button.index()]);
+            }
+        }
+        for (a, direction, press) in &self.axis_presses {
+            if axis(*a) * sign(*direction) > self.profile.threshold {
+                digital.merge(press);
+            }
+        }
+        let mut sticks = [[0.0f32; 2]; 2];
+        for (stick, out) in sticks.iter_mut().enumerate() {
+            let raw = self.analog[stick].map(|source| source.map_or(0.0, |(a, s)| axis(a) * s));
+            *out = shape(raw, self.profile.sticks[stick]);
+            for (value, push) in out.iter_mut().zip(digital.sticks[stick]) {
+                *value = (*value + f32::from(push)).clamp(-1.0, 1.0);
+            }
+        }
+        (digital.bits, sticks)
+    }
+
+    /// The keyboard's contribution from the keys it holds.
+    #[must_use]
+    pub fn keyboard<'a>(&self, keys: impl IntoIterator<Item = &'a String>) -> Output {
+        let mut digital = Press::default();
+        for key in keys {
+            if let Some(press) = self.keys.get(key) {
+                digital.merge(press);
+            }
+        }
+        (
+            digital.bits,
+            digital
+                .sticks
+                .map(|s| s.map(|c| f32::from(c).clamp(-1.0, 1.0))),
+        )
+    }
+}
+
+/// Radial dead zone with Azahar's rescaling, then sensitivity, unit-circle clamp, inversion.
+/// Digital directions bypass this, so the dead zone never eats a button-driven direction.
+fn shape([x, y]: [f32; 2], profile: StickProfile) -> [f32; 2] {
+    let r = x.hypot(y);
+    let deadzone = profile.deadzone.clamp(0.0, 0.99);
+    if r <= deadzone || r == 0.0 {
+        return [0.0, 0.0];
+    }
+    let scale = ((r - deadzone) / (1.0 - deadzone) * profile.sensitivity).min(1.0) / r;
+    [
+        x * scale,
+        if profile.invert_y {
+            -y * scale
+        } else {
+            y * scale
+        },
+    ]
 }
 
 #[cfg(test)]
@@ -471,7 +736,7 @@ mod tests {
     use super::*;
 
     fn builtin() -> Resolved {
-        resolve(&[], &Selection::default(), None, None)
+        resolve(&[], None, &Overrides::new())
     }
 
     #[test]
@@ -572,21 +837,21 @@ mod tests {
         assert!(matches!(Preset::import("[]"), Err(LoadError::NotJson(_))));
     }
 
+    fn over(entries: &[(Action, Vec<Binding>, Layer)]) -> Overrides {
+        entries
+            .iter()
+            .map(|(a, list, layer)| (*a, (list.clone(), *layer)))
+            .collect()
+    }
+
     #[test]
-    fn layers_override_and_reset_per_action() {
-        let global = Selection {
-            preset: None,
-            overrides: Overrides(BTreeMap::from([(Action::A, vec![key("j")])])),
-        };
-        let card = Selection {
-            preset: None,
-            overrides: Overrides(BTreeMap::from([(Action::B, vec![key("k")])])),
-        };
-        let session = Overrides(BTreeMap::from([
-            (Action::B, vec![key("l")]),
-            (Action::Start, vec![]),
-        ]));
-        let resolved = resolve(&[], &global, Some(&card), Some(&session));
+    fn overrides_replace_whole_actions_and_empty_unbinds() {
+        let overrides = over(&[
+            (Action::A, vec![key("j")], Layer::Global),
+            (Action::B, vec![key("l")], Layer::Session),
+            (Action::Start, vec![], Layer::Card),
+        ]);
+        let resolved = resolve(&[], None, &overrides);
         assert_eq!(resolved.bindings[&Action::A].1, Layer::Global);
         assert_eq!(resolved.key_bits("j"), bits::A);
         assert_eq!(resolved.key_bits("z"), 0, "A replaced, not added to");
@@ -594,86 +859,198 @@ mod tests {
             resolved.bindings[&Action::B],
             (vec![key("l")], Layer::Session)
         );
-        assert_eq!(resolved.key_bits("k"), 0);
         assert_eq!(resolved.key_bits("enter"), 0, "unbound by an empty list");
+        assert_eq!(resolved.unbound(), vec![Action::Start]);
         assert_eq!(resolved.bindings[&Action::Y].1, Layer::Preset);
-
-        // Reset of the session layer: the card's binding returns.
-        let parent = resolve(&[], &global, Some(&card), None);
-        assert_eq!(parent.key_bits("k"), bits::B);
-        assert_eq!(parent.key_bits("enter"), bits::START);
     }
 
     #[test]
-    fn secondary_override_leaves_parent_untouched() {
-        let global = Selection::default();
-        let card = Selection {
-            preset: None,
-            overrides: Overrides(BTreeMap::from([(Action::L, vec![key("1")])])),
-        };
-        let before = resolve(&[], &global, Some(&card), None);
-        let mut session = Overrides::default();
-        session.0.insert(Action::L, vec![key("2")]);
-        let secondary = resolve(&[], &global, Some(&card), Some(&session));
-        assert_eq!(secondary.key_bits("2"), bits::L);
-        assert_eq!(resolve(&[], &global, Some(&card), None), before);
-        assert_eq!(card.overrides.0[&Action::L], vec![key("1")]);
-    }
-
-    #[test]
-    fn card_preset_replaces_global_overrides_and_missing_falls_back() {
+    fn presets_resolve_from_builtins_then_library_and_missing_falls_back() {
         let mut lefty = Preset::builtin();
         lefty.name = "lefty".into();
         lefty.bindings.insert(Action::A, vec![key("m")]);
-        let global = Selection {
-            preset: None,
-            overrides: Overrides(BTreeMap::from([(Action::B, vec![key("k")])])),
-        };
-        let card = Selection {
-            preset: Some("lefty".into()),
-            overrides: Overrides::default(),
-        };
-        let resolved = resolve(std::slice::from_ref(&lefty), &global, Some(&card), None);
+        let library = [lefty];
+        let resolved = resolve(&library, Some("lefty"), &Overrides::new());
         assert_eq!(resolved.preset, "lefty");
         assert_eq!(resolved.key_bits("m"), bits::A);
-        assert_eq!(resolved.key_bits("x"), bits::B, "global override dropped");
+        assert!(resolve(&library, Some("xbox-labels"), &Overrides::new())
+            .problems
+            .is_empty());
 
-        let gone = Selection {
-            preset: Some("deleted".into()),
-            overrides: Overrides::default(),
-        };
-        let resolved = resolve(&[], &gone, None, None);
+        let resolved = resolve(&[], Some("deleted"), &Overrides::new());
         assert_eq!(resolved.preset, BUILTIN);
         assert_eq!(
             resolved.problems,
             vec![Problem::MissingPreset("deleted".into())]
         );
         assert_eq!(resolved.key_bits("z"), bits::A);
+        assert!(is_builtin("default") && is_builtin("xbox-labels") && !is_builtin("lefty"));
     }
 
     #[test]
     fn conflicts_are_reported_and_press_both() {
-        let card = Selection {
-            preset: None,
-            overrides: Overrides(BTreeMap::from([(Action::B, vec![key("z")])])),
-        };
-        let resolved = resolve(&[], &Selection::default(), Some(&card), None);
+        let overrides = over(&[(Action::B, vec![key("z")], Layer::Card)]);
+        let resolved = resolve(&[], None, &overrides);
         assert_eq!(
             resolved.conflicts(),
             vec![(key("z"), vec![Action::A, Action::B])]
         );
         assert_eq!(resolved.key_bits("z"), bits::A | bits::B);
+        let mapping = Mapping::new(&resolved, Profile::default());
+        assert_eq!(mapping.keyboard([&"z".to_string()]).0, bits::A | bits::B);
     }
 
     #[test]
-    fn overrides_import_reports_unknown() {
-        let value = serde_json::json!({"zl":[{"device":"axis","axis":"left_z","direction":"positive"}],"nope":[]});
-        let (overrides, problems) = Overrides::import(&value);
-        assert_eq!(
-            overrides.0[&Action::Zl],
-            vec![axis(Axis::LeftZ, Direction::Positive)]
+    fn parse_list_reports_invalid_entries() {
+        let value = serde_json::json!([
+            {"device":"axis","axis":"left_z","direction":"positive"},
+            {"device":"axis","axis":"left_z","direction":"positive"},
+            {"device":"button","button":"paddle_9"}
+        ]);
+        let (list, problems) = parse_list(Action::Zl, &value);
+        assert_eq!(list, vec![axis(Axis::LeftZ, Direction::Positive)]);
+        assert!(matches!(
+            problems.as_slice(),
+            [Problem::InvalidBinding {
+                action: Action::Zl,
+                ..
+            }]
+        ));
+    }
+
+    /// A pad's state for [`Mapping::controller`].
+    fn eval(mapping: &Mapping, held: &[Button], axes: &[(Axis, f32)]) -> Output {
+        mapping.controller(
+            |b| held.contains(&b),
+            |a| axes.iter().find(|(x, _)| *x == a).map_or(0.0, |(_, v)| *v),
+        )
+    }
+
+    fn mapping(preset: &str) -> Mapping {
+        Mapping::new(
+            &resolve(&[], Some(preset), &Overrides::new()),
+            Profile::default(),
+        )
+    }
+
+    /// Sample sequences per pad family. gilrs reports positions (SDL naming), so each
+    /// family's printed labels are named here only to say which physical button was pressed.
+    #[test]
+    fn pad_family_fixtures() {
+        let positional = mapping("default");
+        let xbox = mapping("xbox-labels");
+        // Xbox pad, printed A (bottom = South): positional gives 3DS B, xbox-labels 3DS A.
+        assert_eq!(eval(&positional, &[Button::South], &[]).0, bits::B);
+        assert_eq!(eval(&xbox, &[Button::South], &[]).0, bits::A);
+        // Xbox printed Y (top = North) -> 3DS X positionally, 3DS Y by label.
+        assert_eq!(eval(&positional, &[Button::North], &[]).0, bits::X);
+        assert_eq!(eval(&xbox, &[Button::North], &[]).0, bits::Y);
+        // DualSense cross/circle/square/triangle = South/East/West/North: positional only.
+        let ds = [Button::South, Button::East, Button::West, Button::North];
+        let got: Vec<u32> = ds.iter().map(|b| eval(&positional, &[*b], &[]).0).collect();
+        assert_eq!(got, vec![bits::B, bits::A, bits::Y, bits::X]);
+        // Nintendo layout: printed A is on the right (East), as on the 3DS.
+        assert_eq!(eval(&positional, &[Button::East], &[]).0, bits::A);
+        // Triggers as buttons (XInput/WGI) and as axes (backends with LeftZ/RightZ).
+        assert_eq!(eval(&positional, &[Button::LeftTrigger], &[]).0, bits::ZL);
+        assert_eq!(eval(&positional, &[], &[(Axis::RightZ, 0.6)]).0, bits::ZR);
+        assert_eq!(eval(&positional, &[], &[(Axis::RightZ, 0.4)]).0, 0);
+        // Sticks pass through unchanged by default.
+        let (_, sticks) = eval(
+            &positional,
+            &[],
+            &[(Axis::LeftX, -0.5), (Axis::RightY, 0.25)],
         );
-        assert_eq!(problems, vec![Problem::UnknownAction("nope".into())]);
+        assert_eq!(sticks, [[-0.5, 0.0], [0.0, 0.25]]);
+        // A limited pad (no right stick, no triggers) yields nothing for missing controls.
+        let (bits_, sticks) = eval(&positional, &[Button::DpadUp], &[]);
+        assert_eq!((bits_, sticks[1]), (bits::UP, [0.0, 0.0]));
+    }
+
+    #[test]
+    fn stick_deadzone_sensitivity_and_inversion() {
+        let mut profile = Profile::default();
+        profile.sticks[0] = StickProfile {
+            deadzone: 0.2,
+            sensitivity: 1.0,
+            invert_y: true,
+        };
+        profile.sticks[1].sensitivity = 2.0;
+        let m = Mapping::new(&resolve(&[], None, &Overrides::new()), profile);
+        let circle = |x: f32, y: f32| eval(&m, &[], &[(Axis::LeftX, x), (Axis::LeftY, y)]).1[0];
+        assert_eq!(circle(0.15, 0.1), [0.0, 0.0], "inside the radial dead zone");
+        // Azahar: x / r * (r - dz) / (1 - dz); r = 0.6 -> 0.5.
+        let [x, y] = circle(0.6, 0.0);
+        assert!((x - 0.5).abs() < 1e-6 && y == 0.0);
+        let [_, y] = circle(0.0, 1.0);
+        assert!((y + 1.0).abs() < 1e-6, "inverted");
+        let cstick = |x: f32| eval(&m, &[], &[(Axis::RightX, x)]).1[1];
+        assert_eq!(cstick(0.3), [0.6, 0.0]);
+        assert_eq!(cstick(0.8), [1.0, 0.0], "clamped to the unit circle");
+    }
+
+    #[test]
+    fn deadzone_never_eats_digital_inputs() {
+        let mut profile = Profile::default();
+        profile.sticks[0].deadzone = 0.9;
+        let overrides = over(&[
+            (
+                Action::CirclePadUp,
+                vec![pad(Button::DpadUp), key("i")],
+                Layer::Global,
+            ),
+            (
+                Action::Zl,
+                vec![axis(Axis::LeftX, Direction::Negative)],
+                Layer::Global,
+            ),
+        ]);
+        let m = Mapping::new(&resolve(&[], None, &overrides), profile);
+        // D-pad up drives the circle pad fully, whatever the dead zone.
+        assert_eq!(eval(&m, &[Button::DpadUp], &[]).1[0], [0.0, 1.0]);
+        assert_eq!(m.keyboard([&"i".to_string()]).1[0], [0.0, 1.0]);
+        // The left stick's x is both the circle pad's analog x and a digital ZL; the
+        // threshold, not the stick dead zone, decides the press.
+        let (b, sticks) = eval(&m, &[], &[(Axis::LeftX, -0.6)]);
+        assert_eq!(b, bits::ZL);
+        assert_eq!(sticks[0], [0.0, 0.0], "analog x still inside the dead zone");
+    }
+
+    #[test]
+    fn axis_and_button_rebinds() {
+        // Right stick drives the circle pad (axes moved, sign kept); left stick unbound.
+        let overrides = over(&[
+            (
+                Action::CirclePadRight,
+                vec![axis(Axis::RightX, Direction::Positive)],
+                Layer::Card,
+            ),
+            (
+                Action::CirclePadLeft,
+                vec![axis(Axis::RightX, Direction::Negative)],
+                Layer::Card,
+            ),
+            (
+                Action::CirclePadUp,
+                vec![axis(Axis::RightY, Direction::Negative)],
+                Layer::Card,
+            ),
+            (Action::CirclePadDown, vec![], Layer::Card),
+            (Action::CStickRight, vec![], Layer::Card),
+            (Action::CStickLeft, vec![], Layer::Card),
+            (Action::CStickUp, vec![], Layer::Card),
+            (Action::CStickDown, vec![], Layer::Card),
+            (Action::Home, vec![pad(Button::LeftThumb)], Layer::Card),
+        ]);
+        let m = Mapping::new(&resolve(&[], None, &overrides), Profile::default());
+        let (b, sticks) = eval(
+            &m,
+            &[Button::LeftThumb],
+            &[(Axis::RightX, 0.5), (Axis::RightY, 0.5), (Axis::LeftX, 1.0)],
+        );
+        assert_eq!(b, bits::HOME);
+        // Up bound to RightY negative: pushing the stick up (positive) points the pad down.
+        assert_eq!(sticks, [[0.5, -0.5], [0.0, 0.0]]);
     }
 
     #[test]

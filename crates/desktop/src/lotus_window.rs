@@ -197,10 +197,10 @@ pub struct LotusWindow {
     /// Connected controllers and their assignments (lotus#62), refreshed with each update.
     controllers: crate::input_routing::Controllers,
     focus: FocusHandle,
-    /// Keyboard buttons held (3DS bits), for [`Self::keyboard_target`], and pointer touch,
-    /// for the tile it started on; the router composes them with the controllers assigned
-    /// to each session (lotus#61).
-    keys: u32,
+    /// Keyboard keys held (GPUI names), for [`Self::keyboard_target`], and pointer touch,
+    /// for the tile it started on; the router maps keys through that session's input layout
+    /// (lotus#63) and composes them with its controllers (lotus#61).
+    keys: std::collections::BTreeSet<String>,
     touching: Option<(u16, u16)>,
     touch_session: Option<String>,
     preferences: Store,
@@ -300,7 +300,7 @@ impl LotusWindow {
             artifacts: None,
             controllers: crate::input_routing::Controllers::default(),
             focus,
-            keys: 0,
+            keys: std::collections::BTreeSet::new(),
             touching: None,
             touch_session: None,
             recent: if preferences.values.inspector_open {
@@ -755,12 +755,12 @@ impl LotusWindow {
             .filter(|id| self.sessions.iter().any(|s| s.info.id == *id))
             .or_else(|| keyboard.clone());
         let input = controller.input();
-        input.keyboard(keyboard.as_deref(), self.keys);
+        input.keyboard_keys(keyboard.as_deref(), self.keys.clone());
         input.pointer(pointer.as_deref(), self.touching);
     }
 
     fn release_input(&mut self) {
-        self.keys = 0;
+        self.keys.clear();
         self.touching = None;
         self.publish_input();
     }
@@ -834,22 +834,16 @@ impl LotusWindow {
         }
     }
 
+    /// A game key went down or up. Which 3DS input it means is the target session's layout.
     fn button(&mut self, key: &str, down: bool) {
-        // The builtin input layout (lotus#57) until saved presets are wired by lotus#63/#64.
-        static LAYOUT: std::sync::LazyLock<lotus_input::layout::Resolved> =
-            std::sync::LazyLock::new(|| {
-                lotus_input::layout::resolve(&[], &Default::default(), None, None)
-            });
-        let mask = LAYOUT.key_bits(key);
-        if mask == 0 {
-            return;
-        }
-        if down {
-            self.keys |= mask;
+        let changed = if down {
+            self.keys.insert(key.to_string())
         } else {
-            self.keys &= !mask;
+            self.keys.remove(key)
+        };
+        if changed {
+            self.publish_input();
         }
-        self.publish_input();
     }
 
     /// Touch on `session`'s bottom screen. A touch starting on another tile first lifts

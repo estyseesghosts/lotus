@@ -225,6 +225,12 @@ impl InputRouting {
         self.route(|router| router.keyboard(session, buttons));
     }
 
+    /// Keyboard keys held (GPUI names) for the session keyboard input targets, mapped through
+    /// that session's input layout (lotus#63).
+    pub fn keyboard_keys(&self, session: Option<&str>, keys: std::collections::BTreeSet<String>) {
+        self.route(|router| router.keyboard_keys(session, keys));
+    }
+
     /// Pointer touch in bottom-screen pixels for the session the pointer targets, if any.
     pub fn pointer(&self, session: Option<&str>, touch: Option<(u16, u16)>) {
         self.route(|router| router.pointer(session, touch));

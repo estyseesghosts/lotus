@@ -17,12 +17,21 @@
 //!   stay suppressed until released or centred, so an old held state never reaches the new
 //!   session.
 //! - Disconnecting a controller removes only its contribution.
+//! - Each session has its own [`Mapping`] (lotus#63), so one controller can mean different
+//!   things in two sessions. Changing a session's mapping suppresses whatever its sources
+//!   hold, as assignment does: the old action is released at once and the new one needs a
+//!   fresh press, so a remap never leaves a key stuck.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, LazyLock};
 
 use serde::Serialize;
 
+use crate::layout::Mapping;
 use crate::{Axis, Button, DeviceId, DeviceInfo, Event, EventKind, InputSnapshot};
+
+/// Layout of a session without one of its own: the builtin preset.
+static DEFAULT_MAPPING: LazyLock<Arc<Mapping>> = LazyLock::new(|| Arc::new(Mapping::default()));
 
 /// Controllers assigned at once (lotus#62 v1). One controller per session and one session
 /// per controller always hold; this caps how many pairs exist.
@@ -111,7 +120,7 @@ pub mod bits {
     pub const HOME: u32 = 1 << 16;
 }
 
-/// Default positional controller layout, until mapping profiles exist (lotus#63).
+/// Positional controller buttons of the builtin input preset (`layout::Preset::builtin`).
 ///
 /// Face buttons and the rest follow Azahar's own default for XInput-style pads,
 /// `input_common/sdl/sdl_impl.cpp` `xinput_to_3ds_mapping`: 3DS A from the east button, B from
@@ -147,61 +156,49 @@ struct Pad {
     held: BTreeSet<Button>,
     axes: BTreeMap<Axis, f32>,
     session: Option<String>,
-    /// Held when assigned; ignored until released.
+    /// Held when assigned or remapped; ignored until released.
     suppressed: BTreeSet<Button>,
-    /// Sticks off centre when assigned (circle pad, C-stick); ignored until centred.
-    sticks_suppressed: [bool; 2],
+    /// Axes off centre when assigned or remapped; ignored until they read 0.
+    axes_suppressed: BTreeSet<Axis>,
 }
 
 impl Pad {
-    fn stick(&self, x: Axis, y: Axis) -> [f32; 2] {
-        [
-            self.axes.get(&x).copied().unwrap_or(0.0),
-            self.axes.get(&y).copied().unwrap_or(0.0),
-        ]
-    }
-
-    fn sticks(&self) -> [[f32; 2]; 2] {
-        [
-            self.stick(Axis::LeftX, Axis::LeftY),
-            self.stick(Axis::RightX, Axis::RightY),
-        ]
-    }
-
-    /// Drops suppression of anything released or centred since assignment.
+    /// Drops suppression of anything released or centred since assignment or remap.
     fn settle(&mut self) {
-        let held = &self.held;
+        let (held, axes) = (&self.held, &self.axes);
         self.suppressed.retain(|button| held.contains(button));
-        let sticks = self.sticks();
-        for (suppressed, stick) in self.sticks_suppressed.iter_mut().zip(sticks) {
-            // gilrs' default deadzone filter reports a centred stick as exactly 0.
-            if stick == [0.0, 0.0] {
-                *suppressed = false;
-            }
-        }
+        // gilrs' default deadzone filter reports a centred axis as exactly 0.
+        self.axes_suppressed
+            .retain(|axis| axes.get(axis).is_some_and(|v| *v != 0.0));
     }
 
-    fn contribution(&self) -> GuestState {
-        let buttons = self
-            .held
+    /// Suppress everything held or off centre now.
+    fn suppress(&mut self) {
+        self.suppressed = self.held.clone();
+        self.axes_suppressed = self
+            .axes
             .iter()
-            .filter(|button| !self.suppressed.contains(button))
-            .filter_map(|button| default_button(*button))
-            .fold(0, |bits, bit| bits | bit);
-        let [circle, cstick] = self.sticks();
+            .filter(|(_, v)| **v != 0.0)
+            .map(|(a, _)| *a)
+            .collect();
+    }
+
+    fn contribution(&self, mapping: &Mapping) -> GuestState {
+        let (buttons, [circle_pad, c_stick]) = mapping.controller(
+            |button| self.held.contains(&button) && !self.suppressed.contains(&button),
+            |axis| {
+                if self.axes_suppressed.contains(&axis) {
+                    0.0
+                } else {
+                    self.axes.get(&axis).copied().unwrap_or(0.0)
+                }
+            },
+        );
         GuestState {
             buttons,
             touch: None,
-            circle_pad: if self.sticks_suppressed[0] {
-                [0.0; 2]
-            } else {
-                circle
-            },
-            c_stick: if self.sticks_suppressed[1] {
-                [0.0; 2]
-            } else {
-                cstick
-            },
+            circle_pad,
+            c_stick,
         }
     }
 }
@@ -221,6 +218,12 @@ pub struct RouterMetrics {
 #[derive(Debug, Default)]
 pub struct Router {
     keyboard: Option<(String, u32)>,
+    /// Keyboard keys held (GPUI names), mapped through the keyboard session's layout.
+    keys: BTreeSet<String>,
+    /// Keys held when the keyboard's session or that session's mapping changed; ignored
+    /// until released.
+    keys_suppressed: BTreeSet<String>,
+    mappings: BTreeMap<String, Arc<Mapping>>,
     pointer: Option<(String, Option<(u16, u16)>)>,
     pads: BTreeMap<DeviceId, Pad>,
     published: BTreeMap<String, GuestState>,
@@ -307,14 +310,52 @@ impl Router {
             .chain(self.pointer.iter().map(|(session, _)| session.clone()))
     }
 
+    fn mapping(&self, session: &str) -> &Mapping {
+        self.mappings.get(session).unwrap_or(&DEFAULT_MAPPING)
+    }
+
+    /// Give `session` its own layout (`None`: the builtin one) and return the sessions whose
+    /// state changed. Inputs its sources hold now are suppressed until released or centred.
+    pub fn set_mapping(
+        &mut self,
+        session: &str,
+        mapping: Option<Arc<Mapping>>,
+    ) -> Vec<(String, GuestState)> {
+        let unchanged = **mapping.as_ref().unwrap_or(&DEFAULT_MAPPING) == *self.mapping(session);
+        match mapping {
+            Some(mapping) => self.mappings.insert(session.to_string(), mapping),
+            None => self.mappings.remove(session),
+        };
+        if unchanged {
+            return Vec::new();
+        }
+        for pad in self.pads.values_mut() {
+            if pad.session.as_deref() == Some(session) {
+                pad.suppress();
+            }
+        }
+        if self.keyboard.as_ref().is_some_and(|(s, _)| s == session) {
+            self.keys_suppressed = self.keys.clone();
+        }
+        self.publish(BTreeSet::from([session.to_string()]))
+    }
+
     /// Composed state of `session` from every source targeting it.
     #[must_use]
     pub fn compose(&self, session: &str) -> GuestState {
+        let mapping = self.mapping(session);
         let mut contributions: Vec<GuestState> = Vec::new();
         if let Some((_, buttons)) = self.keyboard.as_ref().filter(|(s, _)| s == session) {
+            let (bits, [circle_pad, c_stick]) = mapping.keyboard(
+                self.keys
+                    .iter()
+                    .filter(|key| !self.keys_suppressed.contains(*key)),
+            );
             contributions.push(GuestState {
-                buttons: *buttons,
-                ..GuestState::default()
+                buttons: *buttons | bits,
+                touch: None,
+                circle_pad,
+                c_stick,
             });
         }
         let touch = self
@@ -326,7 +367,7 @@ impl Router {
             self.pads
                 .values()
                 .filter(|pad| pad.session.as_deref() == Some(session))
-                .map(Pad::contribution),
+                .map(|pad| pad.contribution(mapping)),
         );
         let pick = |stick: fn(&GuestState) -> [f32; 2]| {
             contributions
@@ -360,10 +401,37 @@ impl Router {
         changed
     }
 
-    /// Keyboard buttons held for `session` (`None`: no session takes keyboard input).
+    /// Keyboard buttons held for `session` (`None`: no session takes keyboard input), as
+    /// guest bits, bypassing the layout.
     pub fn keyboard(&mut self, session: Option<&str>, buttons: u32) -> Vec<(String, GuestState)> {
+        self.keyboard_input(session, buttons, BTreeSet::new())
+    }
+
+    /// Keyboard keys held for `session` (GPUI key names), mapped through its layout. Keys
+    /// held when the target changes stay ignored until released, as a controller's are.
+    pub fn keyboard_keys(
+        &mut self,
+        session: Option<&str>,
+        keys: BTreeSet<String>,
+    ) -> Vec<(String, GuestState)> {
+        self.keyboard_input(session, 0, keys)
+    }
+
+    fn keyboard_input(
+        &mut self,
+        session: Option<&str>,
+        buttons: u32,
+        keys: BTreeSet<String>,
+    ) -> Vec<(String, GuestState)> {
         let mut touched: BTreeSet<String> = self.keyboard.iter().map(|(s, _)| s.clone()).collect();
+        let moved = self.keyboard.as_ref().map(|(s, _)| s.as_str()) != session;
         self.keyboard = session.map(|session| (session.to_string(), buttons));
+        if moved {
+            self.keys_suppressed = self.keys.intersection(&keys).cloned().collect();
+        } else {
+            self.keys_suppressed.retain(|key| keys.contains(key));
+        }
+        self.keys = keys;
         touched.extend(session.map(str::to_string));
         self.publish(touched)
     }
@@ -484,8 +552,7 @@ impl Router {
         }
         let mut touched: BTreeSet<String> = pad.session.iter().cloned().collect();
         pad.session = session.map(str::to_string);
-        pad.suppressed = pad.held.clone();
-        pad.sticks_suppressed = pad.sticks().map(|stick| stick != [0.0, 0.0]);
+        pad.suppress();
         touched.extend(session.map(str::to_string));
         self.publish(touched)
     }
@@ -630,12 +697,14 @@ impl Router {
         }
         self.remembered.retain(|entry| entry.session != session);
         self.published.remove(session);
+        self.mappings.remove(session);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::{resolve, Action, Binding, Layer, Overrides, Profile};
     use std::time::SystemTime;
 
     fn event(device: u64, kind: EventKind) -> Event {
@@ -1003,5 +1072,106 @@ mod tests {
             .expect("other pad");
         connect_model(&mut router, 3, "pro");
         assert_eq!(router.assignments()[&DeviceId(3)], None);
+    }
+
+    fn layout(preset: &str, overrides: &[(Action, Vec<Binding>)]) -> Arc<Mapping> {
+        let overrides: Overrides = overrides
+            .iter()
+            .map(|(a, l)| (*a, (l.clone(), Layer::Card)))
+            .collect();
+        Arc::new(Mapping::new(
+            &resolve(&[], Some(preset), &overrides),
+            Profile::default(),
+        ))
+    }
+
+    #[test]
+    fn one_controller_maps_differently_per_session_without_leaking() {
+        let mut router = two_pads();
+        router.set_mapping("b", Some(layout("xbox-labels", &[])));
+        // Pad 1 on A (default): South is 3DS B.
+        button(&mut router, 1, Button::South, true);
+        assert_eq!(router.compose("a").buttons, bits::B);
+        button(&mut router, 1, Button::South, false);
+        // The same pad moved to B (xbox-labels): South is 3DS A; A keeps its own layout.
+        router.assign(DeviceId(1), Some("b"), true).expect("move");
+        button(&mut router, 1, Button::South, true);
+        assert_eq!(router.compose("b").buttons, bits::A);
+        assert_eq!(router.compose("a"), GuestState::default());
+        button(&mut router, 1, Button::South, false);
+        router.assign(DeviceId(1), Some("a"), true).expect("back");
+        button(&mut router, 1, Button::South, true);
+        assert_eq!(router.compose("a").buttons, bits::B, "A's layout untouched");
+    }
+
+    #[test]
+    fn remapping_while_held_releases_then_needs_a_fresh_press() {
+        let mut router = two_pads();
+        button(&mut router, 1, Button::East, true);
+        axis(&mut router, 1, Axis::LeftX, 0.7);
+        router.keyboard_keys(Some("a"), BTreeSet::from(["z".to_string()]));
+        assert_eq!(router.compose("a").buttons, bits::A);
+        // East now means Y and Z means B; everything held is released, nothing new pressed.
+        let changed = router.set_mapping(
+            "a",
+            Some(layout(
+                "default",
+                &[
+                    (Action::A, vec![]),
+                    (
+                        Action::Y,
+                        vec![Binding::Button {
+                            button: Button::East,
+                        }],
+                    ),
+                    (Action::B, vec![Binding::Keyboard { key: "z".into() }]),
+                ],
+            )),
+        );
+        assert_eq!(changed, vec![("a".into(), GuestState::default())]);
+        // Still held: nothing. Released and pressed again: the new action.
+        axis(&mut router, 1, Axis::LeftX, 0.8);
+        assert_eq!(router.compose("a"), GuestState::default());
+        button(&mut router, 1, Button::East, false);
+        button(&mut router, 1, Button::East, true);
+        router.keyboard_keys(Some("a"), BTreeSet::new());
+        router.keyboard_keys(Some("a"), BTreeSet::from(["z".to_string()]));
+        assert_eq!(router.compose("a").buttons, bits::Y | bits::B);
+        axis(&mut router, 1, Axis::LeftX, 0.0);
+        axis(&mut router, 1, Axis::LeftX, 0.4);
+        assert_eq!(router.compose("a").circle_pad, [0.4, 0.0]);
+        // Setting an equal mapping changes nothing and suppresses nothing.
+        let same = router.mappings["a"].clone();
+        assert!(router.set_mapping("a", Some(same)).is_empty());
+        assert_eq!(router.compose("a").buttons, bits::Y | bits::B);
+        // Back to the builtin layout via None.
+        assert!(!router.set_mapping("a", None).is_empty());
+        assert!(!router.mappings.contains_key("a"));
+    }
+
+    #[test]
+    fn keyboard_keys_follow_the_target_and_its_layout() {
+        let mut router = two_pads();
+        router.set_mapping(
+            "b",
+            Some(layout(
+                "default",
+                &[(
+                    Action::CirclePadUp,
+                    vec![Binding::Keyboard { key: "i".into() }],
+                )],
+            )),
+        );
+        let held = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect::<BTreeSet<_>>();
+        router.keyboard_keys(Some("a"), held(&["z", "i"]));
+        assert_eq!(router.compose("a").buttons, bits::A);
+        assert_eq!(router.compose("a").circle_pad, [0.0, 0.0], "i unbound on A");
+        // Moving the keyboard to B with keys still held brings nothing along.
+        router.keyboard_keys(Some("b"), held(&["z", "i"]));
+        assert_eq!(router.compose("a"), GuestState::default());
+        assert_eq!(router.compose("b"), GuestState::default());
+        router.keyboard_keys(Some("b"), held(&[]));
+        router.keyboard_keys(Some("b"), held(&["i"]));
+        assert_eq!(router.compose("b").circle_pad, [0.0, 1.0]);
     }
 }

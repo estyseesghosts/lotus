@@ -75,6 +75,45 @@ pub enum Axis {
     RightZ,
 }
 
+impl Button {
+    pub const ALL: [Button; 17] = [
+        Button::South,
+        Button::East,
+        Button::North,
+        Button::West,
+        Button::LeftShoulder,
+        Button::RightShoulder,
+        Button::LeftTrigger,
+        Button::RightTrigger,
+        Button::Select,
+        Button::Start,
+        Button::Mode,
+        Button::LeftThumb,
+        Button::RightThumb,
+        Button::DpadUp,
+        Button::DpadDown,
+        Button::DpadLeft,
+        Button::DpadRight,
+    ];
+
+    /// Position in [`Button::ALL`].
+    #[must_use]
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+impl Axis {
+    pub const ALL: [Axis; 6] = [
+        Axis::LeftX,
+        Axis::LeftY,
+        Axis::RightX,
+        Axis::RightY,
+        Axis::LeftZ,
+        Axis::RightZ,
+    ];
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct DeviceInfo {
     pub name: String,

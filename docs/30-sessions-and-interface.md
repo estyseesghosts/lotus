@@ -742,64 +742,91 @@ To qualify a pad, record its model, USB or Bluetooth connection and the OS
 build. Then follow the user guide's pairing steps
 ([37](37-user-guide.md#game-controllers)) and read `routing.devices`.
 
-## Input layouts (#57)
+## Input layouts (#57, #63)
 
-`crates/input/src/layout.rs` defines the preset format and resolver for
-keyboard and controller bindings. The desktop keyboard already resolves
-through it (the builtin layout only); saving, selecting and editing presets
-land with mapping profiles (#63) and the Settings window (#64).
+`crates/input/src/layout.rs` defines the preset format, the resolver and the
+compiled per-session `Mapping` the router applies. Every session currently
+uses the builtin `default` layout. Saved selections and overrides (#63) and
+the editor (#64) are not wired yet.
 
 - **Actions.** Stable IDs: `a b x y up down left right l r zl zr start select
   home`, `circle_pad_{up,down,left,right}`, `c_stick_{up,down,left,right}`.
   Touch is not an action; it follows the pointer on the bottom screen.
 - **Bindings.** `{"device":"keyboard","key":"z"}` (GPUI key names, the strings
-  the window already matches, not scancodes), `{"device":"button","button":"east"}`
+  the window receives, not scancodes), `{"device":"button","button":"east"}`
   and `{"device":"axis","axis":"left_x","direction":"negative"}`, using the
-  positional `Button`/`Axis` names (SDL layout) rather than backend IDs. The
-  `device` tag is the capability a binding needs. A binding whose device is
-  absent stays in the preset and never fires.
+  positional `Button`/`Axis` names (SDL layout) rather than backend IDs or
+  serials. The `device` tag is the capability a binding needs. A binding whose
+  device is absent stays in the preset and never fires.
 - **Preset file.** `{"version":1,"name":"…","bindings":{"a":[…],…}}`, which is
   also the export format. On import, unknown action IDs and unparseable
   bindings are dropped and reported, and duplicates within an action collapse.
   Actions the file omits (an older preset) take the builtin bindings. A missing,
   zero or newer `version` or an empty name refuses the file.
-- **Builtin preset `default`.** It reproduces the shipped controls exactly:
-  the keyboard table under Window and `default_button` plus both sticks for
-  controllers. Tests pin both.
-- **Precedence.** This is the order of worker settings (#51). The base preset
-  is the card's selection, else the global one, else `default`. Global
-  overrides apply on top unless the card selects a different preset (they are
-  edits of the global preset). Card overrides apply next, then a secondary's
-  ephemeral overrides. An override replaces one action's whole binding list,
-  and an empty list unbinds it. Resolution never writes a layer, so a
-  secondary's edit cannot reach its parent card. A selected preset missing
-  from the library falls back to `default` with a `MissingPreset` problem.
-- **Reset.** Removing an override inherits the layer below. Resetting a layer
-  removes all of its overrides. Reset-to-preset clears the card and session
-  overrides, keeping the selection.
-- **Conflicts.** One binding on several actions presses all of them; it is
-  reported by `Resolved::conflicts` for the editor to warn about, not refused.
-  The session input-owner protocol (#48) is unchanged. A layout only decides
-  which bits a physical input sets before the state reaches the router.
+- **Builtin presets** (read-only). `default` reproduces the shipped controls:
+  the keyboard table under Window, and for controllers `default_button`, both
+  sticks, and the trigger axes `left_z`/`right_z` as ZL/ZR past the threshold.
+  The trigger axes are Azahar's own SDL default (`sdl_impl.cpp`
+  `BuildButtonParamPackageForButton`); gilrs on Windows reports triggers as
+  buttons, which `default_button` already binds. `default` is positional (3DS A
+  on the right face button, as Nintendo pads print it).
+  `xbox-labels` moves A/B/X/Y to the printed Xbox labels (A at the bottom).
+  DualSense buttons are printed with symbols, so position is their only meaning.
+- **Precedence.** The settings layers (#51) pick the effective preset name and,
+  per action, the winning override. `resolve` starts from that preset (builtin
+  first, then the library) and replaces each overridden action's whole binding
+  list. An empty list unbinds the action. A selected preset that no longer
+  exists falls back to `default` with a `MissingPreset` problem.
+- **Conflicts and gaps.** One binding on several actions presses all of them.
+  `Resolved::conflicts` lists them and `Resolved::unbound` lists actions with no
+  binding, for the editor to warn about; neither is refused.
+- **Mapping.** `Mapping::new(&Resolved, Profile)` compiles fixed tables indexed
+  by button, so a sample allocates nothing. An axis bound to a stick's right/up
+  action (or left/down, sign flipped) drives that component in analog. Every
+  other axis binding is digital, pressed past `threshold` (default 0.5,
+  Azahar's ZL/ZR value). Buttons, keys and digital axes bound to stick
+  directions push that stick fully.
+- **Stick shaping** (per 3DS stick). Radial dead zone (0–0.99, default 0) with
+  Azahar's rescaling `x / r * (r - dz) / (1 - dz)` (`sdl_impl.cpp`
+  `SDLAnalog::GetStatus`), applied on top of gilrs' own deadzone filter; then
+  sensitivity (default 1) with a unit-circle clamp, then optional Y inversion.
+  Digital directions are added after shaping, so the dead zone never eats a
+  button edge.
+- **Routing.** The router keeps one mapping per session (`set_mapping`), so the
+  same controller can mean different things in two sessions. A mapping change
+  suppresses what that session's sources hold: the old action is released at
+  once and the new one needs a fresh press or a re-centred axis. Keyboard keys
+  held when the keyboard's target changes are suppressed the same way. The
+  window sends held key names (`keyboard_keys`) and the router maps them with
+  the target session's layout. The session input-owner protocol (#48) is
+  unchanged.
 
 **Editor interaction (#64, not built).** The Controls view sits inside the
 standalone Settings window. It shows a 3DS outline with every action. Selecting
 one lists its bindings with the layer each came from, and offers add (capture
-the next key; controller capture appears only once #63 makes controller
-bindings take effect), remove, and reset to inherited. A scope picker chooses
-global, card or the selected secondary. The view has preset
-create/rename/duplicate/delete and import/export, and the builtin preset is
-read-only. Conflicting bindings are marked on both actions. Keyboard and
-controller bindings are listed separately. Dead zones, thresholds, multiple
-controllers and hotplug belong to #63's per-device profiles, not to this
-format. Unavailable devices only grey out their bindings.
+the next key or controller input), remove, and reset to inherited. A scope
+picker chooses global, card or the selected secondary. The view has preset
+create/rename/duplicate/delete and import/export; builtin presets are
+read-only. Conflicting bindings are marked on both actions, and unbound actions
+are listed. Keyboard and controller bindings are listed separately. Bindings for
+absent devices are greyed out.
 
-Evidence: **verified compiled** — unit tests in `layout.rs` (builtin keyboard
-and controller defaults, import/export round trip, migration and refusal,
-unknown actions and bindings, override layering and reset, secondary
-isolation, card preset selection, missing presets, conflicts). The window's
-key handling now goes through `key_bits` with the same masks; not re-run in
-the window.
+Evidence: **verified compiled**. Unit tests in `layout.rs` cover:
+
+- builtin keyboard and controller defaults;
+- the import/export round trip, refusal and dropped entries;
+- overrides and unbinding;
+- library and missing presets;
+- conflicts;
+- Xbox, DualSense and Nintendo pad-family fixtures, including triggers as
+  buttons and as axes;
+- dead zone, sensitivity and inversion, and digital input surviving the dead
+  zone;
+- axis rebinds.
+
+`router.rs` tests cover per-session mappings without leaks, remapping while
+held, and keyboard keys following the target. The window was not re-run with
+the key-name path.
 
 ## Settings registry (#50)
 
