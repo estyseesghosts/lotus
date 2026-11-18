@@ -391,9 +391,8 @@ controller events, so routing does not wait on GPUI frames.
 - **Targets**: keyboard and pointer follow the selected session while the
   window has keyboard focus. `release_input` (blur, Tab, selection change)
   releases only their contribution. Controllers follow explicit assignment
-  (`InputRouting::assign`, which #62's UI builds on). Selection, focus, Settings
-  and layout never move or release them. An unassigned controller routes
-  nowhere.
+  (next section). Selection, focus, Settings and layout never move or release
+  them. An unassigned controller routes nowhere.
 - **Composition**: buttons are ORed over sources and touch comes from the
   pointer only. Each stick takes the source with the largest deflection; ties go
   to the keyboard, then the pointer, then the lowest connection ID. A state is
@@ -444,6 +443,61 @@ Evidence (**verified compiled**, mock workers):
 **Unverified**, needs physical controllers: the same run with two real pads,
 and controller input while Settings or another window has focus. WGI needs a
 focused window of this process (see the backend note above).
+
+## Controller pairing (#62)
+
+Pairs are made in the sidebar's CONTROLLERS list. Each connected controller
+shows its name, connection ID (`pad-N`) and the session it drives. **Assign**
+gives it to the selected session, **Replace** does so when that session already
+has a controller, and **Unassign** frees it. **Identify** marks the next
+controller to press a button, so two identical pads can be told apart. The press
+itself is routed as usual. Assignments name running session IDs, primary or
+secondary. Selecting another session only changes which one the buttons act
+on.
+
+- **Policy** (`Router::assign`): one controller per session and one session per
+  controller. At most `MAX_ASSIGNED` = 2 pairs exist; every connected controller
+  is listed. Refusals name the reason: the session already has `pad-N`, two are
+  assigned, the controller is gone, or the session is not running. Moving an
+  assigned controller to a free session is allowed. Before a controller joins
+  its new session, its old one is republished without it, with the held-input
+  suppression from #61.
+- **Reconnect**: a disconnect remembers the controller's name, model UUID and
+  session. A new connection takes that session back only when the match is
+  unambiguous. Exactly one remembered entry must have its model, and no other
+  unassigned controller of that model may be connected. The session must also
+  be running and still free, within the cap. Otherwise it stays unassigned and
+  the list shows "NAME disconnected; was on SESSION" until someone chooses. Two
+  identical pads share a model UUID (#59), so they never resolve on their own.
+  An entry ends when its session ends or is given another controller.
+- **Teardown**: stopping, crashing or expiring a session unassigns its
+  controller and drops its remembered entry within one 250 ms reconcile.
+- **Status**: `frontend_metrics.controllers.routing` adds `max_assigned`,
+  `remembered` and `identify` (`armed`, `last`, `count`).
+
+Audio focus is unchanged by pairing; it follows the selected session as before.
+
+Evidence (**verified compiled**, mock workers):
+
+- Router unit tests cover the cap and occupancy, replace and move, identify, and
+  reconnect. The reconnect cases are a unique model, identical pads, an unassigned
+  twin, an ended session and a session given another pad.
+- `controller_pairing_policy_against_running_sessions` in
+  `crates/desktop/tests/input_routing.rs` runs three `lotus-mock-native`
+  sessions and three scripted pads, two of them identical. It checks:
+  - Identify names the right pad.
+  - The third pad is refused an occupied session, a third pair, and a stopped
+    session.
+  - Holding pad 1's button and stick on A while tapping pad 2 three times on B
+    delivers each only to its own worker.
+  - Unplugging pad 2 releases only B.
+  - Pad 2's reconnect waits for a choice while its twin is unassigned.
+  - The unique pad reconnects to A on its own.
+  - Stopping A and B clears both pairings.
+
+The sidebar list is **verified compiled** only: no screenshot run.
+**Unverified** with physical pads: two real controllers on two sessions, and
+hotplug.
 
 ## Discord Rich Presence
 

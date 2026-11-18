@@ -162,6 +162,8 @@ pub struct LotusWindow {
     pending: usize,
     waiting: Vec<String>,
     artifacts: Option<lotus_session::artifacts::Usage>,
+    /// Connected controllers and their assignments (lotus#62), refreshed with each update.
+    controllers: crate::input_routing::Controllers,
     focus: FocusHandle,
     /// Keyboard buttons held (3DS bits) and pointer touch, for the selected session; the
     /// router composes them with controllers assigned to it (lotus#61).
@@ -255,6 +257,7 @@ impl LotusWindow {
             pending: 0,
             waiting: Vec::new(),
             artifacts: None,
+            controllers: crate::input_routing::Controllers::default(),
             focus,
             keys: 0,
             touching: None,
@@ -432,6 +435,10 @@ impl LotusWindow {
         };
         let ui = controller.ui.clone();
         ui.poll_started();
+        let controllers = controller.input().controllers();
+        if controllers != self.controllers {
+            self.controllers = controllers;
+        }
         let (preview, selected, surface) = {
             let mut update = controller.ui.lock_update(&controller.latest);
             self.sessions = update.sessions.clone();
@@ -815,6 +822,7 @@ impl LotusWindow {
                     }),
             )
             .child(list)
+            .child(self.render_controllers(cx))
             .child(self.render_sidebar_footer(cx))
             .child(self.divider(Pane::Sessions, cx))
             .when(self.menu == Menu::NewSession, |sidebar| {
@@ -1295,6 +1303,165 @@ impl LotusWindow {
             );
         }
         menu
+    }
+
+    fn session_name(&self, id: &str) -> String {
+        self.sessions
+            .iter()
+            .find(|s| s.info.id == id)
+            .map_or_else(|| id.to_string(), |s| session_tree::session_label(&s.info))
+    }
+
+    /// Assign, unassign or replace from the controller list; refusals go to the error bar.
+    fn assign_controller(
+        &mut self,
+        device: lotus_input::DeviceId,
+        session: Option<String>,
+        replace: bool,
+    ) {
+        let Some(controller) = &self.controller else {
+            return;
+        };
+        if let Err(error) = controller
+            .input()
+            .assign(device, session.as_deref(), replace)
+        {
+            self.error = format!("Controller: {error}");
+        }
+    }
+
+    /// Connected controllers (lotus#62): which session each drives, assign/unassign against
+    /// the selected session, and "Identify" to find a physical pad by pressing a button.
+    /// Assignment follows running session identity, never selection or focus.
+    fn render_controllers(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let listing = &self.controllers;
+        let selected = self
+            .sessions
+            .iter()
+            .any(|s| s.info.id == self.selected)
+            .then(|| self.selected.clone());
+        let occupant = selected.as_ref().and_then(|session| {
+            listing
+                .pads
+                .iter()
+                .find(|p| p.session.as_ref() == Some(session))
+                .map(|p| p.id)
+        });
+        let mut section = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pl_4()
+            .pr_2()
+            .py_2()
+            .border_t_1()
+            .border_color(theme::border())
+            .text_xs()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(section_label("CONTROLLERS"))
+                    .when(!listing.pads.is_empty(), |row| {
+                        let label = if listing.identifying {
+                            "Press a button…"
+                        } else {
+                            "Identify"
+                        };
+                        row.child(with_tooltip(
+                            small_button("identify-controller", label, Tone::Plain, true).on_click(
+                                cx.listener(|view, _: &ClickEvent, _, _| {
+                                    if let Some(controller) = &view.controller {
+                                        controller.input().identify();
+                                    }
+                                }),
+                            ),
+                            "Highlight the next controller that presses a button",
+                        ))
+                    }),
+            );
+        if listing.pads.is_empty() {
+            section = section.child(
+                div()
+                    .text_color(theme::text_muted())
+                    .child("No controllers connected."),
+            );
+        }
+        for pad in &listing.pads {
+            let device = pad.id;
+            let identified = listing.identified == Some(device);
+            let target = match &pad.session {
+                Some(session) => self.session_name(session),
+                None => "unassigned".to_string(),
+            };
+            let mut row = div()
+                .id(SharedString::from(format!("controller-{device}")))
+                .flex()
+                .items_center()
+                .gap_2()
+                .child(div().size(px(6.0)).rounded_full().bg(if identified {
+                    theme::warning()
+                } else if pad.session.is_some() {
+                    theme::success()
+                } else {
+                    theme::border_strong()
+                }))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(div().truncate().child(format!("{} · {device}", pad.name)))
+                        .child(
+                            div()
+                                .truncate()
+                                .text_color(theme::text_muted())
+                                .child(target),
+                        ),
+                );
+            let on_selected = pad.session.is_some() && pad.session == selected;
+            if let Some(session) = selected.clone().filter(|_| self.control && !on_selected) {
+                // The selected session has another controller: offer to replace it.
+                let replace = occupant.is_some();
+                let (label, tip) = if replace {
+                    (
+                        "Replace",
+                        "Give the selected session this controller instead",
+                    )
+                } else {
+                    ("Assign", "Drive the selected session with this controller")
+                };
+                row = row.child(with_tooltip(
+                    small_button(format!("assign-{device}"), label, Tone::Plain, true).on_click(
+                        cx.listener(move |view, _: &ClickEvent, _, _| {
+                            view.assign_controller(device, Some(session.clone()), replace);
+                        }),
+                    ),
+                    tip,
+                ));
+            }
+            if pad.session.is_some() && self.control {
+                row = row.child(
+                    small_button(format!("unassign-{device}"), "Unassign", Tone::Plain, true)
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                            view.assign_controller(device, None, false);
+                        })),
+                );
+            }
+            section = section.child(row);
+        }
+        for entry in &listing.remembered {
+            section = section.child(div().truncate().text_color(theme::text_muted()).child(
+                format!(
+                    "{} disconnected; was on {}",
+                    entry.name,
+                    self.session_name(&entry.session)
+                ),
+            ));
+        }
+        section
     }
 
     fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {

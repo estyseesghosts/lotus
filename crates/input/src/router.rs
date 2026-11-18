@@ -22,7 +22,56 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::{Axis, Button, DeviceId, Event, EventKind, InputSnapshot};
+use crate::{Axis, Button, DeviceId, DeviceInfo, Event, EventKind, InputSnapshot};
+
+/// Controllers assigned at once (lotus#62 v1). One controller per session and one session
+/// per controller always hold; this caps how many pairs exist.
+pub const MAX_ASSIGNED: usize = 2;
+
+/// Why [`Router::assign`] refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AssignError {
+    UnknownDevice(DeviceId),
+    /// The session already has this controller; pass `replace` to move it off.
+    SessionOccupied(DeviceId),
+    CapReached,
+}
+
+impl std::fmt::Display for AssignError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownDevice(id) => write!(f, "controller {id} is not connected"),
+            Self::SessionOccupied(id) => write!(
+                f,
+                "this session already has controller {id}; unassign or replace it"
+            ),
+            Self::CapReached => write!(
+                f,
+                "{MAX_ASSIGNED} controllers are already assigned; unassign one first"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AssignError {}
+
+/// One connected controller, for the UI and `frontend_metrics`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PadStatus {
+    pub id: DeviceId,
+    pub name: String,
+    pub model_uuid: String,
+    pub session: Option<String>,
+}
+
+/// A disconnected controller's live assignment, kept until it reconnects, the session ends
+/// or the session is given another controller.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Remembered {
+    pub name: String,
+    pub model_uuid: String,
+    pub session: String,
+}
 
 /// An input source on the desktop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -94,6 +143,7 @@ pub fn default_button(button: Button) -> Option<u32> {
 /// What one controller connection physically holds, whether or not it is assigned.
 #[derive(Debug, Clone, Default)]
 struct Pad {
+    info: Option<DeviceInfo>,
     held: BTreeSet<Button>,
     axes: BTreeMap<Axis, f32>,
     session: Option<String>,
@@ -175,6 +225,12 @@ pub struct Router {
     pads: BTreeMap<DeviceId, Pad>,
     published: BTreeMap<String, GuestState>,
     metrics: RouterMetrics,
+    /// Assignments of controllers that disconnected, for the reconnect policy.
+    remembered: Vec<Remembered>,
+    /// Armed by [`Router::identify`]; the next controller to press a button is reported.
+    identifying: bool,
+    identified: Option<DeviceId>,
+    identifications: u64,
 }
 
 fn magnitude(stick: [f32; 2]) -> f32 {
@@ -194,6 +250,47 @@ impl Router {
             .iter()
             .map(|(id, pad)| (*id, pad.session.clone()))
             .collect()
+    }
+
+    /// Connected controllers in ID order.
+    #[must_use]
+    pub fn pads(&self) -> Vec<PadStatus> {
+        self.pads
+            .iter()
+            .map(|(id, pad)| PadStatus {
+                id: *id,
+                name: pad
+                    .info
+                    .as_ref()
+                    .map(|i| i.name.clone())
+                    .unwrap_or_default(),
+                model_uuid: pad
+                    .info
+                    .as_ref()
+                    .map(|i| i.model_uuid.clone())
+                    .unwrap_or_default(),
+                session: pad.session.clone(),
+            })
+            .collect()
+    }
+
+    /// Assignments waiting for their controller to reconnect, or for a choice when the
+    /// reconnect was ambiguous.
+    #[must_use]
+    pub fn remembered(&self) -> &[Remembered] {
+        &self.remembered
+    }
+
+    /// Report the next controller that presses a button. The press is routed as usual.
+    pub fn identify(&mut self) {
+        self.identifying = true;
+    }
+
+    /// Whether identification is armed, the last controller identified, and how many
+    /// identifications completed (so a UI can tell a repeat of the same controller).
+    #[must_use]
+    pub fn identification(&self) -> (bool, Option<DeviceId>, u64) {
+        (self.identifying, self.identified, self.identifications)
     }
 
     /// Sessions the keyboard and the pointer target.
@@ -277,10 +374,102 @@ impl Router {
         self.publish(touched)
     }
 
-    /// Route a controller connection to `session`, or to none. The previous session loses the
-    /// controller's contribution; whatever the controller holds now is suppressed for the new
-    /// one until released or centred.
-    pub fn assign(&mut self, device: DeviceId, session: Option<&str>) -> Vec<(String, GuestState)> {
+    /// Assign a controller to `session`, or unassign it with `None`.
+    ///
+    /// Policy (lotus#62 v1): one controller per session, one session per controller, at most
+    /// [`MAX_ASSIGNED`] pairs. A session that already has another controller is refused
+    /// unless `replace`, which unassigns that one first. Moving an assigned controller to
+    /// another session is always allowed. Assigning clears what was remembered for that
+    /// session, so a later reconnect does not take it back.
+    pub fn assign(
+        &mut self,
+        device: DeviceId,
+        session: Option<&str>,
+        replace: bool,
+    ) -> Result<Vec<(String, GuestState)>, AssignError> {
+        let Some(pad) = self.pads.get(&device) else {
+            return Err(AssignError::UnknownDevice(device));
+        };
+        let Some(target) = session else {
+            return Ok(self.route_pad(device, None));
+        };
+        if pad.session.as_deref() == Some(target) {
+            return Ok(Vec::new());
+        }
+        let occupant = self
+            .pads
+            .iter()
+            .find(|(id, pad)| **id != device && pad.session.as_deref() == Some(target))
+            .map(|(id, _)| *id);
+        if let Some(occupant) = occupant.filter(|_| !replace) {
+            return Err(AssignError::SessionOccupied(occupant));
+        }
+        let others = self
+            .pads
+            .iter()
+            .filter(|(id, pad)| **id != device && Some(**id) != occupant && pad.session.is_some())
+            .count();
+        if others >= MAX_ASSIGNED {
+            return Err(AssignError::CapReached);
+        }
+        let mut changed = Vec::new();
+        if let Some(occupant) = occupant {
+            changed.extend(self.route_pad(occupant, None));
+        }
+        self.remembered.retain(|entry| entry.session != target);
+        changed.extend(self.route_pad(device, Some(target)));
+        Ok(changed)
+    }
+
+    /// Reconnect policy: a new connection takes back a remembered assignment only when that
+    /// is unambiguous. Exactly one remembered assignment has its model, no other unassigned
+    /// connected controller shares the model, and [`Router::assign`] allows it (the session
+    /// has no controller, the cap holds). Otherwise it stays unassigned and the entry waits
+    /// for a choice. Identical pads share a model UUID, so two of them never resolve alone.
+    fn reconnect(&mut self, device: DeviceId) -> Vec<(String, GuestState)> {
+        let Some(model) = self
+            .pads
+            .get(&device)
+            .and_then(|pad| pad.info.as_ref())
+            .map(|info| info.model_uuid.clone())
+        else {
+            return Vec::new();
+        };
+        let mut entries = self.remembered.iter().filter(|e| e.model_uuid == model);
+        let (Some(entry), None) = (entries.next(), entries.next()) else {
+            return Vec::new();
+        };
+        let session = entry.session.clone();
+        let twins = self.pads.iter().any(|(id, pad)| {
+            *id != device
+                && pad.session.is_none()
+                && pad.info.as_ref().is_some_and(|i| i.model_uuid == model)
+        });
+        if twins {
+            return Vec::new();
+        }
+        self.assign(device, Some(&session), false)
+            .unwrap_or_default()
+    }
+
+    /// Remove a connection, remembering its assignment for [`Router::reconnect`].
+    fn disconnect(&mut self, device: DeviceId) -> Option<String> {
+        let pad = self.pads.remove(&device)?;
+        let session = pad.session?;
+        if let Some(info) = pad.info {
+            self.remembered.push(Remembered {
+                name: info.name,
+                model_uuid: info.model_uuid,
+                session: session.clone(),
+            });
+        }
+        Some(session)
+    }
+
+    /// Route a controller connection to `session`, or to none, without policy. The previous
+    /// session loses the controller's contribution; whatever the controller holds now is
+    /// suppressed for the new one until released or centred.
+    fn route_pad(&mut self, device: DeviceId, session: Option<&str>) -> Vec<(String, GuestState)> {
         let Some(pad) = self.pads.get_mut(&device) else {
             return Vec::new();
         };
@@ -298,15 +487,31 @@ impl Router {
     /// Apply one event from the device service.
     pub fn event(&mut self, event: &Event) -> Vec<(String, GuestState)> {
         let session = match &event.kind {
-            EventKind::Connected { state, .. } => {
+            EventKind::Connected { info, state } => {
                 // A connection is new by construction (ids are never reused).
-                self.pads.insert(event.device, Pad::default());
-                return self.resync(event.device, state);
+                self.pads.insert(
+                    event.device,
+                    Pad {
+                        info: Some(info.clone()),
+                        ..Pad::default()
+                    },
+                );
+                let mut changed = self.resync(event.device, state);
+                changed.extend(self.reconnect(event.device));
+                return changed;
             }
-            EventKind::Disconnected => self.pads.remove(&event.device).and_then(|pad| pad.session),
+            EventKind::Disconnected => self.disconnect(event.device),
             EventKind::Button { button, pressed } => {
-                let Some(pad) = self.pads.get_mut(&event.device) else {
+                if !self.pads.contains_key(&event.device) {
                     self.metrics.unknown_device += 1;
+                    return Vec::new();
+                }
+                if *pressed && self.identifying {
+                    self.identifying = false;
+                    self.identified = Some(event.device);
+                    self.identifications += 1;
+                }
+                let Some(pad) = self.pads.get_mut(&event.device) else {
                     return Vec::new();
                 };
                 if *pressed {
@@ -361,10 +566,19 @@ impl Router {
         for device in devices {
             let known = self.pads.contains_key(&device.id);
             if !known {
-                self.pads.insert(device.id, Pad::default());
+                self.pads.insert(
+                    device.id,
+                    Pad {
+                        info: Some(device.info.clone()),
+                        ..Pad::default()
+                    },
+                );
             }
             if !known || lost_events {
                 changed.extend(self.resync(device.id, &device.state));
+            }
+            if !known {
+                changed.extend(self.reconnect(device.id));
             }
         }
         changed
@@ -387,7 +601,7 @@ impl Router {
             .collect();
         let mut touched = BTreeSet::new();
         for id in gone {
-            if let Some(session) = self.pads.remove(&id).and_then(|pad| pad.session) {
+            if let Some(session) = self.disconnect(id) {
                 touched.insert(session);
             }
         }
@@ -408,6 +622,7 @@ impl Router {
                 pad.session = None;
             }
         }
+        self.remembered.retain(|entry| entry.session != session);
         self.published.remove(session);
     }
 }
@@ -458,8 +673,12 @@ mod tests {
         let mut router = Router::default();
         connect(&mut router, 1);
         connect(&mut router, 2);
-        router.assign(DeviceId(1), Some("a"));
-        router.assign(DeviceId(2), Some("b"));
+        router
+            .assign(DeviceId(1), Some("a"), false)
+            .expect("assign");
+        router
+            .assign(DeviceId(2), Some("b"), false)
+            .expect("assign");
         router
     }
 
@@ -526,8 +745,9 @@ mod tests {
         let mut router = Router::default();
         connect(&mut router, 1);
         connect(&mut router, 2);
-        router.assign(DeviceId(1), Some("a"));
-        router.assign(DeviceId(2), Some("a"));
+        router.route_pad(DeviceId(1), Some("a"));
+        // Two controllers on one session only by direct routing; the v1 policy forbids it.
+        router.route_pad(DeviceId(2), Some("a"));
         axis(&mut router, 1, Axis::LeftX, 0.3);
         axis(&mut router, 2, Axis::LeftY, -0.8);
         assert_eq!(router.compose("a").circle_pad, [0.0, -0.8]);
@@ -553,7 +773,9 @@ mod tests {
         let mut router = two_pads();
         button(&mut router, 1, Button::East, true);
         axis(&mut router, 1, Axis::LeftX, 1.0);
-        let out = router.assign(DeviceId(1), Some("b"));
+        let out = router
+            .assign(DeviceId(1), Some("b"), true)
+            .expect("replace");
         // A is released; B gains nothing from what was held at the moment of assignment.
         assert_eq!(out, vec![("a".into(), GuestState::default())]);
         assert_eq!(router.compose("b"), GuestState::default());
@@ -577,7 +799,9 @@ mod tests {
         connect(&mut router, 1);
         connect(&mut router, 2);
         assert!(button(&mut router, 1, Button::East, true).is_empty());
-        router.assign(DeviceId(2), Some("a"));
+        router
+            .assign(DeviceId(2), Some("a"), false)
+            .expect("assign");
         // Pad 1 holds A but is unassigned; only pad 2 reaches the session.
         button(&mut router, 2, Button::South, true);
         assert_eq!(router.compose("a").buttons, bits::B);
@@ -593,7 +817,9 @@ mod tests {
         assert_eq!(router.assignments()[&DeviceId(1)], None);
         // Input for the ended session goes nowhere and is not replayed later.
         assert!(button(&mut router, 1, Button::South, true).is_empty());
-        router.assign(DeviceId(1), Some("c"));
+        router
+            .assign(DeviceId(1), Some("c"), false)
+            .expect("assign");
         assert_eq!(router.compose("c"), GuestState::default());
         // A dropped release is repaired from the service snapshot.
         button(&mut router, 2, Button::West, true);
@@ -635,5 +861,141 @@ mod tests {
         // Thumb clicks have no 3DS button: no change, nothing to send.
         assert!(button(&mut router, 1, Button::LeftThumb, true).is_empty());
         assert!(router.keyboard(Some("a"), 0).is_empty());
+    }
+
+    fn connect_model(router: &mut Router, device: u64, model: &str) {
+        router.event(&event(
+            device,
+            EventKind::Connected {
+                info: crate::DeviceInfo {
+                    name: format!("pad {model}"),
+                    model_uuid: model.into(),
+                    vendor_id: None,
+                    product_id: None,
+                    mapped: true,
+                },
+                state: InputSnapshot::default(),
+            },
+        ));
+    }
+
+    #[test]
+    fn one_controller_per_session_and_at_most_two_pairs() {
+        let mut router = two_pads();
+        connect(&mut router, 3);
+        // A third pad is listed but cannot take an occupied session without `replace`.
+        assert_eq!(
+            router.assign(DeviceId(3), Some("a"), false),
+            Err(AssignError::SessionOccupied(DeviceId(1)))
+        );
+        // Nor a third session past the cap.
+        assert_eq!(
+            router.assign(DeviceId(3), Some("c"), false),
+            Err(AssignError::CapReached)
+        );
+        assert_eq!(
+            router.assign(DeviceId(9), Some("c"), false),
+            Err(AssignError::UnknownDevice(DeviceId(9)))
+        );
+        // Replacing frees pad 1 and keeps the cap.
+        button(&mut router, 1, Button::East, true);
+        let out = router
+            .assign(DeviceId(3), Some("a"), true)
+            .expect("replace");
+        assert_eq!(out, vec![("a".into(), GuestState::default())]);
+        assert_eq!(router.assignments()[&DeviceId(1)], None);
+        assert_eq!(router.assignments()[&DeviceId(3)].as_deref(), Some("a"));
+        // An assigned pad may move to a free session; the cap counts pairs, not moves.
+        router.assign(DeviceId(2), None, false).expect("unassign");
+        router
+            .assign(DeviceId(1), Some("c"), false)
+            .expect("assign c");
+        router
+            .assign(DeviceId(1), Some("b"), false)
+            .expect("move to b");
+        assert_eq!(
+            router.pads().iter().filter(|p| p.session.is_some()).count(),
+            2
+        );
+    }
+
+    #[test]
+    fn identify_reports_the_next_controller_to_press() {
+        let mut router = two_pads();
+        button(&mut router, 1, Button::East, true);
+        assert_eq!(router.identification(), (false, None, 0));
+        router.identify();
+        // Releases and sticks do not identify; the next press does, once.
+        button(&mut router, 1, Button::East, false);
+        axis(&mut router, 1, Axis::LeftX, 0.5);
+        assert_eq!(router.identification(), (true, None, 0));
+        button(&mut router, 2, Button::South, true);
+        assert_eq!(router.identification(), (false, Some(DeviceId(2)), 1));
+        // The press was routed as usual.
+        assert_eq!(router.compose("b").buttons, bits::B);
+        button(&mut router, 1, Button::South, true);
+        assert_eq!(router.identification(), (false, Some(DeviceId(2)), 1));
+    }
+
+    #[test]
+    fn a_reconnect_takes_back_its_session_only_when_unambiguous() {
+        let mut router = Router::default();
+        connect_model(&mut router, 1, "pro");
+        connect_model(&mut router, 2, "pad");
+        router.assign(DeviceId(1), Some("a"), false).expect("a");
+        router.assign(DeviceId(2), Some("b"), false).expect("b");
+        // A unique model reconnects (as a new connection ID) to its live session.
+        router.event(&event(1, EventKind::Disconnected));
+        assert_eq!(router.remembered().len(), 1);
+        connect_model(&mut router, 11, "pro");
+        assert_eq!(router.assignments()[&DeviceId(11)].as_deref(), Some("a"));
+        assert!(router.remembered().is_empty());
+
+        // Two identical pads were assigned; one reconnects while its twin is idle: ambiguous.
+        let mut router = Router::default();
+        connect_model(&mut router, 1, "same");
+        connect_model(&mut router, 2, "same");
+        router.assign(DeviceId(1), Some("a"), false).expect("a");
+        router.assign(DeviceId(2), Some("b"), false).expect("b");
+        router.event(&event(1, EventKind::Disconnected));
+        router.event(&event(2, EventKind::Disconnected));
+        connect_model(&mut router, 3, "same");
+        assert_eq!(router.assignments()[&DeviceId(3)], None);
+        assert_eq!(router.remembered().len(), 2);
+        // Choosing explicitly clears that session's entry; the other still waits.
+        router
+            .assign(DeviceId(3), Some("b"), false)
+            .expect("choice");
+        assert_eq!(router.remembered().len(), 1);
+        // With one entry left, the next pad of the model resolves, unless an unassigned twin
+        // is already connected.
+        let mut twins = Router::default();
+        connect_model(&mut twins, 6, "same");
+        twins.remembered = router.remembered.clone();
+        connect_model(&mut twins, 7, "same");
+        assert_eq!(twins.assignments()[&DeviceId(7)], None);
+        connect_model(&mut router, 4, "same");
+        assert_eq!(router.assignments()[&DeviceId(4)].as_deref(), Some("a"));
+
+        // A session that ended is forgotten; its controller returns unassigned.
+        let mut router = Router::default();
+        connect_model(&mut router, 1, "pro");
+        router.assign(DeviceId(1), Some("a"), false).expect("a");
+        router.event(&event(1, EventKind::Disconnected));
+        router.remove_session("a");
+        connect_model(&mut router, 2, "pro");
+        assert_eq!(router.assignments()[&DeviceId(2)], None);
+
+        // A session given another controller meanwhile is not taken back.
+        let mut router = Router::default();
+        connect_model(&mut router, 1, "pro");
+        connect_model(&mut router, 2, "pad");
+        router.assign(DeviceId(1), Some("a"), false).expect("a");
+        router.event(&event(1, EventKind::Disconnected));
+        router
+            .assign(DeviceId(2), Some("a"), false)
+            .expect("other pad");
+        connect_model(&mut router, 3, "pro");
+        assert_eq!(router.assignments()[&DeviceId(3)], None);
     }
 }
