@@ -68,6 +68,8 @@ pub enum Command {
     Abort(String),
     /// A layout change through the shared workspace (lotus#67), committed before it returns.
     Workspace(lotus_session::workspace::Operation),
+    /// How the window resolved `Auto` for a split (lotus#69); display only.
+    WorkspaceResolved(lotus_session::workspace::Resolved),
 }
 
 /// Whether the window also serves MCP.
@@ -889,6 +891,7 @@ impl Loops {
                 let snapshot = host.update_workspace(&operation, None, actor)?;
                 lock(&self.published).workspace = snapshot;
             }
+            Command::WorkspaceResolved(resolved) => host.report_workspace_resolved(resolved),
         }
         Ok(())
     }

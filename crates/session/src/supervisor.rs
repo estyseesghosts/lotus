@@ -318,6 +318,7 @@ pub struct Supervisor {
     settings: crate::settings_store::SettingsStore,
     /// Window layout (lotus#67). Lock order: `registry`, then `workspace`.
     workspace: Mutex<crate::workspace::Workspace>,
+    workspace_resolved: Mutex<Option<crate::workspace::Resolved>>,
     /// Set by a windowed frontend; headless hosts refuse workspace changes.
     workspace_available: AtomicBool,
 }
@@ -378,6 +379,7 @@ impl Supervisor {
             budgets: crate::policy::Budgets::new(policy),
             focused: Mutex::default(),
             workspace: Mutex::default(),
+            workspace_resolved: Mutex::default(),
             workspace_available: AtomicBool::new(false),
         })
     }
@@ -1816,11 +1818,22 @@ impl Supervisor {
     #[must_use]
     pub fn workspace(&self) -> crate::workspace::Status {
         let workspace = lock(&self.workspace);
+        let snapshot = workspace.snapshot();
+        let resolved = lock(&self.workspace_resolved)
+            .filter(|resolved| resolved.revision == snapshot.revision);
         crate::workspace::Status {
             available: self.workspace_available.load(Ordering::Acquire),
-            snapshot: workspace.snapshot(),
+            resolved: resolved
+                .filter(|_| matches!(snapshot.layout, crate::workspace::Layout::Split { .. })),
+            snapshot,
             defaults: workspace.defaults(),
         }
+    }
+
+    /// The window reports how it resolved `Auto` for the current revision (lotus#69).
+    /// Display only: never changes the workspace revision, a worker or renderer settings.
+    pub fn report_workspace_resolved(&self, resolved: crate::workspace::Resolved) {
+        *lock(&self.workspace_resolved) = Some(resolved);
     }
 
     /// Commits one workspace operation atomically or refuses it. MCP needs control

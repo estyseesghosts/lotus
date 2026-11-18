@@ -112,6 +112,23 @@ pub struct Status {
     #[serde(flatten)]
     pub snapshot: Snapshot,
     pub defaults: SplitDefaults,
+    /// What the window actually drew for this revision (lotus#69); `None` until it lays
+    /// the split out, outside a split, or when the report is for an older revision.
+    pub resolved: Option<Resolved>,
+}
+
+/// The window's resolved split: `Auto` replaced by the chosen axis and screen
+/// arrangement, and the guest-pixel scale of each tile.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Resolved {
+    /// Workspace revision this layout was computed for.
+    pub revision: u64,
+    /// `Horizontal` or `Vertical`, never `Auto`.
+    pub axis: Axis,
+    /// `Stacked` or `SideBySide`, never `Auto`.
+    pub screens: [ScreenLayout; 2],
+    /// Host pixels per guest pixel, per tile.
+    pub scale: [f32; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

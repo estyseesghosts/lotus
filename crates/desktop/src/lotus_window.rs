@@ -7,6 +7,7 @@
 //! [`crate::preferences`]. Pane widths, toolbar density and gauge mode come
 //! from [`crate::layout`] for the space actually available. The window only
 //! renders snapshots and sends commands; see [`crate::desktop_controller`].
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -159,6 +160,10 @@ pub struct LotusWindow {
     workspace: Snapshot,
     /// Displayed screens of each shown session (lotus#65).
     tiles: BTreeMap<String, TileView>,
+    /// Last split plan, so `Auto` holds its choice near a crossover (lotus#69).
+    split_held: Cell<Option<SplitPlan>>,
+    /// Last resolved layout handed to the supervisor, to report only changes.
+    resolved_sent: Cell<Option<workspace::Resolved>>,
     registers: Option<(String, Value)>,
     inspection: Option<(String, Panel, Arc<Inspection>)>,
     inspection_panel: Panel,
@@ -255,6 +260,8 @@ impl LotusWindow {
             selected: String::new(),
             workspace: Snapshot::default(),
             tiles: BTreeMap::new(),
+            split_held: Cell::new(None),
+            resolved_sent: Cell::new(None),
             registers: None,
             inspection: None,
             inspection_panel: Panel::Cpu,
@@ -2140,7 +2147,33 @@ impl LotusWindow {
         };
         let width = plan.main - 2.0 * CONTENT_PADDING;
         let height = viewport_height - TOOLBAR_HEIGHT - gauge_height - 2.0 * CONTENT_PADDING;
-        let split = split_plan(width, height, *axis, *ratio, *screens);
+        let split = split_plan(
+            width,
+            height,
+            *axis,
+            *ratio,
+            *screens,
+            self.split_held.get(),
+        );
+        self.split_held.set(Some(split));
+        let scale = split.tiles.map(|tile| match self.zoom {
+            Zoom::Native => 1.0,
+            Zoom::Double => 2.0,
+            Zoom::Fit => tile.scale,
+        });
+        self.report_resolved(workspace::Resolved {
+            revision: self.workspace.revision,
+            axis: if split.vertical {
+                Axis::Vertical
+            } else {
+                Axis::Horizontal
+            },
+            screens: split.tiles.map(|tile| match tile.screens {
+                ScreenLayout::Stacked => workspace::ScreenLayout::Stacked,
+                ScreenLayout::SideBySide => workspace::ScreenLayout::SideBySide,
+            }),
+            scale,
+        });
         let tiles = [
             (Viewport::First, first, second, split.tiles[0]),
             (Viewport::Second, second, first, split.tiles[1]),
@@ -2163,6 +2196,23 @@ impl LotusWindow {
                     })),
             )
             .into_any_element()
+    }
+
+    /// Tells the supervisor what the split resolved to when it changes. Render-time, so it
+    /// sends directly; a full queue is retried on the next frame.
+    fn report_resolved(&self, resolved: workspace::Resolved) {
+        if self.resolved_sent.get() == Some(resolved) {
+            return;
+        }
+        if let Some(controller) = &self.controller {
+            if controller
+                .commands
+                .try_send(Command::WorkspaceResolved(resolved))
+                .is_ok()
+            {
+                self.resolved_sent.set(Some(resolved));
+            }
+        }
     }
 
     fn render_tile(
@@ -3225,20 +3275,35 @@ struct SplitPlan {
     tiles: [TilePlan; 2],
 }
 
-/// Tile sizes for a split of `width` x `height`. `ratio` is the first tile's share of the
-/// split axis. An explicit axis or screen arrangement is kept; `Auto` takes the option with
-/// the larger screen scale for the smaller of the two tiles, preferring left/right and
-/// stacked screens on a tie. This is the minimal rule; lotus#69 replaces it with the full
-/// solver (hysteresis, gauge edges, DPI).
+/// An `Auto` choice changes only once the alternative is this much larger, so a resize
+/// or divider drag around the crossover does not flip the layout back and forth.
+const AUTO_HYSTERESIS: f32 = 0.05;
+
+/// `candidate` replaces `held` only when its score beats `held`'s by [`AUTO_HYSTERESIS`].
+fn keep_held<T>(held: Option<(T, f32)>, best: (T, f32)) -> T {
+    match held {
+        Some((held, score)) if score * (1.0 + AUTO_HYSTERESIS) >= best.1 => held,
+        _ => best.0,
+    }
+}
+
+/// Tile sizes for a split of `width` x `height` (lotus#69). `ratio` is the first tile's
+/// share of the split axis. An explicit axis or screen arrangement is kept. `Auto` takes
+/// the option with the larger screen scale for the smaller tile, preferring left/right and
+/// stacked screens on a tie, and keeps `held` (the previous plan) unless the other option
+/// is [`AUTO_HYSTERESIS`] larger. An even split shows both consoles at one common scale;
+/// a moved divider gives each tile its own fit. Sizes are never negative.
 fn split_plan(
     width: f32,
     height: f32,
     axis: Axis,
     ratio: f32,
     screens: [workspace::ScreenLayout; 2],
+    held: Option<SplitPlan>,
 ) -> SplitPlan {
+    let (width, height) = (width.max(0.0), height.max(0.0));
     let plan = |vertical: bool| {
-        let along = if vertical { height } else { width } - TILE_GAP;
+        let along = (if vertical { height } else { width } - TILE_GAP).max(0.0);
         let sizes = [along * ratio, along * (1.0 - ratio)];
         let mut tiles = [0, 1].map(|index| {
             let (w, h) = if vertical {
@@ -3246,11 +3311,20 @@ fn split_plan(
             } else {
                 (sizes[index], height)
             };
-            tile_plan(w, h, screens[index])
+            let held = held
+                .filter(|held| held.vertical == vertical)
+                .map(|held| held.tiles[index].screens);
+            tile_plan(w, h, screens[index], held)
         });
         if !vertical {
             // Same height on both sides keeps the row aligned.
             tiles[1].height = tiles[0].height;
+        }
+        if (ratio - 0.5).abs() < 1e-3 {
+            let common = tiles[0].scale.min(tiles[1].scale);
+            for tile in &mut tiles {
+                tile.scale = common;
+            }
         }
         SplitPlan { vertical, tiles }
     };
@@ -3260,19 +3334,29 @@ fn split_plan(
         Axis::Vertical => plan(true),
         Axis::Auto => {
             let (side, stacked) = (plan(false), plan(true));
-            if smaller(&stacked) > smaller(&side) {
+            let best = if smaller(&stacked) > smaller(&side) {
                 stacked
             } else {
                 side
-            }
+            };
+            let held = held.map(|held| {
+                let again = if held.vertical { stacked } else { side };
+                (again, smaller(&again))
+            });
+            keep_held(held, (best, smaller(&best)))
         }
     }
 }
 
-fn tile_plan(width: f32, height: f32, screens: workspace::ScreenLayout) -> TilePlan {
+fn tile_plan(
+    width: f32,
+    height: f32,
+    screens: workspace::ScreenLayout,
+    held: Option<ScreenLayout>,
+) -> TilePlan {
     let inner = (
-        width - 2.0 * SCREEN_GAP,
-        height - TILE_HEADER - 2.0 * SCREEN_GAP,
+        (width - 2.0 * SCREEN_GAP).max(0.0),
+        (height - TILE_HEADER - 2.0 * SCREEN_GAP).max(0.0),
     );
     let fit = |layout| TilePlan {
         width,
@@ -3285,11 +3369,16 @@ fn tile_plan(width: f32, height: f32, screens: workspace::ScreenLayout) -> TileP
         workspace::ScreenLayout::SideBySide => fit(ScreenLayout::SideBySide),
         workspace::ScreenLayout::Auto => {
             let (stacked, side) = (fit(ScreenLayout::Stacked), fit(ScreenLayout::SideBySide));
-            if side.scale > stacked.scale {
+            let best = if side.scale > stacked.scale {
                 side
             } else {
                 stacked
-            }
+            };
+            let held = held.map(|layout| {
+                let again = fit(layout);
+                (again, again.scale)
+            });
+            keep_held(held, (best, best.scale))
         }
     }
 }
@@ -3733,30 +3822,154 @@ mod tests {
     #[test]
     fn split_auto_picks_the_axis_with_larger_screens_and_keeps_explicit_choices() {
         let auto = [workspace::ScreenLayout::Auto; 2];
-        let wide = split_plan(1800.0, 700.0, Axis::Auto, 0.5, auto);
+        let wide = split_plan(1800.0, 700.0, Axis::Auto, 0.5, auto, None);
         assert!(!wide.vertical, "{wide:?}");
-        let tall = split_plan(700.0, 1600.0, Axis::Auto, 0.5, auto);
+        let tall = split_plan(700.0, 1600.0, Axis::Auto, 0.5, auto, None);
         assert!(tall.vertical, "{tall:?}");
         // An explicit axis is kept even where the other would be larger.
-        assert!(!split_plan(700.0, 1600.0, Axis::Horizontal, 0.5, auto).vertical);
+        assert!(!split_plan(700.0, 1600.0, Axis::Horizontal, 0.5, auto, None).vertical);
         let stacked = [workspace::ScreenLayout::Stacked; 2];
-        let held = split_plan(1800.0, 300.0, Axis::Vertical, 0.5, stacked);
+        let held = split_plan(1800.0, 300.0, Axis::Vertical, 0.5, stacked, None);
         assert!(held.vertical);
         assert!(held
             .tiles
             .iter()
             .all(|t| t.screens == ScreenLayout::Stacked));
         // The ratio splits the axis less the gap; sizes never go negative.
-        let off = split_plan(1200.0, 700.0, Axis::Horizontal, 0.7, auto);
+        let off = split_plan(1200.0, 700.0, Axis::Horizontal, 0.7, auto, None);
         let total = off.tiles[0].width + off.tiles[1].width + TILE_GAP;
         assert!((total - 1200.0).abs() < 1e-3, "{off:?}");
         assert!(off.tiles[0].width > off.tiles[1].width);
         assert!(off.tiles[0].scale >= off.tiles[1].scale);
-        let tiny = split_plan(10.0, 10.0, Axis::Auto, 0.5, auto);
+        let tiny = split_plan(10.0, 10.0, Axis::Auto, 0.5, auto, None);
         assert!(tiny
             .tiles
             .iter()
             .all(|t| t.scale >= 0.5 && t.scale.is_finite()));
+    }
+
+    /// Content area for window sizes in logical pixels, after the 2 x 24 content padding
+    /// and the 52 px toolbar, with panes collapsed and no gauge strip. GPUI lays out in
+    /// logical pixels, so 3840 x 2160 at 200% is planned as 1920 x 1080.
+    const WINDOWS: [(f32, f32); 6] = [
+        (720.0 - 48.0, 560.0 - 52.0 - 48.0), // minimum window (main.rs)
+        (900.0 - 48.0, 1500.0 - 100.0),      // portrait
+        (1600.0 - 48.0, 800.0 - 100.0),      // landscape
+        (1920.0 - 48.0, 1080.0 - 100.0),     // 4K at 200%
+        (3440.0 - 48.0, 1440.0 - 100.0),     // ultrawide
+        (2560.0 - 48.0, 1080.0 - 100.0),     // 21:9
+    ];
+
+    const FIXED: [workspace::ScreenLayout; 2] = [
+        workspace::ScreenLayout::Stacked,
+        workspace::ScreenLayout::SideBySide,
+    ];
+
+    fn screens_size(layout: ScreenLayout, scale: f32) -> (f32, f32) {
+        match layout {
+            ScreenLayout::Stacked => (400.0 * scale, 480.0 * scale + SCREEN_GAP),
+            ScreenLayout::SideBySide => (720.0 * scale + SCREEN_GAP, 240.0 * scale),
+        }
+    }
+
+    fn arrangement(plan: &SplitPlan) -> (bool, [ScreenLayout; 2]) {
+        (plan.vertical, plan.tiles.map(|tile| tile.screens))
+    }
+
+    #[test]
+    fn split_bounds_never_overlap_and_screens_fit_their_tiles() {
+        let layouts = [[workspace::ScreenLayout::Auto; 2], [FIXED[1], FIXED[0]]];
+        for (width, height) in WINDOWS {
+            for axis in [Axis::Auto, Axis::Horizontal, Axis::Vertical] {
+                for ratio in [0.2, 0.35, 0.5, 0.65, 0.8] {
+                    for screens in layouts {
+                        let plan = split_plan(width, height, axis, ratio, screens, None);
+                        let case = format!("{width}x{height} {axis:?} {ratio} {plan:?}");
+                        let along: f32 = if plan.vertical {
+                            plan.tiles.iter().map(|t| t.height).sum()
+                        } else {
+                            plan.tiles.iter().map(|t| t.width).sum()
+                        };
+                        let room = if plan.vertical { height } else { width };
+                        assert!(along + TILE_GAP <= room + 1e-3, "{case}");
+                        for tile in plan.tiles {
+                            assert!(tile.width >= 0.0 && tile.height >= 0.0, "{case}");
+                            assert!(tile.scale.is_finite() && tile.scale >= 0.5, "{case}");
+                            // Above the 0.5 floor, both screens fit inside the tile body.
+                            if tile.scale > 0.5 {
+                                let (w, h) = screens_size(tile.screens, tile.scale);
+                                let body = tile.height - TILE_HEADER - 2.0 * SCREEN_GAP;
+                                assert!(w <= tile.width - 2.0 * SCREEN_GAP + 1e-3, "{case}");
+                                assert!(h <= body + 1e-3, "{case}");
+                            }
+                        }
+                        if (ratio - 0.5).abs() < 1e-3 {
+                            assert_eq!(plan.tiles[0].scale, plan.tiles[1].scale, "{case}");
+                        }
+                    }
+                }
+            }
+        }
+        let (width, height) = WINDOWS[0];
+        let auto = [workspace::ScreenLayout::Auto; 2];
+        let minimum = split_plan(width, height, Axis::Auto, 0.5, auto, None);
+        assert!(minimum.tiles[0].scale > 0.5, "minimum window: {minimum:?}");
+    }
+
+    #[test]
+    fn auto_never_picks_a_smaller_layout_than_the_alternatives() {
+        let auto = [workspace::ScreenLayout::Auto; 2];
+        for (width, height) in WINDOWS {
+            let chosen = split_plan(width, height, Axis::Auto, 0.5, auto, None);
+            for axis in [Axis::Horizontal, Axis::Vertical] {
+                for first in FIXED {
+                    for second in FIXED {
+                        let other = split_plan(width, height, axis, 0.5, [first, second], None);
+                        assert!(
+                            chosen.tiles[0].scale >= other.tiles[0].scale - 1e-4,
+                            "{width}x{height}: {chosen:?} vs {other:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn auto_does_not_oscillate_around_the_crossover() {
+        let auto = [workspace::ScreenLayout::Auto; 2];
+        let height = 900.0;
+        let sweep = |widths: Vec<f32>, start: Option<SplitPlan>| {
+            let mut held = start;
+            let mut flips = Vec::new();
+            for width in widths {
+                let plan = split_plan(width, height, Axis::Auto, 0.5, auto, held);
+                if held.is_some_and(|held| arrangement(&held) != arrangement(&plan)) {
+                    flips.push(width);
+                }
+                held = Some(plan);
+            }
+            (flips, held)
+        };
+        let (rising, end) = sweep((700..=2600).map(|w| w as f32).collect(), None);
+        let (falling, _) = sweep((700..=2600).rev().map(|w| w as f32).collect(), end);
+        assert!(!rising.is_empty(), "the sweep crosses a threshold");
+        assert_eq!(rising.len(), falling.len(), "{rising:?} {falling:?}");
+        // Above the 0.5 floor (both options tie there and the held one stays), each
+        // crossover flips once per direction, later going up than coming down.
+        for (up, down) in rising.iter().zip(falling.iter().rev()) {
+            assert!(up > down, "no hysteresis band: {rising:?} {falling:?}");
+        }
+        // Jitter of a few pixels around a crossover never flips.
+        let jitter = (0..200).map(|step| rising[0] + if step % 2 == 0 { 3.0 } else { -3.0 });
+        let (flips, _) = sweep(jitter.collect(), None);
+        assert!(flips.len() <= 1, "{flips:?}");
+        // An explicit axis ignores what Auto held.
+        let held = split_plan(2600.0, height, Axis::Auto, 0.5, auto, None);
+        for (axis, vertical) in [(Axis::Vertical, true), (Axis::Horizontal, false)] {
+            let forced = split_plan(2600.0, height, axis, 0.5, auto, Some(held));
+            assert_eq!(forced.vertical, vertical);
+        }
     }
 
     #[test]

@@ -328,17 +328,38 @@ cycles the axis auto → left/right → top/bottom).
   the tile it started on. Controllers follow their assignment (#62), never focus,
   tile order or selection. Selecting a session in the sidebar changes the
   inspector, audio focus and gauges, never the tiles or keyboard.
-- Geometry: `split_plan` in `lotus_window.rs`. An explicit axis or screen
-  arrangement is kept; `auto` takes whichever gives the smaller tile the larger
-  screen scale. No hysteresis, gauge-edge placement or DPI handling: those are
-  #69 and #70. Gauges stay under the stage for the selected session.
+- Geometry (#69): `split_plan` in `lotus_window.rs`, one pure function used for
+  both drawing and the touch rectangles. An explicit axis or per-tile screen
+  arrangement is kept. `auto` takes whichever gives the smaller tile the larger
+  scale and holds that choice until the alternative is 5% larger
+  (`AUTO_HYSTERESIS`), so a resize or divider drag near a crossover does not flip
+  back and forth. An even split (ratio 0.5) shows both consoles at one common
+  scale; a moved divider gives each tile its own fit. Sizes never go negative;
+  below the 0.5 scale floor the tile clips and the stage scrolls. The solver works
+  in GPUI logical pixels, so a DPI change alters only the device pixel ratio.
+  Resizing never touches a worker or renderer setting.
+- `lotus_status.workspace.resolved` / `lotus_workspace get` report what the window
+  drew for the current revision: chosen `axis`, per-tile `screens` and `scale`
+  (host pixels per guest pixel, after zoom). It is `null` before the window lays
+  the split out, outside a split, or while the report is for an older revision,
+  and reporting it never bumps the revision.
+- Gauges stay under the stage for the selected session; edge gauges are #70.
 
 Evidence: `responsive_controller.rs`
 `tiled_sessions_preview_independently_while_one_stalls` (mock workers): with A's
 capture stalled 5 s, B's preview advances while A's does not, selecting A leaves
 the split intact, and after `untile` A's late frame is dropped with both workers
-still running. `split_auto_picks_the_axis_with_larger_screens_and_keeps_explicit_choices`
-covers the geometry (**verified compiled**).
+still running. `split_auto_picks_the_axis_with_larger_screens_and_keeps_explicit_choices`,
+`split_bounds_never_overlap_and_screens_fit_their_tiles` (minimum, portrait,
+landscape, 4K at 200%, ultrawide and 21:9 content areas at ratios 0.2 to 0.8),
+`auto_never_picks_a_smaller_layout_than_the_alternatives` and
+`auto_does_not_oscillate_around_the_crossover` (fails with the hysteresis set to
+0) cover the geometry; `supervision.rs` checks that `resolved` is only reported
+for the current split revision (**verified compiled**). Release build with two
+CITnLO `t03` sessions on Vulkan (**emulator**): at 1700x950 `auto` resolved
+left/right stacked at 1.35 on both tiles; at 900x1400 it went top/bottom at 0.81;
+back at 1700x950 it returned to left/right; `set_axis vertical` gave side-by-side
+screens at 1.24, all without restarting a worker.
 
 ## Live input state (#60)
 

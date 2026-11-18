@@ -957,8 +957,26 @@ async fn workspace_arranges_without_touching_workers() {
     let after: Vec<_> = ids.iter().map(|id| frames(id).state).collect();
     assert_eq!(before, after);
 
+    // lotus#69: the window's resolved layout is reported only for the current split.
+    use lotus_session::workspace::{Axis, Resolved, ScreenLayout};
+    let current = fixture.host.workspace().snapshot.revision;
+    let resolved = |revision| Resolved {
+        revision,
+        axis: Axis::Vertical,
+        screens: [ScreenLayout::Stacked, ScreenLayout::SideBySide],
+        scale: [1.5, 1.5],
+    };
+    fixture
+        .host
+        .report_workspace_resolved(resolved(current - 1));
+    assert_eq!(fixture.host.workspace().resolved, None);
+    fixture.host.report_workspace_resolved(resolved(current));
+    assert_eq!(fixture.host.workspace().resolved, Some(resolved(current)));
+    assert_eq!(fixture.host.workspace().snapshot.revision, current);
+
     fixture.host.stop(&ids[0], Actor::Host).await.unwrap();
     let status = fixture.host.workspace();
+    assert_eq!(status.resolved, None, "a single view reports no split");
     assert!(
         matches!(&status.snapshot.layout, Layout::Single { session, .. } if *session == ids[1])
     );
