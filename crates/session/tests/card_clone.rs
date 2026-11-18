@@ -92,9 +92,11 @@ async fn copies_of_a_running_primary_are_instants_and_it_keeps_running() {
     let primary = fixture.primary("dev").await;
     let card = fixture.store().join("cards/dev/sdmc");
     // Without coordination (the previous create_scratch), copies tear: a pair that never
-    // existed, or a file caught mid-rewrite (empty or locked).
+    // existed, or a file caught mid-rewrite (empty or locked). A tear depends on scheduling,
+    // so read until one is seen rather than a fixed count (CI run 44329381750 saw none in 50).
     let mut torn = 0;
-    for _ in 0..50 {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while torn == 0 && std::time::Instant::now() < deadline {
         let read = |name: &str| {
             std::fs::read(card.join(name))
                 .ok()
