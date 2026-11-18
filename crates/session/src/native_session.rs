@@ -710,7 +710,10 @@ impl NativeSession {
             } else {
                 io::ErrorKind::Other
             };
-            return Err(io::Error::new(kind, format!("{method:?}: {status:?}: {data}")));
+            return Err(io::Error::new(
+                kind,
+                format!("{method:?}: {status:?}: {data}"),
+            ));
         }
         if data.is_object() {
             data["profile_hash"] = self.profile_hash.clone().into();

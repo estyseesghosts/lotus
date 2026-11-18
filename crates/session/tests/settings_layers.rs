@@ -265,3 +265,128 @@ async fn read_only_hosts_cannot_change_settings() {
         .unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }
+
+/// lotus#63: input layouts use the same layers, resolve live for running sessions and never
+/// reach a worker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn input_layouts_layer_live_and_stay_out_of_workers() {
+    use lotus_input::router::bits;
+    let fixture = host("input", |_| {});
+    let key = |k: &str| json!([{"device": "keyboard", "key": k}]);
+    let bits_of = |id: &str, k: &str| fixture.host.input_layout(id).unwrap().0.key_bits(k);
+
+    let a = fixture
+        .create(SessionKind::Primary { card: "a".into() })
+        .await;
+    let b = fixture
+        .create(SessionKind::Primary { card: "b".into() })
+        .await;
+    assert_eq!(bits_of(&a, "z"), bits::A, "builtin default");
+
+    // A global edit reaches running, non-overriding primaries at once.
+    let revision = fixture.host.settings_revision();
+    fixture
+        .set(
+            &SettingsTarget::Global,
+            "lotus.input.bind.a",
+            Some(key("j")),
+        )
+        .await;
+    assert!(fixture.host.settings_revision() > revision);
+    fixture
+        .set(&card("b"), "lotus.input.bind.a", Some(key("m")))
+        .await;
+    assert_eq!(bits_of(&a, "j"), bits::A);
+    assert_eq!(bits_of(&b, "m"), bits::A, "card difference");
+    assert_eq!(bits_of(&b, "j"), 0);
+    // A later global edit keeps b's explicit difference.
+    fixture
+        .set(
+            &SettingsTarget::Global,
+            "lotus.input.bind.a",
+            Some(key("k")),
+        )
+        .await;
+    assert_eq!((bits_of(&a, "k"), bits_of(&b, "m")), (bits::A, bits::A));
+    // Input keys are never pending: they are already in effect.
+    let report = fixture.host.settings(&session(&b)).await.unwrap();
+    assert_eq!(report["pending"], json!([]));
+
+    // A secondary's runtime override: its layout only, not its worker, not card a.
+    let clone = fixture
+        .create(SessionKind::Secondary {
+            parent: Some("a".into()),
+        })
+        .await;
+    let clone_root = fixture.store.join("scratch").join(&clone);
+    fixture
+        .set(&session(&clone), "lotus.input.bind.b", Some(key("n")))
+        .await;
+    fixture
+        .set(
+            &session(&clone),
+            "lotus.input.c_stick.invert_y",
+            Some(json!(true)),
+        )
+        .await;
+    assert_eq!(bits_of(&clone, "n"), bits::B);
+    assert!(fixture.host.input_layout(&clone).unwrap().1.sticks[1].invert_y);
+    assert_eq!(
+        bits_of(&clone, "k"),
+        bits::A,
+        "inherits global through card a"
+    );
+    assert_eq!(bits_of(&a, "n"), 0);
+    let worker = worker_settings(&clone_root);
+    assert!(
+        worker
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|k| !k.starts_with("lotus.")),
+        "{worker}"
+    );
+    assert_eq!(
+        fixture.effective(&card("a"), "lotus.input.bind.b").await.1,
+        json!("default")
+    );
+    fixture.host.stop(&clone, Actor::Host).await.unwrap();
+    let again = fixture
+        .create(SessionKind::Secondary {
+            parent: Some("a".into()),
+        })
+        .await;
+    assert_eq!(
+        bits_of(&again, "n"),
+        0,
+        "the override vanished with its secondary"
+    );
+    assert_eq!(bits_of(&again, "x"), bits::B);
+
+    // Selecting a saved preset, then deleting it, falls back to default with a problem.
+    fixture
+        .host
+        .change_input_preset(lotus_session::settings_store::PresetChange::Duplicate {
+            from: "xbox-labels".into(),
+            to: "mine".into(),
+        })
+        .unwrap();
+    fixture
+        .set(&card("a"), "lotus.input.preset", Some(json!("mine")))
+        .await;
+    assert_eq!(fixture.host.input_layout(&a).unwrap().0.preset, "mine");
+    fixture
+        .host
+        .change_input_preset(lotus_session::settings_store::PresetChange::Delete {
+            name: "mine".into(),
+        })
+        .unwrap();
+    let (resolved, _) = fixture.host.input_layout(&a).unwrap();
+    assert_eq!(resolved.preset, "default");
+    assert_eq!(resolved.problems.len(), 1);
+
+    for id in [a, b, again] {
+        fixture.host.stop(&id, Actor::Host).await.unwrap();
+    }
+    fixture.host.close().await;
+}

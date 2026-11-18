@@ -11,6 +11,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
+use lotus_input::layout::Mapping;
 use lotus_input::router::{GuestState, PadStatus, Remembered, Router};
 use lotus_input::{ControllerService, DeviceId, Event, EventKind};
 use lotus_session::native_session::InputState;
@@ -133,6 +134,26 @@ pub struct InputRouting {
     host: Arc<Supervisor>,
     metrics: Mutex<RoutingMetrics>,
     devices: Mutex<BTreeMap<DeviceId, DeviceCounters>>,
+    /// Input layouts given to the router (lotus#63), by session, and the settings revision
+    /// they were resolved at. Lock order: `router`, then `layouts`.
+    layouts: Mutex<Layouts>,
+}
+
+#[derive(Default)]
+struct Layouts {
+    revision: Option<u64>,
+    sessions: BTreeMap<String, LayoutStatus>,
+}
+
+/// One session's layout in `frontend_metrics.controllers.routing.layouts`.
+#[derive(Debug, Clone, Serialize)]
+pub struct LayoutStatus {
+    pub preset: String,
+    /// Selected presets that are missing and bindings this build cannot read.
+    pub problems: Vec<String>,
+    /// Bindings on more than one action, as `binding -> actions`.
+    pub conflicts: Vec<String>,
+    pub unbound: Vec<lotus_input::layout::Action>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -159,7 +180,53 @@ impl InputRouting {
             host,
             metrics: Mutex::default(),
             devices: Mutex::default(),
+            layouts: Mutex::default(),
         })
+    }
+
+    /// Give each running session the layout its settings resolve to, when the settings
+    /// revision changed or for sessions not seen yet; `force` re-resolves all. A changed
+    /// layout suppresses what that session's sources hold (`Router::set_mapping`).
+    pub fn sync_layouts(&self, force: bool) {
+        let revision = self.host.settings_revision();
+        let live = self.host.sessions();
+        let wanted: Vec<String> = {
+            let layouts = lock(&self.layouts);
+            let stale = force || layouts.revision != Some(revision);
+            live.iter()
+                .filter(|s| stale || !layouts.sessions.contains_key(*s))
+                .cloned()
+                .collect()
+        };
+        // Resolve (file reads) before taking the router lock, so routing never waits on it.
+        let resolved: Vec<(String, LayoutStatus, Arc<Mapping>)> = wanted
+            .into_iter()
+            .filter_map(|session| {
+                let (resolved, profile) = self.host.input_layout(&session).ok()?;
+                let status = LayoutStatus {
+                    preset: resolved.preset.clone(),
+                    problems: resolved.problems.iter().map(|p| format!("{p:?}")).collect(),
+                    conflicts: resolved
+                        .conflicts()
+                        .iter()
+                        .map(|(binding, actions)| format!("{binding:?} -> {actions:?}"))
+                        .collect(),
+                    unbound: resolved.unbound(),
+                };
+                Some((session, status, Arc::new(Mapping::new(&resolved, profile))))
+            })
+            .collect();
+        let mut router = lock(&self.router);
+        let mut layouts = lock(&self.layouts);
+        layouts.sessions.retain(|session, _| live.contains(session));
+        let mut changed = Vec::new();
+        for (session, status, mapping) in resolved {
+            changed.extend(router.set_mapping(&session, Some(mapping)));
+            layouts.sessions.insert(session, status);
+        }
+        layouts.revision = Some(revision);
+        drop(layouts);
+        self.submit(&mut router, changed);
     }
 
     /// Apply a router change and submit what it returned, under the router lock so states
@@ -228,6 +295,9 @@ impl InputRouting {
     /// Keyboard keys held (GPUI names) for the session keyboard input targets, mapped through
     /// that session's input layout (lotus#63).
     pub fn keyboard_keys(&self, session: Option<&str>, keys: std::collections::BTreeSet<String>) {
+        if session.is_some_and(|s| !lock(&self.layouts).sessions.contains_key(s)) {
+            self.sync_layouts(false);
+        }
         self.route(|router| router.keyboard_keys(session, keys));
     }
 
@@ -248,6 +318,9 @@ impl InputRouting {
         if let Some(session) = session {
             if !self.host.sessions().iter().any(|s| s == session) {
                 return Err(format!("session {session} is not running"));
+            }
+            if !lock(&self.layouts).sessions.contains_key(session) {
+                self.sync_layouts(false);
             }
         }
         let mut router = lock(&self.router);
@@ -388,6 +461,7 @@ impl InputRouting {
             },
             "router": router.metrics(),
             "devices": self.device_metrics(),
+            "layouts": lock(&self.layouts).sessions,
             "submission": *lock(&self.metrics),
         })
     }
@@ -401,11 +475,18 @@ impl InputRouting {
         shutdown: &AtomicBool,
     ) {
         let mut dropped = service.diagnostics().dropped;
+        let mut synced = Instant::now();
         while !shutdown.load(Ordering::Acquire) {
             match events.recv_timeout(RECONCILE) {
                 Ok(event) => self.event(&event),
                 Err(RecvTimeoutError::Timeout) => self.reconcile(service, false),
                 Err(RecvTimeoutError::Disconnected) => return,
+            }
+            // Settings edits reach running sessions within one period, even under a steady
+            // event stream that never times out.
+            if synced.elapsed() >= RECONCILE {
+                synced = Instant::now();
+                self.sync_layouts(false);
             }
             let now = service.diagnostics().dropped;
             if now != dropped {

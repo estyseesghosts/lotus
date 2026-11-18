@@ -211,6 +211,7 @@ Headless and windowed servers expose the same tools; `lotus_status` reports
 | `lotus_settings_schema` | the settings registry ([below](#settings-registry-50)), optionally one scope; no host needed |
 | `lotus_settings` | effective worker settings of `global`, a `card` or a `session`, with sources and problems ([layers](#settings-layers-51)) |
 | `lotus_settings_change` | `set`, `unset` or `reset` on the same targets; needs control |
+| `lotus_input_presets` | input-layout presets: `list`, `export`, `import`, `duplicate`, `rename`, `delete`; changes need control ([input layouts](#input-layouts-57-63)) |
 
 Host configuration gains `asset_directories` (handle → directory; each `.3dsx`
 directly inside is approved as `<handle>/<file>`, re-listed on demand, so
@@ -556,9 +557,11 @@ controller events, so routing does not wait on GPUI frames.
 - **Default controller layout**: Azahar's `xinput_to_3ds_mapping`
   (`input_common/sdl/sdl_impl.cpp`). East is A, south is B, north is X and west
   is Y. The D-pad maps to the D-pad, the shoulders to L/R, Start to Start, Back
-  to Select and Guide to Home. Azahar leaves ZL/ZR unbound, so the triggers take
-  them here. The left stick is the Circle Pad and the right stick the C-stick.
-  Remapping is #63.
+  to Select and Guide to Home. That table leaves ZL/ZR out; Azahar binds them to
+  the trigger axes at 0.5 instead (`BuildButtonParamPackageForButton`). Here both
+  the trigger buttons and the trigger axes press them. The left stick is the
+  Circle Pad and the right stick the C-stick. This is the builtin `default`
+  layout; sessions can use others (see Input layouts).
 - **Reassignment and disconnect**: assigning a controller first republishes its
   old session without it. Buttons held at that moment are ignored on the new
   session until released, and sticks until centred, so an old hold never
@@ -745,9 +748,9 @@ build. Then follow the user guide's pairing steps
 ## Input layouts (#57, #63)
 
 `crates/input/src/layout.rs` defines the preset format, the resolver and the
-compiled per-session `Mapping` the router applies. Every session currently
-uses the builtin `default` layout. Saved selections and overrides (#63) and
-the editor (#64) are not wired yet.
+compiled per-session `Mapping` the router applies. The layout is chosen with
+`lotus.input.*` settings in the same files and layers as worker settings (#51),
+and the desktop applies it to running sessions. The editor is #64.
 
 - **Actions.** Stable IDs: `a b x y up down left right l r zl zr start select
   home`, `circle_pad_{up,down,left,right}`, `c_stick_{up,down,left,right}`.
@@ -772,14 +775,49 @@ the editor (#64) are not wired yet.
   on the right face button, as Nintendo pads print it).
   `xbox-labels` moves A/B/X/Y to the printed Xbox labels (A at the bottom).
   DualSense buttons are printed with symbols, so position is their only meaning.
-- **Precedence.** The settings layers (#51) pick the effective preset name and,
-  per action, the winning override. `resolve` starts from that preset (builtin
-  first, then the library) and replaces each overridden action's whole binding
-  list. An empty list unbinds the action. A selected preset that no longer
+- **Settings** (owner `input`, group Controls, every scope, apply class
+  `routing`):
+
+  | Key | Value |
+  | --- | --- |
+  | `lotus.input.preset` | preset name; null is `default` |
+  | `lotus.input.bind.<action>` | binding list replacing the preset's; `[]` unbinds; null keeps the preset's |
+  | `lotus.input.{circle_pad,c_stick}.deadzone` | 0–0.99, default 0 |
+  | `lotus.input.{circle_pad,c_stick}.sensitivity` | 0.1–2, default 1 |
+  | `lotus.input.{circle_pad,c_stick}.invert_y` | default false |
+  | `lotus.input.threshold` | 0.01–0.99, default 0.5 |
+
+  Binding lists are checked with the layout parser at every target (at most 8
+  per action). These keys are never sent to a worker (`Resolution::profile`
+  leaves them out), are never `pending`, and are refused in the host `profile`.
+- **Precedence.** Per key, as #51: global, then the card (a primary's own, a
+  secondary's parent), then a secondary's runtime override. A global edit
+  therefore reaches every card that does not override that key, and a card's
+  explicit value stays when the global one changes. `resolve` starts from the
+  effective preset (builtin first, then the library) and replaces each
+  overridden action's whole binding list. A selected preset that no longer
   exists falls back to `default` with a `MissingPreset` problem.
+- **Live.** Unlike worker settings, layouts resolve live
+  (`Supervisor::input_layout`): saved global and card edits reach running
+  sessions, primary or secondary. A secondary's runtime overrides live in its
+  session and vanish when it stops. Every settings or preset change bumps
+  `Supervisor::settings_revision`. `InputRouting` re-resolves when the revision
+  changes (checked at least every 250 ms) and before routing to a session it
+  has no layout for. File reads happen outside the router lock.
+- **Library.** Saved presets are `<storage_root>/settings/input-presets/<name>.json`,
+  each an exported preset. Names follow card-name rules, and builtin names are
+  reserved. The operations are save (create, or replace), import (a taken name
+  becomes `name-2`, `name-3`, ...), duplicate (also from a builtin), rename and
+  delete, all under `settings/settings.lock`. A file with a bad name or content
+  is listed as a problem and skipped. Renaming or deleting a preset leaves
+  selections of the old name to fall back to `default`.
+  `lotus_input_presets` (MCP) does list, export, import, duplicate, rename and
+  delete.
 - **Conflicts and gaps.** One binding on several actions presses all of them.
   `Resolved::conflicts` lists them and `Resolved::unbound` lists actions with no
-  binding, for the editor to warn about; neither is refused.
+  binding; neither is refused. Both, with each session's preset and problems,
+  are in `frontend_metrics.controllers.routing.layouts`, for the editor to
+  offer choices.
 - **Mapping.** `Mapping::new(&Resolved, Profile)` compiles fixed tables indexed
   by button, so a sample allocates nothing. An axis bound to a stick's right/up
   action (or left/down, sign flipped) drives that component in analog. Every
@@ -825,14 +863,30 @@ Evidence: **verified compiled**. Unit tests in `layout.rs` cover:
 - axis rebinds.
 
 `router.rs` tests cover per-session mappings without leaks, remapping while
-held, and keyboard keys following the target. The window was not re-run with
-the key-name path.
+held, and keyboard keys following the target. Store, registry, supervisor and
+MCP coverage:
+
+- `settings_store.rs`: input keys layer per action and stay out of worker
+  profiles; the preset library round trip (save, replace, refusals, import
+  suffixes, duplicate, rename, delete, bad files).
+- `lotus-settings` `tests.rs`: binding validation at every scope.
+- `settings_layers.rs` (**verified emulator**, mock worker): global edits reach
+  running primaries, card differences hold, a secondary's override stays out of
+  its worker and vanishes with it, a deleted preset falls back.
+- `lotus-desktop` `input_routing.rs` (**verified emulator**): a runtime override
+  remaps a held pad button without a stuck key, and the keyboard follows each
+  session's layout.
+- `lotus-mcp`: the preset tool.
+
+No physical controller was used. The window was not re-run with the key-name
+path.
 
 ## Settings registry (#50)
 
 `lotus-settings` describes every setting a person or client can see: the 173
-Azahar worker settings and the Lotus host (`lotus.host.*`, `HostConfig`) and
-desktop (`lotus.desktop.*`, `desktop.json`) settings. Each descriptor has a
+Azahar worker settings, the Lotus host (`lotus.host.*`, `HostConfig`) and
+desktop (`lotus.desktop.*`, `desktop.json`) settings, and the input layout
+(`lotus.input.*`, [input layouts](#input-layouts-57-63)). Each descriptor has a
 stable key, owner, intent group and subgroup, label, description, type with
 bounds or choices, default, scopes (`global`, `primary`,
 `secondary_runtime`), apply class, availability and source citations.
@@ -921,9 +975,8 @@ Evidence: **verified emulator** (mock worker) in
 `crates/session/tests/settings_layers.rs`, unit tests in `settings_store.rs`,
 plus CLI and MCP tests. `debug settings_set` still writes a worker directly
 and is not recorded as a runtime override. Portable packaging was not rebuilt
-for this change (source inspected). Controls and MCP groups have no settings until stored input presets
-(#63) and automation settings (#56) land. Input layouts (#57) resolve in
-the same order but are not registry keys.
+for this change (source inspected). The MCP group has no settings until automation settings (#56) land. Input
+layout keys share these files and layers but never reach a worker.
 
 ## Discord Rich Presence
 

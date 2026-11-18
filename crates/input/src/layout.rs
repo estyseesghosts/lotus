@@ -5,7 +5,7 @@
 //! positional [`Button`]/[`Axis`] names for controllers (not backend IDs). Layers resolve like
 //! worker settings (lotus#51): preset → global → card → a secondary's ephemeral overrides,
 //! with the settings store choosing the winning layer per action ([`resolve`]).
-//! See `docs/30-sessions-and-interface.md` "Input layouts (#57)".
+//! See `docs/30-sessions-and-interface.md` "Input layouts (#57, #63)".
 
 use std::collections::BTreeMap;
 

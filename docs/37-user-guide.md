@@ -150,9 +150,10 @@ you pair it:
 
 Default layout (Azahar's XInput mapping): east = A, south = B, north = X,
 west = Y, D-pad, shoulders = L/R, triggers = ZL/ZR, Start, Back = Select,
-Guide = Home, left stick = Circle Pad, right stick = C-stick. Remapping is not
-available yet (#63). Controller support is tested with simulated devices only;
-real-controller testing is pending. Windows Gaming Input delivers events only
+Guide = Home, left stick = Circle Pad, right stick = C-stick. The builtin
+`xbox-labels` preset follows the printed Xbox letters instead (south = A).
+Controller support is tested with simulated devices only; real-controller
+testing is pending. Windows Gaming Input delivers events only
 while a LOTUS window has focus. Details: [30](30-sessions-and-interface.md#controller-pairing-62).
 
 ### Viewing two sessions
@@ -273,6 +274,27 @@ bin\ctr-cli.exe settings show  data\citnlo\host.json card:main
 `card`, `runtime`, `managed`) and any problems, such as a saved entry that is
 no longer valid. Details: [30](30-sessions-and-interface.md#settings-layers-51).
 
+### Input layouts
+
+Keyboard and controller bindings, stick dead zone, sensitivity and inversion,
+and the trigger threshold are `lotus.input.*` settings. They live in the same
+files and layers as worker settings, so a card can differ from the global
+layout and a secondary can try a change that vanishes when it stops. Unlike
+worker settings they apply to running sessions at once and never reach the
+emulator. There is no editor yet (#64); use the CLI or MCP:
+
+```powershell
+bin\ctr-cli.exe settings set data\citnlo\host.json global lotus.input.preset '"xbox-labels"'
+bin\ctr-cli.exe settings set data\citnlo\host.json card:main lotus.input.bind.a '[{"device":"keyboard","key":"j"},{"device":"button","button":"east"}]'
+bin\ctr-cli.exe settings set data\citnlo\host.json global lotus.input.circle_pad.deadzone 0.15
+```
+
+A binding list replaces that action's bindings; `[]` unbinds it. Keys are the
+names the window reports (`z`, `enter`, `up`); controller buttons and axes use
+positions (`south`, `east`, `left_x` with `direction` `positive` or
+`negative`). Saved presets are managed with `lotus_input_presets` (MCP).
+Details: [30](30-sessions-and-interface.md#input-layouts-57-63).
+
 ### Window preferences (`desktop.json`)
 
 Location: `LOTUS_DESKTOP_PREFERENCES` if set (the portable launcher sets
@@ -357,6 +379,7 @@ resources. Anything that changes state needs `allow_control`.
 | `lotus_settings_schema` | `scope` (optional) | the settings registry |
 | `lotus_settings` | `target` | effective worker settings with sources |
 | `lotus_settings_change` | `target`, `operation` `set`/`unset`/`reset`, `key`, `value` | change saved or temporary settings |
+| `lotus_input_presets` | `operation` `list`/`export`/`import`/`duplicate`/`rename`/`delete`, `name`, `to`, `json` | manage input-layout presets |
 | `lotus_validate_scenario` | `path` (a host-registered handle) | validate a scenario |
 | `lotus_pin_artifact` | `uri`, `pinned` | keep an artifact from eviction |
 | `lotus_release_artifacts` | `uris` | delete artifacts now |

@@ -2729,6 +2729,7 @@ dependencies = [
  "base64 0.22.1",
  "lotus-debugger",
  "lotus-gdb",
+ "lotus-input",
  "lotus-protocol",
  "lotus-runner",
  "lotus-session",
@@ -2774,6 +2775,7 @@ name = "lotus-session"
 version = "0.0.6"
 dependencies = [
  "lotus-debugger",
+ "lotus-input",
  "lotus-protocol",
  "lotus-settings",
  "serde",
@@ -2789,6 +2791,7 @@ dependencies = [
 name = "lotus-settings"
 version = "0.0.6"
 dependencies = [
+ "lotus-input",
  "serde",
  "serde_json",
 ]

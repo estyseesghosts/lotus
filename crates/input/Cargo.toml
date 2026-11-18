@@ -10,12 +10,18 @@ description = "Host-owned physical controller discovery and events."
 
 [dependencies]
 # `wgi` and `xinput` are mutually exclusive in gilrs-core; see lib.rs.
-gilrs = { version = "=0.11.2", default-features = false }
+gilrs = { version = "=0.11.2", default-features = false, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 
 [features]
 default = ["wgi"]
-wgi = ["gilrs/wgi"]
-xinput = ["gilrs/xinput"]
+# The gilrs backend; off, the crate is the layout and router only (used by lotus-session).
+backend = ["dep:gilrs"]
+wgi = ["backend", "gilrs/wgi"]
+xinput = ["backend", "gilrs/xinput"]
+
+[[bin]]
+name = "lotus-pads"
+required-features = ["backend"]

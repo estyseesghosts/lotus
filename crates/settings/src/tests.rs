@@ -209,7 +209,13 @@ fn values_are_checked_against_type_range_and_choices() {
 fn scopes_filter_host_and_desktop_settings_to_global() {
     let r = registry();
     for d in r.descriptors().iter().filter(|d| d.owner != Owner::Azahar) {
-        assert_eq!(d.scopes, Scopes::GLOBAL, "{}", d.key);
+        // Input layouts (lotus#63) layer like worker settings; host and desktop do not.
+        let expected = if d.owner == Owner::Input {
+            Scopes::ALL
+        } else {
+            Scopes::GLOBAL
+        };
+        assert_eq!(d.scopes, expected, "{}", d.key);
         assert!(d.key.starts_with("lotus."), "{}", d.key);
         d.validate(&d.default).expect(&d.key);
     }
@@ -244,7 +250,9 @@ fn scopes_filter_host_and_desktop_settings_to_global() {
         )
         .is_err());
     let primary: Vec<_> = r.for_scope(Scope::Primary).collect();
-    assert!(primary.iter().all(|d| d.owner == Owner::Azahar));
+    assert!(primary
+        .iter()
+        .all(|d| matches!(d.owner, Owner::Azahar | Owner::Input)));
     assert!(primary
         .iter()
         .all(|d| d.available_on(Some(Branch::Experimental)).is_ok()));
@@ -263,8 +271,8 @@ fn every_group_has_settings_and_schema_lists_them() {
     assert_eq!(listed, r.descriptors().len());
     for group in Group::ALL {
         let present = r.descriptors().iter().any(|d| d.group == group);
-        // Controls and MCP get their own settings with input presets (#57/#63) and the
-        // automation settings (#56); every other group already has some.
+        // MCP gets its own settings with the automation settings (#56); every other group
+        // already has some.
         assert!(present, "{group:?} has no settings");
     }
     assert!(schema["generated_from"]["workers"]["integration"]["worker_sha256"].is_string());
@@ -290,4 +298,47 @@ fn drift_names_unknown_and_missing_keys() {
     let drift = r.drift(Branch::Experimental, ["volume", "brand_new"]);
     assert_eq!(drift.unknown_to_registry, ["brand_new"]);
     assert_eq!(drift.missing_from_worker.len(), 172);
+}
+
+#[test]
+fn input_bindings_are_validated_by_the_layout_parser() {
+    let r = registry();
+    let ok = json!([{"device": "keyboard", "key": "z"}, {"device": "button", "button": "east"}]);
+    for scope in [Scope::Global, Scope::Primary, Scope::SecondaryRuntime] {
+        r.validate("lotus.input.bind.a", &ok, scope, None)
+            .expect("bindings");
+    }
+    r.validate("lotus.input.bind.a", &json!([]), Scope::Global, None)
+        .expect("unbind");
+    r.validate("lotus.input.bind.a", &json!(null), Scope::Global, None)
+        .expect("inherit");
+    for bad in [
+        json!({"device": "keyboard"}),
+        json!([{"device": "wheel"}]),
+        json!([{"device": "button", "button": "paddle"}]),
+        json!(vec![json!({"device": "keyboard", "key": "z"}); 9]),
+    ] {
+        assert!(
+            r.validate("lotus.input.bind.a", &bad, Scope::Global, None)
+                .is_err(),
+            "{bad}"
+        );
+    }
+    let ids: Vec<String> = lotus_input::layout::Action::ALL
+        .iter()
+        .map(|a| format!("lotus.input.bind.{}", a.id()))
+        .collect();
+    for id in &ids {
+        assert_eq!(r.get(id).unwrap().owner, Owner::Input, "{id}");
+    }
+    assert!(r
+        .validate(
+            "lotus.input.circle_pad.deadzone",
+            &json!(1.0),
+            Scope::Global,
+            None
+        )
+        .is_err());
+    r.validate("lotus.input.threshold", &json!(0.5), Scope::Primary, None)
+        .expect("threshold");
 }

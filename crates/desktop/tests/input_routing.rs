@@ -14,7 +14,7 @@ use lotus_input::synthetic::{Script, Synthetic};
 use lotus_input::{Axis, Button, ControllerService, DeviceId, DeviceInfo, InputSnapshot};
 use lotus_protocol::envelope::SessionUuid;
 use lotus_session::native_session::InputState;
-use lotus_session::supervisor::{HostConfig, SessionKind, Supervisor};
+use lotus_session::supervisor::{HostConfig, SessionKind, SettingsTarget, Supervisor};
 use lotus_session::telemetry::Actor;
 
 fn mock_worker() -> PathBuf {
@@ -602,6 +602,114 @@ fn two_pads_soak_without_crossover_or_stuck_input() {
     assert_eq!(service.diagnostics().dropped, 0, "device events dropped");
     assert_eq!(input_b.edges_dropped, 0, "B lost presses");
     assert_eq!((input_a.denied, input_b.denied), (0, 0));
+
+    shutdown.store(true, std::sync::atomic::Ordering::Release);
+    thread.join().expect("router thread");
+    runtime.block_on(host.close());
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// lotus#63: a secondary's runtime layout override changes what its controller and keyboard
+/// mean in the worker, without touching a sibling, and a remap while held never sticks.
+#[test]
+fn runtime_layout_override_reaches_routing() {
+    let base = std::env::temp_dir().join(format!("lotus-layout-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let host = Arc::new(Supervisor::new(config).expect("host"));
+    let ids: Vec<String> = (0..2)
+        .map(|_| {
+            runtime.block_on(async {
+                let info = host
+                    .create(
+                        SessionKind::Secondary { parent: None },
+                        Some("demo"),
+                        Actor::Host,
+                    )
+                    .await
+                    .expect("create");
+                host.run(&info.id, Actor::Host).await.expect("run");
+                info.id
+            })
+        })
+        .collect();
+    let (a, b) = (ids[0].as_str(), ids[1].as_str());
+    let store = base.join("store").canonicalize().expect("store");
+    let root = |id: &str| store.join("scratch").join(id);
+
+    let routing = InputRouting::new(host.clone());
+    let (backend, script) = Synthetic::new();
+    let (service, events) = ControllerService::start(move || Ok(backend)).expect("service");
+    let service = Arc::new(service);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
+        std::thread::spawn(move || routing.run(&service, &events, &shutdown))
+    };
+    pad(&script, 0);
+    until("pad", || routing.controllers().pads.len() == 1);
+    let one = routing.controllers().pads[0].id;
+    routing.assign(one, Some(a), false).expect("assign");
+    let last = |id: &str| buttons(&root(id)).last().copied();
+
+    // Builtin layout: South is 3DS B.
+    script.button(0, Button::South, true);
+    until("B on A", || last(a) == Some(u64::from(bits::B)));
+
+    // While South is held, A's layout makes South mean A: B is released at once and A
+    // only comes with a fresh press.
+    let set = |key: &str, value: serde_json::Value| {
+        runtime
+            .block_on(host.set_setting(
+                &SettingsTarget::Session { session: a.into() },
+                key,
+                Some(value),
+                Actor::Host,
+            ))
+            .expect(key);
+    };
+    set(
+        "lotus.input.bind.a",
+        serde_json::json!([{"device": "button", "button": "south"}, {"device": "keyboard", "key": "p"}]),
+    );
+    set("lotus.input.bind.b", serde_json::json!([]));
+    until("released by the remap", || last(a) == Some(0));
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(last(a), Some(0), "still held: nothing new pressed");
+    script.button(0, Button::South, false);
+    script.button(0, Button::South, true);
+    until("A on A", || last(a) == Some(u64::from(bits::A)));
+    script.button(0, Button::South, false);
+    until("A released", || last(a) == Some(0));
+
+    // The keyboard follows the target's layout: P is A on A, nothing on B.
+    let held = |keys: &[&str]| keys.iter().map(|k| k.to_string()).collect();
+    routing.keyboard_keys(Some(a), held(&["p"]));
+    until("P on A", || last(a) == Some(u64::from(bits::A)));
+    routing.keyboard_keys(Some(a), held(&[]));
+    until("P released", || last(a) == Some(0));
+    let before = buttons(&root(b)).len();
+    routing.keyboard_keys(Some(b), held(&["p"]));
+    routing.keyboard_keys(Some(b), held(&["z"]));
+    until("Z on B", || last(b) == Some(u64::from(bits::A)));
+    assert!(
+        buttons(&root(b))[before..]
+            .iter()
+            .all(|b| *b == 0 || *b == u64::from(bits::A)),
+        "B never saw A's layout"
+    );
+    routing.keyboard_keys(None, held(&[]));
+    let status = routing.status();
+    assert_eq!(status["layouts"][a]["preset"], "default");
+    assert!(status["layouts"][a]["unbound"]
+        .as_array()
+        .unwrap()
+        .contains(&serde_json::json!("b")));
 
     shutdown.store(true, std::sync::atomic::Ordering::Release);
     thread.join().expect("router thread");

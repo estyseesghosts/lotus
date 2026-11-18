@@ -36,7 +36,7 @@ lotus-accuracy = { path = "crates/accuracy", version = "0.0.6" }
 lotus-mcp = { path = "crates/mcp", version = "0.0.6" }
 
 lotus-gdb = { path = "crates/gdb", version = "0.0.6" }
-lotus-input = { path = "crates/input", version = "0.0.6" }
+lotus-input = { path = "crates/input", version = "0.0.6", default-features = false }
 lotus-settings = { path = "crates/settings", version = "0.0.6" }
 
 # External crates.

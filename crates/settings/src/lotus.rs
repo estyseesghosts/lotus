@@ -1,5 +1,5 @@
-//! Lotus-owned settings: host configuration (`HostConfig`, read by every frontend) and desktop
-//! preferences (`desktop.json`, the window only). Defaults and bounds here are checked against
+//! Lotus-owned settings: host configuration (`HostConfig`, read by every frontend), desktop
+//! preferences (`desktop.json`, the window only) and session input layouts (lotus#63). Defaults and bounds here are checked against
 //! the owning code by tests in `lotus-session` and `lotus-desktop`, so they cannot drift apart.
 
 use serde_json::{json, Value};
@@ -75,6 +75,117 @@ fn choice(choices: &[&str]) -> Kind {
         exact_len: None,
         hex: false,
     }
+}
+
+/// Bindings an action may hold; the editor offers a few per device, so this only bounds
+/// stored values.
+const MAX_BINDINGS: usize = 8;
+
+fn float(min: f64, max: f64) -> Kind {
+    Kind::Float {
+        min: Some(min),
+        max: Some(max),
+    }
+}
+
+/// `lotus.input.*` (lotus#63): layered at every scope like worker settings, read by
+/// `lotus_input::layout` through `lotus_session::settings_store`. Defaults are the builtin
+/// `default` preset with no overrides and Azahar's stick and trigger defaults.
+fn input_descriptors() -> Vec<Descriptor> {
+    use lotus_input::layout::Action;
+    let source = "lotus_input::layout";
+    let input = |key: String,
+                 subgroup: &'static str,
+                 label: String,
+                 description: &str,
+                 kind: Kind,
+                 default: Value,
+                 keywords: &[&'static str]| Descriptor {
+        key,
+        owner: Owner::Input,
+        group: Group::Controls,
+        subgroup,
+        label,
+        description: description.to_string(),
+        kind,
+        default,
+        scopes: Scopes::ALL,
+        apply: Apply::Routing,
+        availability: Availability::Available,
+        sources: vec![source.to_string()],
+        keywords: keywords.to_vec(),
+    };
+    let mut list = vec![input(
+        "lotus.input.preset".into(),
+        "Layout",
+        "Input preset".into(),
+        "Named layout the bindings start from: a builtin (default, xbox-labels) or a saved \
+         preset. A missing preset falls back to default.",
+        Kind::String {
+            max_len: 32,
+            choices: None,
+            nullable: true,
+            exact_len: None,
+            hex: false,
+        },
+        Value::Null,
+        &["preset", "layout", "mapping"],
+    )];
+    for action in Action::ALL {
+        let id = action.id();
+        list.push(input(
+            format!("lotus.input.bind.{id}"),
+            "Bindings",
+            format!("Bind {id}"),
+            "Replaces the preset's bindings for this 3DS input; an empty list unbinds it, \
+             null keeps the preset's.",
+            Kind::Bindings { max: MAX_BINDINGS },
+            Value::Null,
+            &["binding", "button", "key", "mapping"],
+        ));
+    }
+    for (stick, name) in [("circle_pad", "Circle Pad"), ("c_stick", "C-stick")] {
+        list.push(input(
+            format!("lotus.input.{stick}.deadzone"),
+            "Sticks",
+            format!("{name} dead zone"),
+            "Radial dead zone with Azahar's rescaling, on top of the controller driver's; \
+             Azahar's range is 0 to 0.99 and its default 0 (sdl_impl.cpp).",
+            float(0.0, 0.99),
+            json!(0.0),
+            &["deadzone", "stick", "drift"],
+        ));
+        list.push(input(
+            format!("lotus.input.{stick}.sensitivity"),
+            "Sticks",
+            format!("{name} sensitivity"),
+            "Scale after the dead zone, clamped to full deflection. At 2, half travel \
+             reaches full deflection.",
+            float(0.1, 2.0),
+            json!(1.0),
+            &["sensitivity", "stick"],
+        ));
+        list.push(input(
+            format!("lotus.input.{stick}.invert_y"),
+            "Sticks",
+            format!("Invert {name} Y"),
+            "Flip the vertical axis.",
+            Kind::Boolean,
+            json!(false),
+            &["invert", "stick"],
+        ));
+    }
+    list.push(input(
+        "lotus.input.threshold".into(),
+        "Sticks",
+        "Axis press threshold".into(),
+        "Travel at which an axis bound to a button presses it (triggers, stick-to-D-pad). \
+         Azahar uses 0.5 for ZL/ZR; its range is open (0, 1) (sdl_impl.cpp).",
+        float(0.01, 0.99),
+        json!(0.5),
+        &["trigger", "threshold", "axis"],
+    ));
+    list
 }
 
 pub(crate) fn descriptors() -> Vec<Descriptor> {
@@ -439,4 +550,7 @@ pub(crate) fn descriptors() -> Vec<Descriptor> {
             &["discord"],
         ),
     ]
+    .into_iter()
+    .chain(input_descriptors())
+    .collect()
 }

@@ -27,9 +27,9 @@ use serde_json::Value;
 
 use crate::tool_arguments::{
     AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs, GdbOperation,
-    InputArgs, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs,
-    SessionArgs, SettingsArgs, SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs,
-    ValidateScenarioArgs, WorkspaceArgs,
+    InputArgs, InputPresetArgs, InputPresetOperation, KindArg, LoadArgs, MemoryArgs,
+    PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs, SessionArgs, SettingsArgs,
+    SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -238,7 +238,7 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Effective worker settings of a target (global, card, or session) with each value's source: default, global, card, runtime, or managed (host configuration profile, not editable). Lists ignored saved entries and unreadable files under problems. For a primary session, pending lists saved changes that apply at its card's next start."
+        description = "Effective worker settings and input layout keys (lotus.input.*) of a target (global, card, or session) with each value's source: default, global, card, runtime, or managed (host configuration profile, not editable). Lists ignored saved entries and unreadable files under problems. For a primary session, pending lists saved worker changes that apply at its card's next start."
     )]
     pub async fn lotus_settings(
         &self,
@@ -249,7 +249,7 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Change settings. Global and card overrides are saved and apply to sessions started afterwards, never to running workers. A secondary session's override is applied to its worker now and discarded when it ends; the worker refuses non-live settings while running. Primary sessions are changed through their card. Requires host control permission."
+        description = "Change settings. Global and card overrides are saved and apply to sessions started afterwards, never to running workers. A secondary session's override is applied to its worker now and discarded when it ends; the worker refuses non-live settings while running. Input layout keys (lotus.input.*: preset, bind.<action>, stick dead zone/sensitivity/inversion, threshold) are never sent to a worker and reach running sessions' input routing at once, at every target. Primary sessions are changed through their card. Requires host control permission."
     )]
     pub async fn lotus_settings_change(
         &self,
@@ -279,6 +279,58 @@ impl LotusServer {
             host.settings(&target).await
         }
         .await;
+        tool_result(result)
+    }
+
+    #[tool(
+        description = "Input-layout preset library (lotus#63): list builtin and saved presets, export one as JSON, import exported JSON (a taken name gets a -N suffix), duplicate, rename or delete a saved preset. Builtin presets (default, xbox-labels) are read-only. Select one with the lotus.input.preset setting. Changes need host control permission."
+    )]
+    pub async fn lotus_input_presets(
+        &self,
+        Parameters(args): Parameters<InputPresetArgs>,
+    ) -> CallToolResult {
+        use lotus_session::settings_store::PresetChange;
+        let result = (|| {
+            let host = self.require_host()?;
+            let need = |value: Option<String>, what: &str| {
+                value.ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, format!("{what} is required"))
+                })
+            };
+            let change = match args.operation {
+                InputPresetOperation::List => {
+                    let (saved, problems) = host.input_presets();
+                    return Ok(serde_json::json!({
+                        "builtin": lotus_input::layout::builtins()
+                            .iter()
+                            .map(|p| p.name.clone())
+                            .collect::<Vec<_>>(),
+                        "saved": saved.iter().map(|p| p.name.clone()).collect::<Vec<_>>(),
+                        "problems": problems,
+                    }));
+                }
+                InputPresetOperation::Export => {
+                    let json = host.export_input_preset(&need(args.name, "name")?)?;
+                    return serde_json::from_str(&json).map_err(io::Error::other);
+                }
+                InputPresetOperation::Import => PresetChange::Import {
+                    json: need(args.json, "json")?,
+                },
+                InputPresetOperation::Duplicate => PresetChange::Duplicate {
+                    from: need(args.name, "name")?,
+                    to: need(args.to, "to")?,
+                },
+                InputPresetOperation::Rename => PresetChange::Rename {
+                    from: need(args.name, "name")?,
+                    to: need(args.to, "to")?,
+                },
+                InputPresetOperation::Delete => PresetChange::Delete {
+                    name: need(args.name, "name")?,
+                },
+            };
+            let name = host.change_input_preset(change)?;
+            Ok(serde_json::json!({ "name": name }))
+        })();
         tool_result(result)
     }
 
@@ -636,6 +688,100 @@ mod tests {
                 .schema(Some(lotus_settings::Scope::SecondaryRuntime))
         );
         assert!(!secondary.to_string().contains("lotus.desktop."));
+    }
+
+    /// lotus#63: the preset library through MCP; changes need control.
+    #[tokio::test]
+    async fn input_preset_tool_lists_copies_and_exports() {
+        use crate::tool_arguments::{InputPresetArgs, InputPresetOperation};
+        let root = std::env::temp_dir().join(format!("lotus-mcp-presets-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("store")).unwrap();
+        let worker = std::env::current_exe().unwrap();
+        let args = |operation, name: Option<&str>, to: Option<&str>| InputPresetArgs {
+            operation,
+            name: name.map(str::to_string),
+            to: to.map(str::to_string),
+            json: None,
+        };
+        let call = |result: CallToolResult| -> (bool, Value) {
+            let text = serde_json::to_value(&result.content[0]).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            (
+                result.is_error == Some(true),
+                serde_json::from_str(&text).unwrap_or(Value::String(text)),
+            )
+        };
+        let read_only = LotusServer::configured(
+            HostConfig::new(worker.clone(), root.join("store")),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let (error, message) = call(
+            read_only
+                .lotus_input_presets(Parameters(args(
+                    InputPresetOperation::Duplicate,
+                    Some("default"),
+                    Some("mine"),
+                )))
+                .await,
+        );
+        assert!(
+            error && message.to_string().contains("control"),
+            "{message}"
+        );
+        drop(read_only);
+        let mut config = HostConfig::new(worker, root.join("store"));
+        config.allow_control = true;
+        let server = LotusServer::configured(config, BTreeMap::new()).unwrap();
+        let (error, value) = call(
+            server
+                .lotus_input_presets(Parameters(args(
+                    InputPresetOperation::Duplicate,
+                    Some("xbox-labels"),
+                    Some("mine"),
+                )))
+                .await,
+        );
+        assert!(!error, "{value}");
+        assert_eq!(value["name"], "mine");
+        let (_, list) = call(
+            server
+                .lotus_input_presets(Parameters(args(InputPresetOperation::List, None, None)))
+                .await,
+        );
+        assert_eq!(
+            list["builtin"],
+            serde_json::json!(["default", "xbox-labels"])
+        );
+        assert_eq!(list["saved"], serde_json::json!(["mine"]));
+        let (_, exported) = call(
+            server
+                .lotus_input_presets(Parameters(args(
+                    InputPresetOperation::Export,
+                    Some("mine"),
+                    None,
+                )))
+                .await,
+        );
+        assert_eq!(exported["version"], 1);
+        assert!(exported["bindings"]["a"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!({"device": "button", "button": "south"})));
+        let (error, _) = call(
+            server
+                .lotus_input_presets(Parameters(args(
+                    InputPresetOperation::Delete,
+                    Some("default"),
+                    None,
+                )))
+                .await,
+        );
+        assert!(error, "builtin presets are read-only");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// lotus#51: settings reads and changes go through the supervisor's layered stores.

@@ -72,6 +72,37 @@ pub struct SettingsChangeArgs {
     pub value: Option<serde_json::Value>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InputPresetOperation {
+    /// Builtin and saved presets, with files that could not be read.
+    List,
+    /// One preset's JSON (`name`).
+    Export,
+    /// Save exported JSON (`json`); a taken name gets a `-N` suffix.
+    Import,
+    /// Copy `name` (builtin or saved) to `to`.
+    Duplicate,
+    /// Rename saved preset `name` to `to`.
+    Rename,
+    /// Delete saved preset `name`.
+    Delete,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InputPresetArgs {
+    pub operation: InputPresetOperation,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// New name for duplicate and rename: 1-32 of a-z, 0-9, `-`, `_`.
+    #[serde(default)]
+    pub to: Option<String>,
+    /// Exported preset for import.
+    #[serde(default)]
+    pub json: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettingsSchemaArgs {

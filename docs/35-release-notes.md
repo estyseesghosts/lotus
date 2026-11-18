@@ -17,6 +17,12 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
 - Input-layout preset format and resolver: stable 3DS action IDs, portable
   keyboard/controller bindings, global → card → secondary overrides; the
   builtin preset reproduces the shipped keys (#57).
+- Input mapping profiles (#63): `lotus.input.*` settings layered like worker
+  settings and applied live to each session's routing. Per-session mappings
+  with Azahar's radial dead zone, sensitivity, inversion and a 0.5 axis
+  threshold. Remapping while held releases first. Builtin `default` and
+  `xbox-labels` presets, a saved preset library, and `lotus_input_presets`
+  (MCP).
 - Circle Pad and C-stick carried through the fast input path (`analog_input`
   feature, #60).
 - Scenario memory, event and coverage assertions execute (#94).

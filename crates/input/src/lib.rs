@@ -24,6 +24,9 @@ use std::time::{Duration, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
+/// Without `wgi` or `xinput` the crate has no backend (the layout and router only), so
+/// `lotus-session` can use [`layout`] without linking gilrs.
+#[cfg(feature = "backend")]
 pub mod gilrs_backend;
 pub mod layout;
 pub mod router;

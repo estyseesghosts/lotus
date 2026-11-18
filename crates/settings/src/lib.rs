@@ -9,7 +9,8 @@
 //! instead of keeping their own bounds and defaults.
 //!
 //! Keys: Azahar settings keep their worker names (`graphics_api`, `cfg.000a0000`), as host
-//! profiles already use them. Lotus settings are `lotus.host.*` and `lotus.desktop.*`.
+//! profiles already use them. Lotus settings are `lotus.host.*`, `lotus.desktop.*` and the
+//! per-session input layout `lotus.input.*` (lotus#63).
 //! One-shot actions (capture a GPU frame, start a trace, set a breakpoint, create a session)
 //! are tools, not settings, and are not registered.
 
@@ -79,6 +80,9 @@ pub enum Owner {
     Host,
     /// The desktop window only (`desktop.json`); headless frontends never read it.
     Desktop,
+    /// A session's input layout (lotus#63). Layered like worker settings (global, card,
+    /// secondary runtime) but applied by the desktop's input router, never sent to a worker.
+    Input,
 }
 
 /// When a new value takes effect.
@@ -101,6 +105,8 @@ pub enum Apply {
     SessionCreate,
     /// Desktop: applied by the window at once.
     Immediate,
+    /// Input layout: applied to the session's input routing when it changes, while running.
+    Routing,
 }
 
 impl Apply {
@@ -189,6 +195,11 @@ pub enum Kind {
     /// Structured Azahar values (arrays, objects); validated by the worker.
     Json {
         max_bytes: usize,
+    },
+    /// One input action's binding list (`lotus_input::layout::Binding`), or null to keep the
+    /// preset's.
+    Bindings {
+        max: usize,
     },
 }
 
@@ -351,6 +362,26 @@ impl Descriptor {
             Kind::Json { max_bytes } => {
                 if value.to_string().len() > *max_bytes {
                     return Err(invalid(format!("larger than {max_bytes} bytes")));
+                }
+            }
+            Kind::Bindings { max } => {
+                if value.is_null() {
+                    return Ok(());
+                }
+                let Some(list) = value.as_array() else {
+                    return Err(invalid("expected a list of bindings or null".into()));
+                };
+                if list.len() > *max {
+                    return Err(invalid(format!("more than {max} bindings")));
+                }
+                // Any action parses the same bindings; the key names the action.
+                let (_, problems) =
+                    lotus_input::layout::parse_list(lotus_input::layout::Action::A, value);
+                if !problems.is_empty() {
+                    return Err(invalid(format!(
+                        "{} binding(s) this build cannot read",
+                        problems.len()
+                    )));
                 }
             }
         }

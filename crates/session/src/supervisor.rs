@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -135,6 +135,13 @@ pub fn validate_profile(
         }
     }
     Ok(())
+}
+
+/// An input-layout key (lotus#63): layered like worker settings, never sent to a worker.
+fn is_input(key: &str) -> bool {
+    lotus_settings::Registry::builtin()
+        .get(key)
+        .is_some_and(|d| d.owner == lotus_settings::Owner::Input)
 }
 
 /// Parse a `--asset-dir handle=path` command-line override.
@@ -316,6 +323,9 @@ pub struct Supervisor {
     focused: Mutex<Option<String>>,
     /// Saved global and card settings (lotus#51).
     settings: crate::settings_store::SettingsStore,
+    /// Bumped by every settings or input-preset change, so a frontend knows when to
+    /// re-resolve input layouts (lotus#63).
+    settings_revision: AtomicU64,
     /// Window layout (lotus#67). Lock order: `registry`, then `workspace`.
     workspace: Mutex<crate::workspace::Workspace>,
     workspace_resolved: Mutex<Option<crate::workspace::Resolved>>,
@@ -381,6 +391,7 @@ impl Supervisor {
             workspace: Mutex::default(),
             workspace_resolved: Mutex::default(),
             workspace_available: AtomicBool::new(false),
+            settings_revision: AtomicU64::new(0),
         })
     }
 
@@ -755,6 +766,7 @@ impl Supervisor {
                         let now = self.settings.resolve(Some(card))?;
                         now.settings
                             .iter()
+                            .filter(|(key, _)| !is_input(key))
                             .filter(|(key, entry)| {
                                 effective.settings.get(*key).map(|e| &e.value) != Some(&entry.value)
                             })
@@ -791,7 +803,7 @@ impl Supervisor {
     ) -> io::Result<()> {
         use crate::settings_store::Store;
         self.require_control()?;
-        match target {
+        let result = match target {
             SettingsTarget::Global => self.settings.set(&Store::Global, key, value),
             SettingsTarget::Card { card } => {
                 self.known_card(card)?;
@@ -801,7 +813,9 @@ impl Supervisor {
                 self.set_runtime(session, [(key.to_string(), value)], actor)
                     .await
             }
-        }
+        };
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
+        result
     }
 
     /// Remove every override of a target: a saved file's entries, or a secondary's runtime
@@ -809,7 +823,7 @@ impl Supervisor {
     pub async fn reset_settings(&self, target: &SettingsTarget, actor: Actor) -> io::Result<()> {
         use crate::settings_store::Store;
         self.require_control()?;
-        match target {
+        let result = match target {
             SettingsTarget::Global => self.settings.reset(&Store::Global),
             SettingsTarget::Card { card } => {
                 self.known_card(card)?;
@@ -821,7 +835,59 @@ impl Supervisor {
                 self.set_runtime(session, keys.into_iter().map(|key| (key, None)), actor)
                     .await
             }
-        }
+        };
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
+        result
+    }
+
+    /// Changes so far to settings and input presets; see [`Supervisor::input_layout`].
+    #[must_use]
+    pub fn settings_revision(&self) -> u64 {
+        self.settings_revision.load(Ordering::Acquire)
+    }
+
+    /// The input layout `session` uses now (lotus#63). Unlike worker settings it is resolved
+    /// live, so saved global and card edits reach running sessions: global, then the card
+    /// (a primary's own, a secondary's parent), then a secondary's runtime overrides.
+    pub fn input_layout(
+        &self,
+        session: &str,
+    ) -> io::Result<(lotus_input::layout::Resolved, lotus_input::layout::Profile)> {
+        let handle = self.handle(session)?;
+        let card = match handle.info().kind {
+            SessionKind::Primary { card } => Some(card),
+            SessionKind::Secondary { parent } => parent,
+        };
+        let mut resolution = self.settings.resolve(card.as_deref())?;
+        resolution.apply_runtime(&lock(&handle.settings).runtime);
+        let input = resolution.input();
+        let (library, _) = self.settings.input_presets();
+        let mut resolved =
+            lotus_input::layout::resolve(&library, input.preset.as_deref(), &input.overrides);
+        resolved.problems.extend(input.problems);
+        Ok((resolved, input.profile))
+    }
+
+    /// Saved input presets and files that could not be read.
+    #[must_use]
+    pub fn input_presets(&self) -> (Vec<lotus_input::layout::Preset>, Vec<String>) {
+        self.settings.input_presets()
+    }
+
+    /// Export a builtin or saved input preset as JSON.
+    pub fn export_input_preset(&self, name: &str) -> io::Result<String> {
+        self.settings.export_preset(name)
+    }
+
+    /// Create, import, duplicate, rename or delete a saved input preset; returns its name.
+    pub fn change_input_preset(
+        &self,
+        change: crate::settings_store::PresetChange,
+    ) -> io::Result<String> {
+        self.require_control()?;
+        let result = self.settings.change_preset(change);
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
+        result
     }
 
     async fn set_runtime(
@@ -851,6 +917,23 @@ impl Supervisor {
                     io::ErrorKind::PermissionDenied,
                     format!("{key} is managed by the host configuration profile"),
                 ));
+            }
+            if is_input(&key) {
+                // Input layout: routed by the frontend, never sent to the worker.
+                if let Some(value) = &value {
+                    crate::settings_store::check(
+                        &key,
+                        value,
+                        lotus_settings::Scope::SecondaryRuntime,
+                        native.branch(),
+                    )?;
+                }
+                let mut settings = lock(&handle.settings);
+                match value {
+                    Some(value) => settings.runtime.insert(key, value),
+                    None => settings.runtime.remove(&key),
+                };
+                continue;
             }
             let applied = match &value {
                 Some(value) => {

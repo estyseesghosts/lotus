@@ -1,4 +1,4 @@
-//! Layered worker settings (lotus#51).
+//! Layered worker settings (lotus#51) and session input layouts (lotus#63).
 //!
 //! Resolution, lowest to highest:
 //! 1. compiled defaults: the registry default, which is the worker's own default
@@ -8,6 +8,10 @@
 //!    `sdmc/`, `nand/` and `sysdata/` but never inside them, so a secondary's guest copy
 //!    ([`crate::card_store::GUEST_DIRS`]) never carries it;
 //! 4. a secondary's runtime overrides, kept in memory by the supervisor only.
+//!
+//! Input-layout keys (`lotus.input.*`, [`Owner::Input`]) use the same files and layers but
+//! never reach a worker: [`Resolution::profile`] leaves them out and [`Resolution::input`]
+//! turns them into the session's layout.
 //!
 //! The host configuration `profile` is applied above all of these and cannot be edited here:
 //! it is managed by the host JSON or command line, and a saved entry it shadows is reported
@@ -27,6 +31,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use lotus_input::layout::{self, Preset};
 use lotus_protocol::debug::SettingValue;
 use lotus_settings::{Availability, Branch, Owner, Registry, Scope};
 use serde::Serialize;
@@ -100,18 +105,74 @@ pub struct Resolution {
 }
 
 impl Resolution {
-    /// Entries a worker must be sent: everything not at its compiled default source.
+    /// Entries a worker must be sent: worker settings not at their compiled default source.
     #[must_use]
     pub fn profile(&self) -> BTreeMap<String, SettingValue> {
         self.settings
             .iter()
             .filter(|(_, entry)| entry.source != Layer::Default)
+            .filter(|(key, _)| owner(key) == Some(Owner::Azahar))
             .filter_map(|(key, entry)| {
                 serde_json::from_value(entry.value.clone())
                     .ok()
                     .map(|value| (key.clone(), value))
             })
             .collect()
+    }
+
+    /// The input layout these settings select: preset name, per-action overrides with their
+    /// layer, stick and threshold profile. Values were validated when loaded.
+    #[must_use]
+    pub fn input(&self) -> InputSettings {
+        use lotus_input::layout::{Action, Layer as InputLayer, StickProfile};
+        let get = |key: &str| self.settings.get(key).map(|entry| &entry.value);
+        let float = |key: &str, default: f32| {
+            get(key)
+                .and_then(Value::as_f64)
+                .map_or(default, |v| v as f32)
+        };
+        let mut overrides = layout::Overrides::new();
+        let mut problems = Vec::new();
+        for action in Action::ALL {
+            let Some(entry) = self
+                .settings
+                .get(&format!("lotus.input.bind.{}", action.id()))
+            else {
+                continue;
+            };
+            let layer = match entry.source {
+                Layer::Default => continue,
+                Layer::Global => InputLayer::Global,
+                Layer::Card => InputLayer::Card,
+                Layer::Runtime => InputLayer::Session,
+                // The host profile accepts worker settings only (`validate_profile`).
+                Layer::Managed => InputLayer::Global,
+            };
+            if entry.value.is_null() {
+                continue;
+            }
+            let (list, mut more) = layout::parse_list(action, &entry.value);
+            problems.append(&mut more);
+            overrides.insert(action, (list, layer));
+        }
+        let stick = |name: &str| StickProfile {
+            deadzone: float(&format!("lotus.input.{name}.deadzone"), 0.0),
+            sensitivity: float(&format!("lotus.input.{name}.sensitivity"), 1.0),
+            invert_y: get(&format!("lotus.input.{name}.invert_y"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        InputSettings {
+            preset: get("lotus.input.preset")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            overrides,
+            profile: lotus_input::layout::Profile {
+                sticks: [stick("circle_pad"), stick("c_stick")],
+                threshold: float("lotus.input.threshold", 0.5),
+            },
+            problems,
+        }
     }
 
     /// Layer a secondary's runtime overrides over its snapshot. The supervisor refuses runtime
@@ -133,6 +194,19 @@ impl Resolution {
             entry.source = layer;
         }
     }
+}
+
+/// A session's input-layout settings, ready for `lotus_input::layout::resolve`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputSettings {
+    pub preset: Option<String>,
+    pub overrides: lotus_input::layout::Overrides,
+    pub profile: lotus_input::layout::Profile,
+    pub problems: Vec<lotus_input::layout::Problem>,
+}
+
+fn owner(key: &str) -> Option<Owner> {
+    Registry::builtin().get(key).map(|d| d.owner)
 }
 
 struct Loaded {
@@ -212,7 +286,7 @@ pub fn check(key: &str, value: &Value, scope: Scope, branch: Option<Branch>) -> 
             .or_else(|_| registry.validate(key, value, scope, Some(Branch::Experimental))),
     }
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-    if checked.owner != Owner::Azahar {
+    if !matches!(checked.owner, Owner::Azahar | Owner::Input) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -302,7 +376,7 @@ impl SettingsStore {
     pub fn resolve(&self, card: Option<&str>) -> io::Result<Resolution> {
         let mut resolution = Resolution::default();
         for descriptor in Registry::builtin().descriptors() {
-            let usable = descriptor.owner == Owner::Azahar
+            let usable = matches!(descriptor.owner, Owner::Azahar | Owner::Input)
                 && !matches!(descriptor.availability, Availability::Excluded { .. });
             if usable {
                 resolution.settings.insert(
@@ -362,6 +436,23 @@ impl SettingsStore {
     }
 
     fn write(&self, store: &Store, change: impl FnOnce(&mut Map<String, Value>)) -> io::Result<()> {
+        self.locked(|| {
+            let path = self.path(store);
+            let loaded = load(&path);
+            if let Some(reason) = loaded.unwritable {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("refusing to overwrite {reason}"),
+                ));
+            }
+            let mut values = loaded.values;
+            change(&mut values);
+            save(&path, values)
+        })
+    }
+
+    /// Run `f` holding the in-process mutex and `settings/settings.lock`.
+    fn locked<T>(&self, f: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
         let _guard = self
             .writing
             .lock()
@@ -374,18 +465,197 @@ impl SettingsStore {
             .write(true)
             .open(lock_dir.join("settings.lock"))?;
         lock.lock()?;
-        let path = self.path(store);
-        let loaded = load(&path);
-        if let Some(reason) = loaded.unwritable {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("refusing to overwrite {reason}"),
-            ));
-        }
-        let mut values = loaded.values;
-        change(&mut values);
-        save(&path, values)
+        f()
     }
+
+    /// Saved input presets (lotus#63), one exported preset per file.
+    #[must_use]
+    pub fn presets_dir(&self) -> PathBuf {
+        self.storage_root.join("settings").join("input-presets")
+    }
+
+    /// Saved presets by name, and files that could not be used (`file: reason`). A file's
+    /// name is the preset's name; a preset whose `name` differs is renamed to the file's.
+    #[must_use]
+    pub fn input_presets(&self) -> (Vec<Preset>, Vec<String>) {
+        let mut presets = Vec::new();
+        let mut problems = Vec::new();
+        let Ok(entries) = fs::read_dir(self.presets_dir()) else {
+            return (presets, problems);
+        };
+        let mut paths: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            let Some(stem) = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(|n| n.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            let file = path.display();
+            if preset_name(stem).is_err() || layout::is_builtin(stem) {
+                problems.push(format!("{file}: not a usable preset name"));
+                continue;
+            }
+            let loaded = fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|json| Preset::import(&json).map_err(|e| e.to_string()));
+            match loaded {
+                Ok((mut preset, dropped)) => {
+                    if !dropped.is_empty() {
+                        problems.push(format!("{file}: {dropped:?}"));
+                    }
+                    preset.name = stem.to_string();
+                    presets.push(preset);
+                }
+                Err(reason) => problems.push(format!("{file}: {reason}")),
+            }
+        }
+        (presets, problems)
+    }
+
+    /// Export a builtin or saved preset.
+    pub fn export_preset(&self, name: &str) -> io::Result<String> {
+        self.find_preset(name).map(|p| p.export())
+    }
+
+    fn find_preset(&self, name: &str) -> io::Result<Preset> {
+        layout::builtins()
+            .into_iter()
+            .chain(self.input_presets().0)
+            .find(|p| p.name == name)
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, format!("no input preset '{name}'"))
+            })
+    }
+
+    /// Apply one library change and return the name of the preset it created or changed.
+    /// Builtin presets cannot be replaced, renamed or deleted. Renaming or deleting a preset
+    /// leaves selections of the old name in place; they fall back to `default` and report it.
+    pub fn change_preset(&self, change: PresetChange) -> io::Result<String> {
+        self.locked(|| {
+            let dir = self.presets_dir();
+            let path = |name: &str| dir.join(format!("{name}.json"));
+            let writable = |name: &str| -> io::Result<()> {
+                preset_name(name)?;
+                if layout::is_builtin(name) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("'{name}' is a builtin preset"),
+                    ));
+                }
+                Ok(())
+            };
+            let write = |preset: &Preset, replace: bool| -> io::Result<String> {
+                writable(&preset.name)?;
+                let target = path(&preset.name);
+                if !replace && target.exists() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::AlreadyExists,
+                        format!("input preset '{}' exists", preset.name),
+                    ));
+                }
+                fs::create_dir_all(&dir)?;
+                let temporary = target.with_extension("json.tmp");
+                fs::write(&temporary, preset.export())?;
+                fs::rename(&temporary, &target)?;
+                Ok(preset.name.clone())
+            };
+            match change {
+                PresetChange::Save { preset, replace } => {
+                    let (preset, _) = Preset::import(&preset.export())
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+                    write(&preset, replace)
+                }
+                PresetChange::Import { json } => {
+                    let (mut preset, _) = Preset::import(&json)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+                    preset_name(&preset.name)?;
+                    preset.name = self.free_name(&preset.name)?;
+                    write(&preset, false)
+                }
+                PresetChange::Duplicate { from, to } => {
+                    let mut preset = self.find_preset(&from)?;
+                    preset.name = to;
+                    write(&preset, false)
+                }
+                PresetChange::Rename { from, to } => {
+                    writable(&from)?;
+                    let mut preset = self.find_preset(&from)?;
+                    preset.name = to;
+                    let name = write(&preset, false)?;
+                    fs::remove_file(path(&from))?;
+                    Ok(name)
+                }
+                PresetChange::Delete { name } => {
+                    writable(&name)?;
+                    self.find_preset(&name)?;
+                    fs::remove_file(path(&name))?;
+                    Ok(name)
+                }
+            }
+        })
+    }
+
+    /// `name`, or `name-2`, `name-3`, ... (shortened to fit) when taken.
+    fn free_name(&self, name: &str) -> io::Result<String> {
+        let taken: Vec<String> = layout::builtins()
+            .into_iter()
+            .chain(self.input_presets().0)
+            .map(|p| p.name)
+            .collect();
+        if !taken.iter().any(|t| t == name) {
+            return Ok(name.to_string());
+        }
+        for n in 2..1000 {
+            let suffix = format!("-{n}");
+            let base: String = name.chars().take(32 - suffix.len()).collect();
+            let candidate = format!("{base}{suffix}");
+            if !taken.contains(&candidate) {
+                return Ok(candidate);
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("no free name for input preset '{name}'"),
+        ))
+    }
+}
+
+/// Preset names are file names: card-name rules (`card_store::validate_name`).
+fn preset_name(name: &str) -> io::Result<()> {
+    crate::card_store::validate_name(name).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("input preset names are 1-32 of a-z, 0-9, '-', '_' and start with a letter or digit, not '{name}'"),
+        )
+    })
+}
+
+/// One change to the saved preset library.
+#[derive(Debug, Clone)]
+pub enum PresetChange {
+    /// Create, or with `replace` overwrite, a saved preset.
+    Save {
+        preset: Preset,
+        replace: bool,
+    },
+    /// An exported preset; a taken name gets a `-N` suffix.
+    Import {
+        json: String,
+    },
+    Duplicate {
+        from: String,
+        to: String,
+    },
+    Rename {
+        from: String,
+        to: String,
+    },
+    Delete {
+        name: String,
+    },
 }
 
 #[cfg(test)]
@@ -628,6 +898,171 @@ mod tests {
         let saved: Value =
             serde_json::from_slice(&fs::read(stores[0].path(&Store::Global)).unwrap()).unwrap();
         assert_eq!(saved["values"].as_object().unwrap().len(), keys.len());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn key(k: &str) -> Value {
+        json!([{"device": "keyboard", "key": k}])
+    }
+
+    #[test]
+    fn input_keys_layer_per_action_and_never_reach_a_worker_profile() {
+        use lotus_input::layout::{resolve, Action, Layer as InputLayer};
+        let root = root("input-layers");
+        let store = SettingsStore::new(&root, &BTreeMap::new()).unwrap();
+        let card_a = Store::Card("a".into());
+        store
+            .set(&Store::Global, "lotus.input.bind.a", Some(key("j")))
+            .unwrap();
+        store
+            .set(
+                &Store::Global,
+                "lotus.input.preset",
+                Some(json!("xbox-labels")),
+            )
+            .unwrap();
+        store
+            .set(&card_a, "lotus.input.bind.b", Some(key("k")))
+            .unwrap();
+        store
+            .set(
+                &card_a,
+                "lotus.input.circle_pad.deadzone",
+                Some(json!(0.25)),
+            )
+            .unwrap();
+        store
+            .set(&Store::Global, "cpu_clock_percentage", Some(json!(150)))
+            .unwrap();
+
+        let a = store.resolve(Some("a")).unwrap();
+        let profile = a.profile();
+        assert!(profile.contains_key("cpu_clock_percentage"));
+        assert!(
+            profile.keys().all(|k| !k.starts_with("lotus.")),
+            "{profile:?}"
+        );
+
+        let input = a.input();
+        assert_eq!(input.preset.as_deref(), Some("xbox-labels"));
+        assert_eq!(input.overrides[&Action::A].1, InputLayer::Global);
+        assert_eq!(input.overrides[&Action::B].1, InputLayer::Card);
+        assert_eq!(input.profile.sticks[0].deadzone, 0.25);
+        assert_eq!(input.profile.threshold, 0.5);
+        let resolved = resolve(&[], input.preset.as_deref(), &input.overrides);
+        assert_eq!(resolved.key_bits("j"), lotus_input::router::bits::A);
+        assert_eq!(resolved.key_bits("k"), lotus_input::router::bits::B);
+
+        // Card b inherits only the global layer; a secondary's runtime override sits on top
+        // and its removal restores the card's.
+        let b = store.resolve(Some("b")).unwrap().input();
+        assert!(!b.overrides.contains_key(&Action::B));
+        let mut runtime = store.resolve(Some("a")).unwrap();
+        runtime.apply_runtime(&BTreeMap::from([("lotus.input.bind.b".into(), key("l"))]));
+        assert_eq!(
+            runtime.input().overrides[&Action::B],
+            (
+                vec![lotus_input::layout::Binding::Keyboard { key: "l".into() }],
+                InputLayer::Session
+            )
+        );
+        assert_eq!(
+            store.resolve(Some("a")).unwrap().input().overrides[&Action::B].1,
+            InputLayer::Card
+        );
+
+        // A bad binding is refused at every target.
+        let bad = json!([{"device": "wheel"}]);
+        assert!(store.set(&card_a, "lotus.input.bind.x", Some(bad)).is_err());
+    }
+
+    #[test]
+    fn input_preset_library_round_trip() {
+        use lotus_input::layout::Preset;
+        let root = root("input-presets");
+        let store = SettingsStore::new(&root, &BTreeMap::new()).unwrap();
+        let mut mine = Preset::builtin();
+        mine.name = "mine".into();
+        mine.bindings.insert(lotus_input::layout::Action::A, vec![]);
+        let save = |preset: &Preset, replace| {
+            store.change_preset(PresetChange::Save {
+                preset: preset.clone(),
+                replace,
+            })
+        };
+        assert_eq!(save(&mine, false).unwrap(), "mine");
+        assert_eq!(
+            save(&mine, false).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        save(&mine, true).unwrap();
+        let mut builtin = Preset::builtin();
+        assert_eq!(
+            save(&builtin, true).unwrap_err().kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        builtin.name = "My Pad".into();
+        assert_eq!(
+            save(&builtin, false).unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+
+        // Import of a taken name gets a suffix; export/import keeps the bindings.
+        let exported = store.export_preset("mine").unwrap();
+        let imported = store
+            .change_preset(PresetChange::Import {
+                json: exported.clone(),
+            })
+            .unwrap();
+        assert_eq!(imported, "mine-2");
+        let json = store.export_preset("xbox-labels").unwrap();
+        assert_eq!(
+            store.change_preset(PresetChange::Import { json }).unwrap(),
+            "xbox-labels-2"
+        );
+        assert!(store
+            .change_preset(PresetChange::Import {
+                json: r#"{"version":9,"name":"x"}"#.into()
+            })
+            .is_err());
+
+        store
+            .change_preset(PresetChange::Duplicate {
+                from: "default".into(),
+                to: "copy".into(),
+            })
+            .unwrap();
+        store
+            .change_preset(PresetChange::Rename {
+                from: "copy".into(),
+                to: "renamed".into(),
+            })
+            .unwrap();
+        assert!(store
+            .change_preset(PresetChange::Rename {
+                from: "default".into(),
+                to: "x".into()
+            })
+            .is_err());
+        store
+            .change_preset(PresetChange::Delete {
+                name: "mine-2".into(),
+            })
+            .unwrap();
+        assert!(store
+            .change_preset(PresetChange::Delete {
+                name: "default".into()
+            })
+            .is_err());
+
+        // A stray file with a bad name or content is reported, not loaded.
+        fs::write(store.presets_dir().join("Bad Name.json"), "{}").unwrap();
+        fs::write(store.presets_dir().join("broken.json"), "{").unwrap();
+        let (presets, problems) = store.input_presets();
+        let names: Vec<&str> = presets.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["mine", "renamed", "xbox-labels-2"]);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert_eq!(presets[0].bindings[&lotus_input::layout::Action::A], vec![]);
         let _ = fs::remove_dir_all(&root);
     }
 }
