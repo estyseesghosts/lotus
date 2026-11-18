@@ -9,6 +9,7 @@
 //! A timed-out exchange is never abandoned mid-reply: dropping it would leave the reply on the
 //! pipe for the next request. The worker's own deadline ends the connection instead.
 use std::collections::VecDeque;
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -329,6 +330,9 @@ pub(super) async fn deliver_input(handle: Arc<SessionHandle>) {
                 Err(error) => {
                     mailbox.sent = None;
                     telemetry.input.failed += 1;
+                    if error.kind() == io::ErrorKind::PermissionDenied {
+                        telemetry.input.denied += 1;
+                    }
                     telemetry.last_error = format!("input: {error}");
                 }
             }

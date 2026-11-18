@@ -704,7 +704,13 @@ impl NativeSession {
             status, mut data, ..
         } = reply;
         if status != Status::Ok {
-            return Err(io::Error::other(format!("{method:?}: {status:?}: {data}")));
+            // Keep a refusal distinguishable (owner, lease) from other failures (lotus#66).
+            let kind = if status == Status::PermissionDenied {
+                io::ErrorKind::PermissionDenied
+            } else {
+                io::ErrorKind::Other
+            };
+            return Err(io::Error::new(kind, format!("{method:?}: {status:?}: {data}")));
         }
         if data.is_object() {
             data["profile_hash"] = self.profile_hash.clone().into();

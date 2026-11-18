@@ -12,7 +12,8 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
 - One transactional window workspace model shared by every window (#67).
 - Host-owned gilrs controller service (#59); keyboard, pointer and
   controllers routed per session (#61); controller pairing policy, identify
-  and reconnect (#62).
+  and reconnect (#62). Per-controller routing metrics, session ownership
+  denials, and a two-pad soak test with a stalled sibling (#66).
 - Circle Pad and C-stick carried through the fast input path (`analog_input`
   feature, #60).
 - Scenario memory, event and coverage assertions execute (#94).

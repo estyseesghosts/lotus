@@ -654,6 +654,94 @@ The sidebar list is **verified compiled** only: no screenshot run.
 **Unverified** with physical pads: two real controllers on two sessions, and
 hotplug.
 
+## Controller qualification (#66)
+
+- **Per-device metrics**: `frontend_metrics.controllers.routing.devices` lists
+  each connection. Disconnected ones stay listed, but only the last 8.
+  - Event counts:
+    - `received`: events from the device service.
+    - `submitted`: changed the session's composed state.
+    - `unchanged`: a duplicate edge, a stick in the dead zone, or a button
+      another source already holds.
+    - `unrouted`: a button or axis event with no session assigned.
+    - `refused`: the supervisor refused the submission.
+  - Latency `latency_p50_ms`/`p95`/`max` (last 256 submissions): from the
+    backend event timestamp to the supervisor accepting the state into the
+    mailbox.
+  - `busy_ms`: router-thread time in `InputRouting::event`. This is wall time
+    and includes lock waits. It does not include gilrs polling on the
+    `lotus-input` thread.
+  - `last_event_age_ms`: time since the device's last event.
+- **Session metrics**: mailbox-to-worker delivery is the session's
+  `telemetry.input` (#20/#48): `delivered`, `coalesced`, `edges_dropped`,
+  latency. `denied` counts deliveries the worker refused because a scenario
+  owns it; these are also counted in `failed`.
+  - `native_session::finish` now maps the worker's `permission_denied` reply to
+    `io::ErrorKind::PermissionDenied`. It was `Other`, which made ownership
+    refusals indistinguishable from other failures.
+- **Replay**: controllers reach a worker only as the normalized `InputState`
+  with owner `live` (#60/#61). Scenario and movie input carries its own owner,
+  and the worker refuses `live` input while that owner holds it (#48). Replays
+  therefore do not see gilrs timing or device enumeration. A worker without
+  `analog_input` gets the state without sticks (#60).
+
+Evidence (**verified compiled**, mock workers, scripted backend):
+`two_pads_soak_without_crossover_or_stuck_input` in
+`crates/desktop/tests/input_routing.rs`. It runs two `lotus-mock-native`
+sessions. Pad 1 drives A with South/East and a left-leaning stick, alongside a
+held keyboard L. Pad 2 drives B with North/West and a right-leaning stick. Every
+1 ms step toggles a button and moves the stick through a diagonal with drift.
+The phases are pad 1 alone, then both pads, then both pads while A's worker
+stalls for 2 s. `LOTUS_INPUT_SOAK_SECS` sets the length (default 6).
+
+The test asserts:
+- Neither worker's accepted input ever contains the other pad's bits or stick
+  sign.
+- B accepts more than 100 states during A's stall.
+- Both workers end neutral.
+- No device events are dropped, and there are no refusals or unrouted events.
+- Each device's routing p95 is under 25 ms.
+- The second pad keeps pad 1's p95 within 3× + 2 ms of its baseline, and the
+  per-event router cost within 3× + 20 µs.
+- B's `edges_dropped` is 0, and `denied` is 0 on both sessions.
+
+The 60 s run on Windows 11 (debug build, 2026-11-18) gave:
+
+| | one pad | two pads |
+|---|---|---|
+| routing p95 | 0.135 ms | 0.125 / 0.160 ms |
+| router busy | 4.31% (22.5 µs/event) | 5.66% (14.0 µs/event) |
+
+Other results from the same run:
+- About 200k device events, 0 dropped.
+- B's delivery p95 was 1.8 ms and its max 9.7 ms.
+- A's delivery max was 1.76 s: the stall.
+- A dropped 492 edges during the stall, where the mailbox keeps only the newest
+  transitions (#48). B dropped 0.
+
+The other #66 cases are the #61/#62 tests above: reassignment, identical models,
+disconnect, scenario takeover, keyboard focus loss and keyboard/pad overlap.
+`crates/session/tests/supervision.rs` covers reset cancelling pending input and
+refusal by older workers.
+
+Not covered yet:
+- Mapping changes during play wait for profiles (#63) and the Settings controls
+  (#64).
+- CPU for gilrs polling is unmeasured: the scripted backend replaces it.
+
+Hardware matrix (all **unverified**; no controller is attached to the build
+machine):
+
+| Platform | Backend | Two pads, two sessions | Focus: main / Settings / other app / minimized | Reconnect |
+|---|---|---|---|---|
+| Windows 11 | gilrs WGI (default) | unverified | unverified; WGI needs a focused window of this process (gilrs README) | unverified |
+| Windows 11 | gilrs XInput (`--features xinput`) | unverified | unverified | unverified |
+| macOS | gilrs IOKit | unbuilt | unbuilt | unbuilt |
+
+To qualify a pad, record its model, USB or Bluetooth connection and the OS
+build. Then follow the user guide's pairing steps
+([37](37-user-guide.md#game-controllers)) and read `routing.devices`.
+
 ## Settings registry (#50)
 
 `lotus-settings` describes every setting a person or client can see: the 173

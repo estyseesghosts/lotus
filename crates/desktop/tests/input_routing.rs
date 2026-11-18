@@ -391,3 +391,216 @@ fn controller_pairing_policy_against_running_sessions() {
     runtime.block_on(host.close());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// Latency p95 of one controller from `InputRouting::device_metrics`.
+fn routing_p95(routing: &InputRouting, device: DeviceId) -> f64 {
+    routing
+        .device_metrics()
+        .into_iter()
+        .find(|m| m.device == device)
+        .map_or(f64::NAN, |m| m.latency_p95_ms)
+}
+
+/// Router busy time and events received, summed over all controllers.
+fn routing_load(routing: &InputRouting) -> (f64, u64) {
+    routing
+        .device_metrics()
+        .iter()
+        .fold((0.0, 0), |(busy, n), m| (busy + m.busy_ms, n + m.received))
+}
+
+/// Per-phase router cost: busy share of wall time (percent) and µs per event.
+fn phase_cost(before: (f64, u64), after: (f64, u64), wall: Duration) -> (f64, f64) {
+    let (busy, events) = (after.0 - before.0, after.1 - before.1);
+    (
+        busy / (wall.as_secs_f64() * 1e3) * 100.0,
+        busy * 1e3 / events.max(1) as f64,
+    )
+}
+
+/// lotus#66: two pads driving two sessions with rapid independent buttons, diagonals and
+/// stick drift, with a keyboard overlapping on A. Phases: pad 1 alone (baseline), both pads,
+/// both pads while worker A stalls. Checks: no crossover in either worker's accepted input,
+/// B keeps receiving during A's stall, nothing stuck after release, no refusals, no dropped
+/// device events, and routing latency thresholds. `LOTUS_INPUT_SOAK_SECS` sets the length
+/// (default and minimum 6; the acceptance run uses 60).
+#[test]
+fn two_pads_soak_without_crossover_or_stuck_input() {
+    let seconds: u64 = std::env::var("LOTUS_INPUT_SOAK_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(6)
+        .max(6);
+    let base = std::env::temp_dir().join(format!("lotus-soak-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let host = Arc::new(Supervisor::new(config).expect("host"));
+    let ids: Vec<String> = (0..2)
+        .map(|_| {
+            runtime.block_on(async {
+                let info = host
+                    .create(
+                        SessionKind::Secondary { parent: None },
+                        Some("demo"),
+                        Actor::Host,
+                    )
+                    .await
+                    .expect("create");
+                host.run(&info.id, Actor::Host).await.expect("run");
+                info.id
+            })
+        })
+        .collect();
+    let (a, b) = (ids[0].as_str(), ids[1].as_str());
+    let store = base.join("store").canonicalize().expect("store");
+    let root = |id: &str| store.join("scratch").join(id);
+
+    let routing = InputRouting::new(host.clone());
+    let (backend, script) = Synthetic::new();
+    let (service, events) = ControllerService::start(move || Ok(backend)).expect("service");
+    let service = Arc::new(service);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
+        std::thread::spawn(move || routing.run(&service, &events, &shutdown))
+    };
+    // Identical models, so only the connection tells them apart.
+    pad(&script, 0);
+    pad(&script, 1);
+    until("two pads", || routing.controllers().pads.len() == 2);
+    let devices: Vec<DeviceId> = routing.controllers().pads.iter().map(|p| p.id).collect();
+    let (one, two) = (devices[0], devices[1]);
+    routing.assign(one, Some(a), false).expect("assign");
+    routing.assign(two, Some(b), false).expect("assign");
+    routing.keyboard(Some(a), bits::L);
+
+    // Pad 1 owns B/A (South/East) and a left-pointing stick on A; pad 2 owns X/Y
+    // (North/West) and a right-pointing stick on B. Each step toggles a button and moves
+    // the stick through a diagonal with drift, so most events change the composed state.
+    let step = |handle: usize, n: u64| {
+        let (buttons, sign) = if handle == 0 {
+            ([Button::South, Button::East], -1.0)
+        } else {
+            ([Button::North, Button::West], 1.0)
+        };
+        script.button(handle, buttons[(n % 2) as usize], (n / 2).is_multiple_of(2));
+        let drift = (n % 17) as f32 / 40.0;
+        script.axis(handle, Axis::LeftX, sign * (0.5 + drift));
+        script.axis(handle, Axis::LeftY, if n.is_multiple_of(3) { 0.6 } else { -0.6 });
+    };
+    let run = |pads: &[usize], length: Duration, n: &mut u64| {
+        let started = Instant::now();
+        while started.elapsed() < length {
+            for &handle in pads {
+                step(handle, *n);
+            }
+            *n += 1;
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    let phase = Duration::from_secs(seconds / 3);
+    let mut n = 0;
+    let load = routing_load(&routing);
+    run(&[0], phase, &mut n);
+    let baseline = routing_p95(&routing, one);
+    let load_one = routing_load(&routing);
+    run(&[0, 1], phase, &mut n);
+    let two_pads = (routing_p95(&routing, one), routing_p95(&routing, two));
+    let load_two = routing_load(&routing);
+    let (cost_one, cost_two) = (
+        phase_cost(load, load_one, phase),
+        phase_cost(load_one, load_two, phase),
+    );
+
+    // A stalls for 2 s; B's worker keeps accepting pad 2's input meanwhile.
+    std::fs::write(root(a).join("mock-stall-ms"), "2000").expect("stall");
+    std::thread::sleep(Duration::from_millis(100));
+    let b_before = inputs(&root(b)).len();
+    run(&[0, 1], Duration::from_millis(1500), &mut n);
+    let b_during = inputs(&root(b)).len();
+    assert!(
+        b_during > b_before + 100,
+        "B advanced {b_before} -> {b_during} during A's stall"
+    );
+    run(
+        &[0, 1],
+        phase.saturating_sub(Duration::from_millis(1600)),
+        &mut n,
+    );
+
+    // Release everything; both workers must end neutral.
+    for handle in [0, 1] {
+        for button in [Button::South, Button::East, Button::North, Button::West] {
+            script.button(handle, button, false);
+        }
+        script.axis(handle, Axis::LeftX, 0.0);
+        script.axis(handle, Axis::LeftY, 0.0);
+    }
+    routing.keyboard(None, 0);
+    let neutral = (0, serde_json::json!([0.0, 0.0]));
+    until("A neutral", || inputs(&root(a)).last() == Some(&neutral));
+    until("B neutral", || inputs(&root(b)).last() == Some(&neutral));
+
+    // No crossover: A only ever saw pad 1 and the keyboard, B only pad 2.
+    let a_bits = u64::from(bits::A | bits::B | bits::L);
+    let b_bits = u64::from(bits::X | bits::Y);
+    let x = |c: &serde_json::Value| c[0].as_f64().unwrap_or(0.0);
+    let (seen_a, seen_b) = (inputs(&root(a)), inputs(&root(b)));
+    for (buttons, stick) in &seen_a {
+        assert_eq!(buttons & !a_bits, 0, "B's buttons on A: {buttons:#x}");
+        assert!(x(stick) <= 0.0, "B's stick on A: {stick}");
+    }
+    for (buttons, stick) in &seen_b {
+        assert_eq!(buttons & !b_bits, 0, "A's buttons on B: {buttons:#x}");
+        assert!(x(stick) >= 0.0, "A's stick on B: {stick}");
+    }
+
+    let metrics = routing.device_metrics();
+    let summary = |id: &str| host.summary(id).expect("summary").telemetry.input;
+    let (input_a, input_b) = (summary(a), summary(b));
+    eprintln!(
+        "soak {seconds}s, {n} steps, worker inputs A {} B {}: routing p95 baseline {baseline:.3} ms, two pads {:.3}/{:.3} ms",
+        seen_a.len(),
+        seen_b.len(),
+        two_pads.0,
+        two_pads.1
+    );
+    eprintln!(
+        "  router busy: one pad {:.2}% ({:.1} us/event), two pads {:.2}% ({:.1} us/event)",
+        cost_one.0, cost_one.1, cost_two.0, cost_two.1
+    );
+    for m in &metrics {
+        eprintln!("  {m:?}");
+    }
+    eprintln!("  A input {input_a:?}\n  B input {input_b:?}");
+    eprintln!("  service {:?}", service.diagnostics());
+    for m in &metrics {
+        assert_eq!((m.refused, m.unrouted), (0, 0), "{m:?}");
+        assert!(m.submitted > 0 && m.latency_p95_ms < 25.0, "{m:?}");
+    }
+    assert!(
+        two_pads.0 <= baseline * 3.0 + 2.0,
+        "second pad raised pad 1's p95 from {baseline} to {}",
+        two_pads.0
+    );
+    // A second pad doubles the events; each one must not get much dearer to route.
+    assert!(
+        cost_two.1 <= cost_one.1 * 3.0 + 20.0,
+        "per-event routing cost rose from {:.1} to {:.1} us",
+        cost_one.1,
+        cost_two.1
+    );
+    assert_eq!(service.diagnostics().dropped, 0, "device events dropped");
+    assert_eq!(input_b.edges_dropped, 0, "B lost presses");
+    assert_eq!((input_a.denied, input_b.denied), (0, 0));
+
+    shutdown.store(true, std::sync::atomic::Ordering::Release);
+    thread.join().expect("router thread");
+    runtime.block_on(host.close());
+    let _ = std::fs::remove_dir_all(&base);
+}

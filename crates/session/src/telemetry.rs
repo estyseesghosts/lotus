@@ -294,6 +294,9 @@ pub struct InputMetrics {
     /// delivered state's owner.
     pub owner_handoffs: u64,
     pub failed: u64,
+    /// Failed deliveries refused for ownership (a `scenario` owner on the worker or another
+    /// client's debug lease); included in `failed` (lotus#66).
+    pub denied: u64,
     pub pending: usize,
     /// Queue age of the latest delivered state when its exchange started.
     pub queue_age_ms: f64,

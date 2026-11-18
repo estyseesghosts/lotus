@@ -243,6 +243,12 @@ impl Router {
         self.metrics
     }
 
+    /// Session a connected controller is assigned to, if any.
+    #[must_use]
+    pub fn assigned(&self, device: DeviceId) -> Option<&str> {
+        self.pads.get(&device)?.session.as_deref()
+    }
+
     /// Controller connection -> assigned session.
     #[must_use]
     pub fn assignments(&self) -> BTreeMap<DeviceId, Option<String>> {

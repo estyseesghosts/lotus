@@ -5,14 +5,14 @@
 //! step with the device service and the session list. The window reports keyboard and pointer
 //! changes with the session they target; a background thread applies controller events.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant, SystemTime};
 
 use lotus_input::router::{GuestState, PadStatus, Remembered, Router};
-use lotus_input::{ControllerService, DeviceId, Event};
+use lotus_input::{ControllerService, DeviceId, Event, EventKind};
 use lotus_session::native_session::InputState;
 use lotus_session::supervisor::Supervisor;
 use lotus_session::telemetry::Actor;
@@ -33,6 +33,90 @@ pub struct RoutingMetrics {
     pub analog_dropped: u64,
 }
 
+/// Latency samples kept per controller for the percentiles.
+const LATENCY_WINDOW: usize = 256;
+/// Disconnected controllers whose metrics stay listed; connection IDs are never reused, so
+/// keeping all of them would grow without bound across hotplugs.
+const RETIRED: usize = 8;
+
+/// Per-controller routing counters (lotus#66); see [`DeviceMetrics`].
+#[derive(Debug, Clone, Default)]
+struct DeviceCounters {
+    session: Option<String>,
+    connected: bool,
+    received: u64,
+    submitted: u64,
+    unchanged: u64,
+    unrouted: u64,
+    refused: u64,
+    last: Option<Instant>,
+    latencies: VecDeque<f32>,
+    latency_max_ms: f32,
+    busy: Duration,
+}
+
+/// One controller in `frontend_metrics.controllers.routing.devices` (lotus#66). Latency is
+/// from the backend's event timestamp to the supervisor accepting the composed state into
+/// the session's mailbox; mailbox-to-worker delivery is the session's own `input` telemetry.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DeviceMetrics {
+    pub device: DeviceId,
+    /// Assigned session when the last event arrived.
+    pub session: Option<String>,
+    pub connected: bool,
+    /// Events from the device service.
+    pub received: u64,
+    /// Events that changed their session's composed state and were submitted.
+    pub submitted: u64,
+    /// Button and axis events that left the composed state as it was (a duplicate edge, a stick inside the
+    /// dead zone, a button another source already holds), so nothing was sent.
+    pub unchanged: u64,
+    /// Button and axis events while the controller had no session; they reach no guest.
+    pub unrouted: u64,
+    /// Submissions for this controller's session that the supervisor refused.
+    pub refused: u64,
+    pub last_event_age_ms: Option<f64>,
+    pub latency_p50_ms: f64,
+    pub latency_p95_ms: f64,
+    pub latency_max_ms: f64,
+    /// Router-thread time spent handling this device's events: routing, composition and
+    /// the mailbox handoff. Wall time inside `event`, so it includes waits on the router
+    /// and supervisor locks; device polling on the `lotus-input` thread is not included.
+    pub busy_ms: f64,
+}
+
+fn percentile(sorted: &[f32], percent: usize) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    // Nearest rank, as `InputMetrics` in lotus-session.
+    f64::from(sorted[(sorted.len() * percent).div_ceil(100).max(1) - 1])
+}
+
+impl DeviceCounters {
+    fn report(&self, device: DeviceId, now: Instant) -> DeviceMetrics {
+        let mut sorted: Vec<f32> = self.latencies.iter().copied().collect();
+        sorted.sort_by(f32::total_cmp);
+        DeviceMetrics {
+            device,
+            session: self.session.clone(),
+            connected: self.connected,
+            received: self.received,
+            submitted: self.submitted,
+            unchanged: self.unchanged,
+            unrouted: self.unrouted,
+            refused: self.refused,
+            last_event_age_ms: self
+                .last
+                .map(|last| now.duration_since(last).as_secs_f64() * 1e3),
+            latency_p50_ms: percentile(&sorted, 50),
+            latency_p95_ms: percentile(&sorted, 95),
+            latency_max_ms: f64::from(self.latency_max_ms),
+            busy_ms: self.busy.as_secs_f64() * 1e3,
+        }
+    }
+}
+
 /// What the window's controller list shows.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Controllers {
@@ -48,6 +132,7 @@ pub struct InputRouting {
     router: Mutex<Router>,
     host: Arc<Supervisor>,
     metrics: Mutex<RoutingMetrics>,
+    devices: Mutex<BTreeMap<DeviceId, DeviceCounters>>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -73,6 +158,7 @@ impl InputRouting {
             router: Mutex::new(Router::default()),
             host,
             metrics: Mutex::default(),
+            devices: Mutex::default(),
         })
     }
 
@@ -85,7 +171,22 @@ impl InputRouting {
         self.submit(&mut router, changed);
     }
 
-    fn submit(&self, router: &mut Router, changed: Vec<(String, GuestState)>) {
+    /// Per-controller routing metrics, connected controllers first.
+    #[must_use]
+    pub fn device_metrics(&self) -> Vec<DeviceMetrics> {
+        let now = Instant::now();
+        let devices = lock(&self.devices);
+        let mut list: Vec<DeviceMetrics> = devices
+            .iter()
+            .map(|(id, counters)| counters.report(*id, now))
+            .collect();
+        list.sort_by_key(|m| (!m.connected, m.device));
+        list
+    }
+
+    /// Returns the sessions whose state the supervisor refused.
+    fn submit(&self, router: &mut Router, changed: Vec<(String, GuestState)>) -> Vec<String> {
+        let mut refused = Vec::new();
         for (session, state) in changed {
             let mut input = input_state(state);
             let mut result = self
@@ -113,8 +214,10 @@ impl InputRouting {
                 } else {
                     router.remove_session(&session);
                 }
+                refused.push(session);
             }
         }
+        refused
     }
 
     /// Keyboard buttons (3DS bits) for the session keyboard input targets, if any.
@@ -169,7 +272,66 @@ impl InputRouting {
     }
 
     pub fn event(&self, event: &Event) {
-        self.route(|router| router.event(event));
+        let started = Instant::now();
+        let mut router = lock(&self.router);
+        let session = router.assigned(event.device).map(str::to_owned);
+        let changed = router.event(event);
+        let submitted = session
+            .as_ref()
+            .is_some_and(|s| changed.iter().any(|(changed, _)| changed == s));
+        let refused = self.submit(&mut router, changed);
+        drop(router);
+        // Taken after the supervisor accepted the state, so the sample covers the queue from
+        // the device service, routing, composition and the mailbox handoff.
+        let latency = SystemTime::now()
+            .duration_since(event.time)
+            .unwrap_or_default();
+        let mut devices = lock(&self.devices);
+        let counters = devices.entry(event.device).or_default();
+        counters.session.clone_from(&session);
+        counters.received += 1;
+        let now = Instant::now();
+        counters.busy += now.duration_since(started);
+        counters.last = Some(now);
+        // Connection changes are not guest input, so they never count as unrouted or
+        // unchanged; a disconnect that releases held buttons still counts as submitted.
+        let input = match &event.kind {
+            EventKind::Connected { .. } => {
+                counters.connected = true;
+                false
+            }
+            EventKind::Disconnected => {
+                counters.connected = false;
+                false
+            }
+            EventKind::Button { .. } | EventKind::Axis { .. } => true,
+        };
+        if session.as_ref().is_some_and(|s| refused.contains(s)) {
+            counters.refused += 1;
+        } else if submitted {
+            counters.submitted += 1;
+            let ms = (latency.as_secs_f64() * 1e3) as f32;
+            counters.latency_max_ms = counters.latency_max_ms.max(ms);
+            if counters.latencies.len() == LATENCY_WINDOW {
+                counters.latencies.pop_front();
+            }
+            counters.latencies.push_back(ms);
+        } else if input && session.is_none() {
+            counters.unrouted += 1;
+        } else if input {
+            counters.unchanged += 1;
+        }
+        if !counters.connected {
+            let retired: Vec<DeviceId> = devices
+                .iter()
+                .filter(|(_, c)| !c.connected)
+                .map(|(id, _)| *id)
+                .collect();
+            // IDs only grow, so the first ones are the oldest connections.
+            for id in retired.iter().take(retired.len().saturating_sub(RETIRED)) {
+                devices.remove(id);
+            }
+        }
     }
 
     /// Repair lost device events and drop sessions that ended.
@@ -219,6 +381,7 @@ impl InputRouting {
                 "count": controllers.identifications,
             },
             "router": router.metrics(),
+            "devices": self.device_metrics(),
             "submission": *lock(&self.metrics),
         })
     }
