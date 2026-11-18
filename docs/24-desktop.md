@@ -16,7 +16,8 @@ deadlines; plain `sleep` measured 46.6 ms on Windows) it drains commands and
 publishes summaries, catalog and selection. Three tasks do the worker
 requests, each one at a time:
 
-- **Preview** of the selected session only.
+- **Preview** of every session the workspace shows: the selected one, or both
+  tiles of a split (lotus#65).
 - **Inspector**, only while the inspector is open: registers when the paused
   frame changes; live panels every 500 ms; settings and memory map
   (`Panel::live` false) when the view or paused frame changes.
@@ -59,9 +60,11 @@ published by at most 2 previews, and renders paused only while minimized. The
 Alt+Tab freeze in lotus#74 did not reproduce here; its cause is **not
 established**.
 
-Only the selected session is previewed; the latest screen
-pair replaces the previous one, and replaced images are dropped from GPUI's
-sprite atlas. Previews come from the worker's shared-memory ring and fall back to
+Only sessions the workspace shows are previewed. `Update::previews` holds the
+newest screen pair per shown session; a session that leaves the view is removed
+from it, and a late result for it is dropped (`stale_dropped`). In the window the
+latest pair replaces that tile's previous one, and replaced images are dropped
+from GPUI's sprite atlas. Previews come from the worker's shared-memory ring and fall back to
 `capture` on workers without it ([21](21-native-control.md#ownership-and-budgets)).
 There is no frame history. With `--mcp` the same runtime serves
 MCP on stdio over the same supervisor.

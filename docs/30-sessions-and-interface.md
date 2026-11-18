@@ -303,6 +303,36 @@ requests leave the state unchanged, removal fallback) and
 `workspace_writes_from_mcp_need_control` against `lotus-mock-native` workers
 (**verified compiled**).
 
+### Two visible sessions (#65)
+
+A split shows both sessions at once, each tile with its own preview, images,
+touch mapping and header (name, paired controller names, `Keyboard` on the
+focused tile, screen arrangement toggle, return-to-sidebar; the first tile also
+cycles the axis auto → left/right → top/bottom).
+
+- Entering a split: the tile icon on a hidden, running, loaded session's sidebar
+  row tiles it beside the single view, or replaces the unfocused tile of a split.
+  Return-to-sidebar (`untile {keep}`) also selects the kept session, because
+  outside a split the window shows the selection. No worker starts or stops.
+- Previews: the controller requests one per shown session per tick, each with its
+  own in-flight slot (#45), so a stalled tile never delays the other.
+- Input: keyboard goes to the focused viewport (a click on a tile sends
+  `focus_viewport`); what it held is released when it moves. Pointer touch goes to
+  the tile it started on. Controllers follow their assignment (#62), never focus,
+  tile order or selection. Selecting a session in the sidebar changes the
+  inspector, audio focus and gauges, never the tiles or keyboard.
+- Geometry: `split_plan` in `lotus_window.rs`. An explicit axis or screen
+  arrangement is kept; `auto` takes whichever gives the smaller tile the larger
+  screen scale. No hysteresis, gauge-edge placement or DPI handling: those are
+  #69 and #70. Gauges stay under the stage for the selected session.
+
+Evidence: `responsive_controller.rs`
+`tiled_sessions_preview_independently_while_one_stalls` (mock workers): with A's
+capture stalled 5 s, B's preview advances while A's does not, selecting A leaves
+the split intact, and after `untile` A's late frame is dropped with both workers
+still running. `split_auto_picks_the_axis_with_larger_screens_and_keeps_explicit_choices`
+covers the geometry (**verified compiled**).
+
 ## Live input state (#60)
 
 `native_session::InputState` is the one fast input state for the desktop,

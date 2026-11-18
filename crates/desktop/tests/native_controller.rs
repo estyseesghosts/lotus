@@ -68,7 +68,7 @@ fn controller_runs_primary_and_secondary_sessions_shared_with_mcp() {
     wait(&controller, "primary", |state| state.sessions.len() == 1);
     let primary = selected(&controller);
     wait(&controller, "primary preview", |state| {
-        state.preview.as_ref().is_some_and(|p| p.session == primary)
+        state.previews.contains_key(&primary)
             && session(state, &primary).is_some_and(|s| s.telemetry.fps > 0.0)
     });
     std::fs::create_dir_all(card.join("sdmc")).expect("card sdmc");

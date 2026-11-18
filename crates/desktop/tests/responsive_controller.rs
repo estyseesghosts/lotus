@@ -184,10 +184,7 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
         .send(Command::Select(a.clone()))
         .expect("select a");
     wait(&controller, "a live preview of A", |update| {
-        update
-            .preview
-            .as_ref()
-            .is_some_and(|preview| preview.session == a)
+        update.previews.contains_key(&a)
     });
     // A's next capture stalls 5 s; its preview task holds the exchange.
     std::fs::write(root(&base, &a).join("mock-stall-ms"), "5000 capture").expect("stall");
@@ -215,10 +212,7 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
         .send(Command::Select(b.clone()))
         .expect("select b");
     wait(&controller, "B's first preview", |update| {
-        update
-            .preview
-            .as_ref()
-            .is_some_and(|preview| preview.session == b)
+        update.previews.contains_key(&b)
     });
     let preview_latency = started.elapsed();
     wait(&controller, "B's first inspection", |update| {
@@ -264,9 +258,10 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
     {
         let update = controller.latest.lock().expect("snapshot");
         assert_eq!(update.selected, b);
-        if let Some(preview) = &update.preview {
-            assert_eq!(preview.session, b, "A's late preview shown as B");
-        }
+        assert!(
+            !update.previews.contains_key(&a),
+            "A's late preview shown after A left the view"
+        );
         if let Some((session, _, _)) = &update.inspection {
             assert_eq!(session, &b);
         }
@@ -284,6 +279,130 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
             .all(|op| op["age_ms"].as_f64().unwrap_or(0.0) < 2000.0),
         "leaked operation: {metrics}"
     );
+    drop(controller);
+    let _ = std::fs::remove_dir_all(base);
+}
+
+/// lotus#65: both tiles of a split get their own previews. With A's capture stalled 5 s,
+/// B's preview keeps advancing; selecting A does not collapse the split; untiling A
+/// leaves both workers running and A's late preview is never published.
+#[test]
+fn tiled_sessions_preview_independently_while_one_stalls() {
+    use lotus_session::workspace::{Layout, Operation};
+    let base = std::env::temp_dir().join(format!("lotus-tiles-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let controller = DesktopController::start(config, McpMode::Off).expect("controller");
+    for _ in 0..2 {
+        controller
+            .commands
+            .send(Command::Create {
+                kind: SessionKind::Secondary { parent: None },
+                asset: Some("demo".into()),
+            })
+            .expect("create");
+    }
+    wait(&controller, "two playing sessions", |update| {
+        update.sessions.len() == 2 && update.sessions.iter().all(|s| s.telemetry.playing)
+    });
+    let ids: Vec<String> = {
+        let update = controller.latest.lock().expect("snapshot");
+        update.sessions.iter().map(|s| s.info.id.clone()).collect()
+    };
+    let (a, b) = (ids[0].clone(), ids[1].clone());
+    controller
+        .commands
+        .send(Command::Workspace(Operation::Tile {
+            first: a.clone(),
+            second: b.clone(),
+            axis: None,
+            ratio: None,
+            screens: None,
+        }))
+        .expect("tile");
+    wait(&controller, "a split of A and B", |update| {
+        update.workspace.layout.visible() == [a.as_str(), b.as_str()]
+    });
+    wait(&controller, "previews of both tiles", |update| {
+        update.previews.contains_key(&a) && update.previews.contains_key(&b)
+    });
+
+    std::fs::write(root(&base, &a).join("mock-stall-ms"), "5000 capture").expect("stall");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !controller.host().frontend_metrics()["pending"]
+        .as_array()
+        .is_some_and(|pending| {
+            pending.iter().any(|op| {
+                op["kind"] == "preview"
+                    && op["session"] == a.as_str()
+                    && op["age_ms"].as_f64().unwrap_or(0.0) > 200.0
+            })
+        })
+    {
+        assert!(Instant::now() < deadline, "A's preview never stalled");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let sequence = |id: &str| controller.latest.lock().expect("snapshot").previews[id].sequence;
+    let (a_before, b_before) = (sequence(&a), sequence(&b));
+    controller
+        .commands
+        .send(Command::Select(a.clone()))
+        .expect("select a");
+    std::thread::sleep(Duration::from_millis(1000));
+    let (a_after, b_after) = (sequence(&a), sequence(&b));
+    eprintln!(
+        "B previews during A's stall: {}; {}",
+        b_after - b_before,
+        controller.host().frontend_metrics()
+    );
+    assert_eq!(
+        a_after, a_before,
+        "A published while its capture was stalled"
+    );
+    // About 30 per second at the 33 ms tick; one stalled tile would give none if it blocked.
+    assert!(
+        b_after - b_before >= 5,
+        "B advanced {} times",
+        b_after - b_before
+    );
+    {
+        let update = controller.latest.lock().expect("snapshot");
+        assert_eq!(update.selected, a);
+        assert!(
+            matches!(update.workspace.layout, Layout::Split { .. }),
+            "selection collapsed the split"
+        );
+    }
+
+    controller
+        .commands
+        .send(Command::Workspace(Operation::Untile {
+            keep: Some(b.clone()),
+        }))
+        .expect("untile");
+    controller
+        .commands
+        .send(Command::Select(b.clone()))
+        .expect("select b");
+    wait(&controller, "B alone", |update| {
+        update.workspace.layout.visible() == [b.as_str()]
+    });
+    // A answers its stalled capture after it left the view; that preview is dropped.
+    std::thread::sleep(Duration::from_millis(5000));
+    {
+        let update = controller.latest.lock().expect("snapshot");
+        assert!(
+            !update.previews.contains_key(&a),
+            "A's late preview published"
+        );
+        assert!(update.previews.contains_key(&b));
+        assert_eq!(update.sessions.len(), 2, "untiling stopped a worker");
+        assert!(update.sessions.iter().all(|s| s.telemetry.playing));
+    }
     drop(controller);
     let _ = std::fs::remove_dir_all(base);
 }

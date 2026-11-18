@@ -2,8 +2,9 @@
 //!
 //! A background thread runs a Tokio runtime. Its main loop only drains UI
 //! commands (each its own task) and publishes state every 33 ms; it never awaits
-//! a worker. The selected session's preview, inspector polling and audio focus
-//! run as separate tasks whose stale results are dropped (#21), with at most one
+//! a worker. Previews of every session the workspace shows (one, or two when tiled,
+//! lotus#65), the selected session's inspector polling and its audio focus run as
+//! separate tasks whose stale results are dropped (#21), with at most one
 //! request per operation and session in flight, so a stalled worker never delays
 //! another session's (#45). Gauges,
 //! continuous running and live input belong to each session's own tasks in the
@@ -65,6 +66,8 @@ pub enum Command {
     Reset(String),
     Stop(String),
     Abort(String),
+    /// A layout change through the shared workspace (lotus#67), committed before it returns.
+    Workspace(lotus_session::workspace::Operation),
 }
 
 /// Whether the window also serves MCP.
@@ -97,7 +100,7 @@ pub struct DebugImage {
     pub bgra: Vec<u8>,
 }
 
-/// Latest published state. The window takes `preview` when it changes.
+/// Latest published state. The window takes `previews` when they change.
 #[derive(Default)]
 pub struct Update {
     pub sessions: Vec<SessionSummary>,
@@ -109,7 +112,9 @@ pub struct Update {
     /// from `workspace`, which says what the window shows (lotus#67).
     pub selected: String,
     pub workspace: lotus_session::workspace::Snapshot,
-    pub preview: Option<Preview>,
+    /// Newest preview of each session the workspace shows, replaced whole per session.
+    /// Sessions no longer shown are removed. Independent per session (lotus#65).
+    pub previews: BTreeMap<String, Preview>,
     /// Registers of the selected session at its last paused frame.
     pub registers: Option<(String, Value)>,
     pub inspection: Option<(String, Panel, Arc<Inspection>)>,
@@ -203,6 +208,9 @@ struct InspectorKeys {
 impl DesktopController {
     pub fn start(config: HostConfig, mcp: McpMode) -> io::Result<Self> {
         let host = Arc::new(Supervisor::new(config)?);
+        // A desktop host has a window; previews follow what its workspace shows. The window
+        // replaces these defaults with the saved ones.
+        host.enable_workspace(lotus_session::workspace::SplitDefaults::default());
         let (sender, receiver) = mpsc::sync_channel::<Command>(32);
         let latest = Arc::new(Mutex::new(Update {
             max_sessions: host.max_sessions(),
@@ -349,9 +357,15 @@ impl Loops {
             let selected = {
                 let mut update = lock(&self.published);
                 if !sessions.iter().any(|s| s.info.id == update.selected) {
-                    update.selected = sessions
-                        .first()
-                        .map(|s| s.info.id.clone())
+                    // A stopped tile collapses the split to the other one (lotus#67); keep
+                    // showing that rather than replacing it with the first session.
+                    let visible = self.host.workspace().snapshot.layout;
+                    update.selected = visible
+                        .visible()
+                        .into_iter()
+                        .find(|id| sessions.iter().any(|s| s.info.id == *id))
+                        .map(str::to_string)
+                        .or_else(|| sessions.first().map(|s| s.info.id.clone()))
                         .unwrap_or_default();
                 }
                 update.sessions = sessions;
@@ -469,52 +483,72 @@ impl Loops {
         current
     }
 
-    /// Live screens of the selected session only. Each request runs in its own task, at
-    /// most one per session (#45): a stalled worker keeps its own exchange, which is never
-    /// cancelled (dropping it would leave its reply on the pipe), while a newly selected
-    /// session's first request starts on the next tick. Results for a session, generation
-    /// or epoch that is no longer shown are discarded. Unselected sessions get no requests.
+    /// Sessions the workspace shows now, in tile order.
+    fn visible(&self) -> Vec<String> {
+        let snapshot = self.host.workspace().snapshot;
+        snapshot
+            .layout
+            .visible()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Live screens of every session the workspace shows (lotus#65). Each request runs in
+    /// its own task, at most one per session (#45): a stalled worker keeps its own exchange,
+    /// which is never cancelled (dropping it would leave its reply on the pipe), and never
+    /// delays another tile's. Results for a session no longer shown, or for an older epoch,
+    /// are discarded. Hidden sessions get no requests.
     async fn preview_loop(self) {
-        let mut previewed = String::new();
+        let mut previewed: Vec<String> = Vec::new();
         let mut ticker = tick();
         loop {
             ticker.tick().await;
-            let selected = self.selected.borrow().clone();
-            let generation = self.generation.load(Ordering::Acquire);
-            if selected.is_empty() {
-                continue;
-            }
-            if previewed != selected {
-                // The window drops its images on a session switch (lotus_window.rs).
-                self.host.forget_preview(&selected);
-                previewed.clone_from(&selected);
-            }
-            if !self.begin("preview", &selected) {
-                continue;
-            }
-            let loops = self.clone();
-            tokio::spawn(async move {
-                let Some(frames) = loops
-                    .timed("preview", &selected, loops.host.preview(&selected))
-                    .await
-                else {
-                    return;
-                };
-                let epoch = frames.first().map_or(0, |frame| frame.lease.epoch);
-                let newer_epoch = loops
-                    .host
-                    .summary(&selected)
-                    .is_ok_and(|summary| summary.telemetry.epoch > epoch);
-                if !loops.current(&selected, generation) || newer_epoch {
-                    return;
+            let visible = self.visible();
+            for session in &visible {
+                if !previewed.contains(session) {
+                    // The window drops a tile's images when it stops being shown.
+                    self.host.forget_preview(session);
                 }
-                let sequence = loops.preview_sequence.fetch_add(1, Ordering::AcqRel) + 1;
-                lock(&loops.published).preview = Some(Preview {
-                    session: selected,
-                    sequence,
-                    frames,
+            }
+            if previewed != visible {
+                lock(&self.published)
+                    .previews
+                    .retain(|session, _| visible.contains(session));
+                previewed.clone_from(&visible);
+            }
+            for session in visible {
+                if !self.begin("preview", &session) {
+                    continue;
+                }
+                let loops = self.clone();
+                tokio::spawn(async move {
+                    let Some(frames) = loops
+                        .timed("preview", &session, loops.host.preview(&session))
+                        .await
+                    else {
+                        return;
+                    };
+                    let epoch = frames.first().map_or(0, |frame| frame.lease.epoch);
+                    let newer_epoch = loops
+                        .host
+                        .summary(&session)
+                        .is_ok_and(|summary| summary.telemetry.epoch > epoch);
+                    if newer_epoch || !loops.visible().contains(&session) {
+                        lock(&loops.metrics).stale_dropped += 1;
+                        return;
+                    }
+                    let sequence = loops.preview_sequence.fetch_add(1, Ordering::AcqRel) + 1;
+                    lock(&loops.published).previews.insert(
+                        session.clone(),
+                        Preview {
+                            session,
+                            sequence,
+                            frames,
+                        },
+                    );
                 });
-            });
+            }
         }
     }
 
@@ -851,6 +885,10 @@ impl Loops {
             }
             Command::Stop(id) => host.stop(&id, actor).await?,
             Command::Abort(id) => host.abort(&id, actor).await?,
+            Command::Workspace(operation) => {
+                let snapshot = host.update_workspace(&operation, None, actor)?;
+                lock(&self.published).workspace = snapshot;
+            }
         }
         Ok(())
     }

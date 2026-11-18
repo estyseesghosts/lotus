@@ -7,6 +7,7 @@
 //! [`crate::preferences`]. Pane widths, toolbar density and gauge mode come
 //! from [`crate::layout`] for the space actually available. The window only
 //! renders snapshots and sends commands; see [`crate::desktop_controller`].
+use std::collections::BTreeMap;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -21,6 +22,7 @@ use gpui::{
 };
 use image::{Frame, RgbaImage};
 use lotus_session::supervisor::{HostConfig, SessionKind, SessionSummary};
+use lotus_session::workspace::{self, Axis, Layout, Operation, Snapshot, Viewport};
 use lotus_session::SessionState;
 use serde_json::Value;
 
@@ -38,6 +40,10 @@ use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 const TOOLBAR_HEIGHT: f32 = 52.0;
 const SCREEN_GAP: f32 = 12.0;
 const CONTENT_PADDING: f32 = 24.0;
+/// Session name, controller and layout controls above each tile of a split.
+const TILE_HEADER: f32 = 28.0;
+/// Space between the two tiles of a split.
+const TILE_GAP: f32 = 12.0;
 /// Hit width of a pane divider, inside the pane's edge.
 const DIVIDER_WIDTH: f32 = 6.0;
 
@@ -149,9 +155,10 @@ pub struct LotusWindow {
     max_sessions: usize,
     control: bool,
     selected: String,
-    /// Displayed screens and the session they belong to.
-    images: Vec<Arc<RenderImage>>,
-    images_session: String,
+    /// What the window shows, as last published by the shared workspace (lotus#67).
+    workspace: Snapshot,
+    /// Displayed screens of each shown session (lotus#65).
+    tiles: BTreeMap<String, TileView>,
     registers: Option<(String, Value)>,
     inspection: Option<(String, Panel, Arc<Inspection>)>,
     inspection_panel: Panel,
@@ -165,11 +172,12 @@ pub struct LotusWindow {
     /// Connected controllers and their assignments (lotus#62), refreshed with each update.
     controllers: crate::input_routing::Controllers,
     focus: FocusHandle,
-    /// Keyboard buttons held (3DS bits) and pointer touch, for the selected session; the
-    /// router composes them with controllers assigned to it (lotus#61).
+    /// Keyboard buttons held (3DS bits), for [`Self::keyboard_target`], and pointer touch,
+    /// for the tile it started on; the router composes them with the controllers assigned
+    /// to each session (lotus#61).
     keys: u32,
     touching: Option<(u16, u16)>,
-    bottom_rect: Arc<Mutex<Option<TouchTransform>>>,
+    touch_session: Option<String>,
     preferences: Store,
     /// The pane opened most recently keeps its width when space runs out.
     recent: Pane,
@@ -245,8 +253,8 @@ impl LotusWindow {
             max_sessions: 0,
             control: false,
             selected: String::new(),
-            images: Vec::new(),
-            images_session: String::new(),
+            workspace: Snapshot::default(),
+            tiles: BTreeMap::new(),
             registers: None,
             inspection: None,
             inspection_panel: Panel::Cpu,
@@ -261,7 +269,7 @@ impl LotusWindow {
             focus,
             keys: 0,
             touching: None,
-            bottom_rect: Arc::default(),
+            touch_session: None,
             recent: if preferences.values.inspector_open {
                 Pane::Inspector
             } else {
@@ -439,7 +447,8 @@ impl LotusWindow {
         if controllers != self.controllers {
             self.controllers = controllers;
         }
-        let (preview, selected, surface) = {
+        let target = self.keyboard_target();
+        let (previews, selected, surface) = {
             let mut update = controller.ui.lock_update(&controller.latest);
             self.sessions = update.sessions.clone();
             self.cards = update.cards.clone();
@@ -452,9 +461,8 @@ impl LotusWindow {
             self.artifacts.clone_from(&update.artifacts);
             self.registers = update.registers.clone();
             self.inspection = update.inspection.clone();
-            if let lotus_session::workspace::Layout::Split { axis, ratio, .. } =
-                update.workspace.layout
-            {
+            self.workspace.clone_from(&update.workspace);
+            if let Layout::Split { axis, ratio, .. } = update.workspace.layout {
                 let values = &mut self.preferences.values;
                 if (values.split_axis, values.split_ratio) != (axis, ratio) {
                     (values.split_axis, values.split_ratio) = (axis, ratio);
@@ -465,17 +473,21 @@ impl LotusWindow {
                 self.error = update.error.clone();
             }
             (
-                update.preview.take(),
+                std::mem::take(&mut update.previews),
                 update.selected.clone(),
                 update.debug_image.take(),
             )
         };
         if selected != self.selected {
-            self.release_input();
             self.selected = selected;
             if let Some(old) = self.surface_image.take() {
                 cx.drop_image(old, None);
             }
+        }
+        // Keyboard follows the selection outside a split and the focused tile inside one;
+        // what it held is released when it moves.
+        if self.keyboard_target() != target {
+            self.release_input();
         }
         if let Some(surface) = surface.filter(|surface| surface.session == self.selected) {
             if let Some(old) = self.surface_image.take() {
@@ -485,11 +497,31 @@ impl LotusWindow {
                 self.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(pixels)])));
             }
         }
-        if self.images_session != self.selected {
-            self.replace_images(Vec::new(), cx);
-            self.images_session = self.selected.clone();
+        let visible: Vec<String> = self
+            .workspace
+            .layout
+            .visible()
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let hidden: Vec<String> = self
+            .tiles
+            .keys()
+            .filter(|session| !visible.contains(session))
+            .cloned()
+            .collect();
+        for session in hidden {
+            if let Some(tile) = self.tiles.remove(&session) {
+                drop_images(tile.images, cx);
+            }
         }
-        if let Some(preview) = preview.filter(|preview| preview.session == self.selected) {
+        for session in &visible {
+            self.tiles.entry(session.clone()).or_default();
+        }
+        for (session, preview) in previews {
+            let Some(tile) = self.tiles.get_mut(&session) else {
+                continue;
+            };
             ui.preview_installed(preview.sequence);
             let images = preview
                 .frames
@@ -499,22 +531,16 @@ impl LotusWindow {
                 })
                 .map(|image| Arc::new(RenderImage::new(vec![Frame::new(image)])))
                 .collect();
-            self.replace_images(images, cx);
+            drop_images(std::mem::replace(&mut tile.images, images), cx);
         }
-        if self
-            .selected_summary()
-            .is_some_and(|summary| summary.telemetry.state == SessionState::Crashed)
-        {
-            self.replace_images(Vec::new(), cx);
+        for summary in &self.sessions {
+            if summary.telemetry.state == SessionState::Crashed {
+                if let Some(tile) = self.tiles.get_mut(&summary.info.id) {
+                    drop_images(std::mem::take(&mut tile.images), cx);
+                }
+            }
         }
         ui.poll_completed();
-    }
-
-    /// Replaced frames leave the sprite atlas immediately so streaming stays bounded.
-    fn replace_images(&mut self, images: Vec<Arc<RenderImage>>, cx: &mut Context<Self>) {
-        for old in std::mem::replace(&mut self.images, images) {
-            cx.drop_image(old, None);
-        }
     }
 
     fn send(&mut self, command: Command) {
@@ -602,20 +628,37 @@ impl LotusWindow {
         .detach();
     }
 
-    /// Keyboard and pointer follow the selected session; controllers keep their own
-    /// assignment, so nothing here releases them.
+    /// The session keyboard input drives: the focused tile of a split, otherwise the
+    /// selected session. Selecting a session in the sidebar never moves it off a tile.
+    fn keyboard_target(&self) -> Option<String> {
+        let id = match &self.workspace.layout {
+            Layout::Split { first, second, .. } => match self.workspace.focused_viewport {
+                Viewport::First => first,
+                Viewport::Second => second,
+            },
+            _ => &self.selected,
+        };
+        self.sessions
+            .iter()
+            .any(|s| s.info.id == *id)
+            .then(|| id.clone())
+    }
+
+    /// Keyboard goes to [`Self::keyboard_target`] and pointer touch to the tile it started
+    /// on; controllers keep their own assignment, so nothing here releases them.
     fn publish_input(&mut self) {
         let Some(controller) = &self.controller else {
             return;
         };
-        let target = self
-            .sessions
-            .iter()
-            .any(|s| s.info.id == self.selected)
-            .then_some(self.selected.as_str());
+        let keyboard = self.keyboard_target();
+        let pointer = self
+            .touch_session
+            .clone()
+            .filter(|id| self.sessions.iter().any(|s| s.info.id == *id))
+            .or_else(|| keyboard.clone());
         let input = controller.input();
-        input.keyboard(target, self.keys);
-        input.pointer(target, self.touching);
+        input.keyboard(keyboard.as_deref(), self.keys);
+        input.pointer(pointer.as_deref(), self.touching);
     }
 
     fn release_input(&mut self) {
@@ -699,14 +742,30 @@ impl LotusWindow {
         self.publish_input();
     }
 
-    fn touch(&mut self, x: f32, y: f32) {
-        let coordinate = self
-            .bottom_rect
-            .lock()
-            .ok()
-            .and_then(|rect| rect.as_ref().and_then(|rect| rect.map_logical(x, y)));
+    /// Touch on `session`'s bottom screen. A touch starting on another tile first lifts
+    /// the one held on the previous tile.
+    fn touch(&mut self, session: &str, x: f32, y: f32) {
+        if self.touch_session.as_deref() != Some(session) {
+            self.touching = None;
+            self.publish_input();
+            self.touch_session = Some(session.to_string());
+        }
+        let coordinate = self.tiles.get(session).and_then(|tile| {
+            tile.touch
+                .lock()
+                .ok()
+                .and_then(|rect| rect.as_ref().and_then(|rect| rect.map_logical(x, y)))
+        });
         self.touching = coordinate;
         self.publish_input();
+    }
+
+    /// Give keyboard input to a tile of the split. Takes effect when the workspace
+    /// publishes the change; [`Self::poll`] then releases what the previous tile held.
+    fn focus_viewport(&mut self, viewport: Viewport) {
+        if self.workspace.focused_viewport != viewport {
+            self.send(Command::Workspace(Operation::FocusViewport { viewport }));
+        }
     }
 
     fn release_touch(&mut self) {
@@ -1057,6 +1116,34 @@ impl LotusWindow {
             })
     }
 
+    /// The `tile` that shows a running, loaded, hidden `summary` next to what is shown: beside
+    /// the single session, or in place of the unfocused tile of a split. `None` when it is
+    /// already shown or there is nothing to tile with.
+    fn tile_with(&self, summary: &SessionSummary) -> Option<Operation> {
+        let id = &summary.info.id;
+        if summary.info.asset.is_none()
+            || !summary.telemetry.state.is_active()
+            || self.workspace.layout.visible().contains(&id.as_str())
+        {
+            return None;
+        }
+        let (first, second) = match &self.workspace.layout {
+            Layout::Single { session, .. } => (session.clone(), id.clone()),
+            Layout::Split { first, second, .. } => match self.workspace.focused_viewport {
+                Viewport::First => (first.clone(), id.clone()),
+                Viewport::Second => (id.clone(), second.clone()),
+            },
+            Layout::Empty => return None,
+        };
+        Some(Operation::Tile {
+            first,
+            second,
+            axis: None,
+            ratio: None,
+            screens: None,
+        })
+    }
+
     fn session_row(
         &self,
         summary: &SessionSummary,
@@ -1121,6 +1208,19 @@ impl LotusWindow {
                         },
                         asset.clone(),
                     );
+                })),
+            );
+        }
+        if let Some(tile) = self.tile_with(summary) {
+            actions = actions.child(
+                icon_button(
+                    SharedString::from(format!("tile-{id}")),
+                    Icon::SideBySide,
+                    "Show beside the current view",
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.send(Command::Workspace(tile.clone()));
                 })),
             );
         }
@@ -1900,6 +2000,9 @@ impl LotusWindow {
             )
             .into_any_element();
         }
+        if let Layout::Split { .. } = &self.workspace.layout {
+            return self.render_split(plan, gauge_height, viewport_height, cx);
+        }
         let Some(summary) = self.selected_summary() else {
             let mut state = empty_state(
                 "No sessions",
@@ -2002,24 +2105,254 @@ impl LotusWindow {
             }
             return state.into_any_element();
         }
-        self.render_screens(plan, gauge_height, viewport_height, window, cx)
+        let _ = window;
+        let scale = self.screen_scale(plan, gauge_height, viewport_height);
+        let screens = self.render_screens(&summary.info.id, self.layout, scale, cx);
+        div()
+            .id("stage")
+            .flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .overflow_scroll()
+            .child(screens)
             .into_any_element()
     }
 
-    fn render_screens(
+    /// Two tiles along the resolved split axis, each with its own header, screens, touch
+    /// mapping and images (lotus#65). Geometry comes from [`split_plan`].
+    fn render_split(
         &self,
         plan: &Plan,
         gauge_height: f32,
         viewport_height: f32,
-        _window: &Window,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let scale = self.screen_scale(plan, gauge_height, viewport_height);
+    ) -> AnyElement {
+        let Layout::Split {
+            first,
+            second,
+            axis,
+            ratio,
+            screens,
+        } = &self.workspace.layout
+        else {
+            return div().into_any_element();
+        };
+        let width = plan.main - 2.0 * CONTENT_PADDING;
+        let height = viewport_height - TOOLBAR_HEIGHT - gauge_height - 2.0 * CONTENT_PADDING;
+        let split = split_plan(width, height, *axis, *ratio, *screens);
+        let tiles = [
+            (Viewport::First, first, second, split.tiles[0]),
+            (Viewport::Second, second, first, split.tiles[1]),
+        ];
+        div()
+            .id("stage")
+            .flex()
+            .flex_1()
+            .items_center()
+            .justify_center()
+            .overflow_scroll()
+            .child(
+                div()
+                    .flex()
+                    .flex_none()
+                    .gap(px(TILE_GAP))
+                    .when(split.vertical, |row| row.flex_col())
+                    .children(tiles.into_iter().map(|(viewport, session, other, tile)| {
+                        self.render_tile(viewport, session, other, tile, *axis, cx)
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_tile(
+        &self,
+        viewport: Viewport,
+        session: &str,
+        other: &str,
+        tile: TilePlan,
+        axis: Axis,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let focused = self.workspace.focused_viewport == viewport;
+        let index = match viewport {
+            Viewport::First => 0,
+            Viewport::Second => 1,
+        };
+        let summary = self.sessions.iter().find(|s| s.info.id == session);
+        let label = summary.map_or_else(
+            || session_tree::short_id(session).to_string(),
+            |summary| session_tree::session_label(&summary.info).to_string(),
+        );
+        let pads: Vec<String> = self
+            .controllers
+            .pads
+            .iter()
+            .filter(|pad| pad.session.as_deref() == Some(session))
+            .map(|pad| pad.name.clone())
+            .collect();
+        let keep = other.to_string();
+        let mut header = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_2()
+            .h(px(TILE_HEADER))
+            .px_2()
+            .text_xs()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(if focused {
+                        theme::text()
+                    } else {
+                        theme::text_secondary()
+                    })
+                    .child(label),
+            )
+            .children(pads.into_iter().map(|name| {
+                div()
+                    .flex_none()
+                    .max_w(px(140.0))
+                    .truncate()
+                    .px_1()
+                    .rounded(px(4.0))
+                    .border_1()
+                    .border_color(theme::border_strong())
+                    .text_color(theme::text_secondary())
+                    .child(name)
+            }))
+            .when(focused, |header| {
+                header.child(
+                    div()
+                        .flex_none()
+                        .text_color(theme::info())
+                        .child("Keyboard"),
+                )
+            })
+            .child(
+                icon_button(
+                    SharedString::from(format!("tile-screens-{index}")),
+                    tile.screens.other().icon(),
+                    "Switch this tile's screen arrangement",
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    let screens = match tile.screens.other() {
+                        ScreenLayout::Stacked => workspace::ScreenLayout::Stacked,
+                        ScreenLayout::SideBySide => workspace::ScreenLayout::SideBySide,
+                    };
+                    view.send(Command::Workspace(Operation::SetScreenLayout {
+                        viewport,
+                        screens,
+                    }));
+                })),
+            );
+        if viewport == Viewport::First {
+            let (next, label, description) = match axis {
+                Axis::Auto => (
+                    Axis::Horizontal,
+                    "Auto",
+                    "Split direction: automatic. Click for left and right",
+                ),
+                Axis::Horizontal => (
+                    Axis::Vertical,
+                    "Left | Right",
+                    "Split direction: left and right. Click for top and bottom",
+                ),
+                Axis::Vertical => (
+                    Axis::Auto,
+                    "Top | Bottom",
+                    "Split direction: top and bottom. Click for automatic",
+                ),
+            };
+            header = header.child(with_tooltip(
+                small_button("tile-axis", label, Tone::Plain, true).on_click(cx.listener(
+                    move |view, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        view.send(Command::Workspace(Operation::SetAxis { axis: next }));
+                    },
+                )),
+                description,
+            ));
+        }
+        header = header.child(
+            icon_button(
+                SharedString::from(format!("untile-{index}")),
+                Icon::Close,
+                "Return to the sidebar; the session keeps running",
+            )
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                view.send(Command::Workspace(Operation::Untile {
+                    keep: Some(keep.clone()),
+                }));
+                // Outside a split the window shows the selection; select what stays.
+                view.select(keep.clone());
+            })),
+        );
+        let body = match summary {
+            None => tile_message("Session ended"),
+            Some(summary) if summary.telemetry.state == SessionState::Crashed => {
+                tile_message("Worker crashed")
+            }
+            Some(summary) if summary.info.asset.is_none() => tile_message("Nothing loaded"),
+            Some(_) => {
+                let scale = match self.zoom {
+                    Zoom::Native => 1.0,
+                    Zoom::Double => 2.0,
+                    Zoom::Fit => tile.scale,
+                };
+                div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .child(self.render_screens(session, tile.screens, scale, cx))
+                    .into_any_element()
+            }
+        };
+        div()
+            .id(SharedString::from(format!("tile-{index}")))
+            .flex()
+            .flex_col()
+            .flex_none()
+            .w(px(tile.width.max(0.0)))
+            .h(px(tile.height.max(0.0)))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(if focused {
+                theme::info()
+            } else {
+                theme::border()
+            })
+            .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _: &MouseDownEvent, _, _| view.focus_viewport(viewport)),
+            )
+            .child(header)
+            .child(body)
+            .into_any_element()
+    }
+
+    /// Both screens of `session` at `scale`, with its own touch mapping.
+    fn render_screens(
+        &self,
+        session: &str,
+        layout: ScreenLayout,
+        scale: f32,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let tile = self.tiles.get(session);
         let mut top = screen_frame(400.0 * scale, 240.0 * scale).id("top-screen");
-        if let Some(image) = self.images.first() {
+        if let Some(image) = tile.and_then(|tile| tile.images.first()) {
             top = top.child(gpui::img(image.clone()).size_full());
         }
-        let rect = self.bottom_rect.clone();
+        let rect = tile.map(|tile| tile.touch.clone()).unwrap_or_default();
+        let (down, moved) = (session.to_string(), session.to_string());
         let mut bottom = screen_frame(320.0 * scale, 240.0 * scale)
             .id("touch-screen")
             .cursor_crosshair()
@@ -2042,13 +2375,16 @@ impl LotusWindow {
             )
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|view, event: &MouseDownEvent, _, _| {
-                    view.touch(event.position.x.into(), event.position.y.into())
+                cx.listener(move |view, event: &MouseDownEvent, _, _| {
+                    view.touch(&down, event.position.x.into(), event.position.y.into())
                 }),
             )
-            .on_mouse_move(cx.listener(|view, event: &MouseMoveEvent, _, _| {
-                if view.touching.is_some() && event.dragging() {
-                    view.touch(event.position.x.into(), event.position.y.into());
+            .on_mouse_move(cx.listener(move |view, event: &MouseMoveEvent, _, _| {
+                if view.touching.is_some()
+                    && event.dragging()
+                    && view.touch_session.as_deref() == Some(moved.as_str())
+                {
+                    view.touch(&moved, event.position.x.into(), event.position.y.into());
                 }
             }))
             .on_mouse_up(
@@ -2059,27 +2395,19 @@ impl LotusWindow {
                 MouseButton::Left,
                 cx.listener(|view, _, _, _| view.release_touch()),
             );
-        if let Some(image) = self.images.get(1) {
+        if let Some(image) = tile.and_then(|tile| tile.images.get(1)) {
             bottom = bottom.child(gpui::img(image.clone()).size_full());
         }
-        let screens = div()
+        div()
             .flex()
             .items_center()
             .justify_center()
             .gap(px(SCREEN_GAP))
-            .when(self.layout == ScreenLayout::Stacked, |screens| {
+            .when(layout == ScreenLayout::Stacked, |screens| {
                 screens.flex_col()
             })
             .child(top)
-            .child(bottom);
-        div()
-            .id("stage")
-            .flex()
-            .flex_1()
-            .items_center()
-            .justify_center()
-            .overflow_scroll()
-            .child(screens)
+            .child(bottom)
     }
 
     /// Fit picks the largest scale that shows both screens without scrolling
@@ -2856,6 +3184,116 @@ impl Render for LotusWindow {
 
 /// Largest scale at which both screens fit `width` x `height`, at least 0.5.
 #[must_use]
+/// Screens of one shown session and where its touch screen was last laid out.
+#[derive(Default)]
+struct TileView {
+    images: Vec<Arc<RenderImage>>,
+    touch: Arc<Mutex<Option<TouchTransform>>>,
+}
+
+/// Replaced frames leave the sprite atlas immediately so streaming stays bounded.
+fn drop_images(images: Vec<Arc<RenderImage>>, cx: &mut Context<LotusWindow>) {
+    for old in images {
+        cx.drop_image(old, None);
+    }
+}
+
+fn tile_message(text: &'static str) -> AnyElement {
+    div()
+        .flex()
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .text_color(theme::text_muted())
+        .child(text)
+        .into_any_element()
+}
+
+/// Outer size, screen arrangement and fit scale of one tile.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TilePlan {
+    width: f32,
+    height: f32,
+    screens: ScreenLayout,
+    scale: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SplitPlan {
+    /// First tile above the second rather than left of it.
+    vertical: bool,
+    tiles: [TilePlan; 2],
+}
+
+/// Tile sizes for a split of `width` x `height`. `ratio` is the first tile's share of the
+/// split axis. An explicit axis or screen arrangement is kept; `Auto` takes the option with
+/// the larger screen scale for the smaller of the two tiles, preferring left/right and
+/// stacked screens on a tie. This is the minimal rule; lotus#69 replaces it with the full
+/// solver (hysteresis, gauge edges, DPI).
+fn split_plan(
+    width: f32,
+    height: f32,
+    axis: Axis,
+    ratio: f32,
+    screens: [workspace::ScreenLayout; 2],
+) -> SplitPlan {
+    let plan = |vertical: bool| {
+        let along = if vertical { height } else { width } - TILE_GAP;
+        let sizes = [along * ratio, along * (1.0 - ratio)];
+        let mut tiles = [0, 1].map(|index| {
+            let (w, h) = if vertical {
+                (width, sizes[index])
+            } else {
+                (sizes[index], height)
+            };
+            tile_plan(w, h, screens[index])
+        });
+        if !vertical {
+            // Same height on both sides keeps the row aligned.
+            tiles[1].height = tiles[0].height;
+        }
+        SplitPlan { vertical, tiles }
+    };
+    let smaller = |plan: &SplitPlan| plan.tiles[0].scale.min(plan.tiles[1].scale);
+    match axis {
+        Axis::Horizontal => plan(false),
+        Axis::Vertical => plan(true),
+        Axis::Auto => {
+            let (side, stacked) = (plan(false), plan(true));
+            if smaller(&stacked) > smaller(&side) {
+                stacked
+            } else {
+                side
+            }
+        }
+    }
+}
+
+fn tile_plan(width: f32, height: f32, screens: workspace::ScreenLayout) -> TilePlan {
+    let inner = (
+        width - 2.0 * SCREEN_GAP,
+        height - TILE_HEADER - 2.0 * SCREEN_GAP,
+    );
+    let fit = |layout| TilePlan {
+        width,
+        height,
+        screens: layout,
+        scale: fit_scale(layout, inner.0, inner.1),
+    };
+    match screens {
+        workspace::ScreenLayout::Stacked => fit(ScreenLayout::Stacked),
+        workspace::ScreenLayout::SideBySide => fit(ScreenLayout::SideBySide),
+        workspace::ScreenLayout::Auto => {
+            let (stacked, side) = (fit(ScreenLayout::Stacked), fit(ScreenLayout::SideBySide));
+            if side.scale > stacked.scale {
+                side
+            } else {
+                stacked
+            }
+        }
+    }
+}
+
 fn fit_scale(layout: ScreenLayout, width: f32, height: f32) -> f32 {
     // `f32::min` ignores NaN, so reject non-finite space before comparing axes.
     if !width.is_finite() || !height.is_finite() {
@@ -3290,6 +3728,35 @@ mod tests {
         assert!((side - 2.0).abs() < 1e-6, "width bound: {side}");
         assert_eq!(fit_scale(ScreenLayout::Stacked, 10.0, 10.0), 0.5);
         assert_eq!(fit_scale(ScreenLayout::Stacked, f32::NAN, 10.0), 1.0);
+    }
+
+    #[test]
+    fn split_auto_picks_the_axis_with_larger_screens_and_keeps_explicit_choices() {
+        let auto = [workspace::ScreenLayout::Auto; 2];
+        let wide = split_plan(1800.0, 700.0, Axis::Auto, 0.5, auto);
+        assert!(!wide.vertical, "{wide:?}");
+        let tall = split_plan(700.0, 1600.0, Axis::Auto, 0.5, auto);
+        assert!(tall.vertical, "{tall:?}");
+        // An explicit axis is kept even where the other would be larger.
+        assert!(!split_plan(700.0, 1600.0, Axis::Horizontal, 0.5, auto).vertical);
+        let stacked = [workspace::ScreenLayout::Stacked; 2];
+        let held = split_plan(1800.0, 300.0, Axis::Vertical, 0.5, stacked);
+        assert!(held.vertical);
+        assert!(held
+            .tiles
+            .iter()
+            .all(|t| t.screens == ScreenLayout::Stacked));
+        // The ratio splits the axis less the gap; sizes never go negative.
+        let off = split_plan(1200.0, 700.0, Axis::Horizontal, 0.7, auto);
+        let total = off.tiles[0].width + off.tiles[1].width + TILE_GAP;
+        assert!((total - 1200.0).abs() < 1e-3, "{off:?}");
+        assert!(off.tiles[0].width > off.tiles[1].width);
+        assert!(off.tiles[0].scale >= off.tiles[1].scale);
+        let tiny = split_plan(10.0, 10.0, Axis::Auto, 0.5, auto);
+        assert!(tiny
+            .tiles
+            .iter()
+            .all(|t| t.scale >= 0.5 && t.scale.is_finite()));
     }
 
     #[test]
