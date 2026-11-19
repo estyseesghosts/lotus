@@ -364,3 +364,14 @@ and "read-only host" notes appear once at the top of the pane.
 Verified in the aqua-light preview: Emulation's five tabs fit at 668 px,
 switching to Clock shrinks the window, moving the window does not resize it.
 aqua-dark checked by capture (Advanced, Graphics & Display); Geist is not.
+
+## Inspector panel without a rail
+
+The Silvestris UI drops the inspector rail (Shell rail_enabled false). A
+closed inspector takes no width; the toolbar Inspector button and Ctrl+I
+reopen it. The panel's header names the inspected session, and a pop-up at
+its top chooses among the twelve views in Panel::MENU order, grouped as
+Panel::group lists them: twelve views exceed a tab view's 2 to about 6
+tabs, and HIG p. 341 allows a pop-up in that case. Run/pause and step stay
+in the toolbar, so the rail's copies are gone. The legacy (non-silvestris-ui)
+build keeps its rail. Ctrl+1..7 and [ / ] still select views.

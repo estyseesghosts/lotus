@@ -96,7 +96,8 @@ enum Menu {
     Load,
     /// Toolbar actions that do not fit.
     Toolbar,
-    /// Inspector views not on the rail.
+    /// Inspector views not on the rail (legacy UI; Silvestris uses a pop-up).
+    #[cfg(not(feature = "silvestris-ui"))]
     InspectorMore,
     /// Trace import, clipboard command, keyboard reference.
     InspectorUtility,
@@ -3481,6 +3482,7 @@ impl LotusWindow {
     /// The inspector rail: always visible at the window's right edge. Views
     /// (navigation) at the top, execution quick actions separated at the
     /// bottom. No Stop/Reset/trace commands here.
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_inspector_rail(&self, plan: &Plan, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         let open = if cfg!(feature = "silvestris-ui") {
@@ -3648,6 +3650,7 @@ impl LotusWindow {
             })
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_more_views(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         let mut menu = popover(theme, "inspector-more")
@@ -3740,6 +3743,58 @@ impl LotusWindow {
         }
     }
 
+    /// Legacy: icon, view name and group. Silvestris: a pop-up choosing the
+    /// view, replacing the rail (HIG p. 341, pop-up instead of tabs).
+    fn render_inspector_heading(&self, current: Panel, cx: &mut Context<Self>) -> AnyElement {
+        #[cfg(feature = "silvestris-ui")]
+        {
+            let items = Panel::MENU.iter().map(|p| SharedString::from(p.label())).collect();
+            let selected = Panel::MENU.iter().position(|p| *p == current);
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(
+                    silvestris::controls::PopUpButton::new("inspector-view", "Inspector view", items)
+                        .selected(selected)
+                        .size(silvestris::controls::ControlSize::Small)
+                        .min_width(140.0)
+                        .on_choose(cx.listener(|view, index: &usize, _, cx| {
+                            if let Some(panel) = Panel::MENU.get(*index) {
+                                view.show_panel(*panel);
+                                cx.notify();
+                            }
+                        })),
+                )
+                .into_any_element()
+        }
+        #[cfg(not(feature = "silvestris-ui"))]
+        {
+            let theme = theme::palette(cx);
+            div()
+                .flex()
+                .flex_1()
+                .min_w_0()
+                .items_center()
+                .gap_2()
+                .child(icon(current.icon(), 16.0, theme.text))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .flex_none()
+                        .child(current.label()),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(section_label(theme, current.group())),
+                )
+                .into_any_element()
+        }
+    }
+
     fn render_inspector(
         &self,
         width: f32,
@@ -3769,21 +3824,7 @@ impl LotusWindow {
                     .pr_2()
                     .border_b_1()
                     .border_color(theme.border)
-                    .child(icon(current.icon(), 16.0, theme.text))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .flex_none()
-                            .child(current.label()),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(section_label(theme, current.group())),
-                    )
+                    .child(self.render_inspector_heading(current, cx))
                     .child(
                         icon_button(
                             theme,

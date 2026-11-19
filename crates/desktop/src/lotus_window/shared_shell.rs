@@ -209,7 +209,9 @@ impl LotusWindow {
             geometry: shared::ShellGeometry::LOTUS_LEGACY,
             sidebar: self.shared_sidebar_preference(),
             inspector: self.shared_inspector_preference(),
-            rail_enabled: true,
+            // Option 1 (HIG p. 229 inspector): no rail; a closed inspector
+            // is hidden and the toolbar Inspector button reopens it.
+            rail_enabled: false,
             previous: previous.as_ref(),
         }))
     }
@@ -221,7 +223,7 @@ impl LotusWindow {
             "lotus-shell",
             self.shared_sidebar_preference(),
             self.shared_inspector_preference(),
-            true,
+            false,
             move |plan, size, window, cx| {
                 owner.update(cx, |view, cx| {
                     view.shared_plan.set(Some(*plan));
@@ -231,12 +233,12 @@ impl LotusWindow {
                     let rail = view.render_rail(&legacy, cx);
                     let workspace = view.render_workspace(&legacy, size.height.into(), window, cx);
                     let target = view.shared_inspector_target().unwrap_or("");
-                    let title = format!(
-                        "{} · {} {}",
-                        view.inspection_panel.label(),
-                        view.session_name(target),
-                        session_tree::short_id(target)
-                    );
+                    // The panel names what it inspects; the view pop-up names the view.
+                    let title = if target.is_empty() {
+                        "Inspector".to_string()
+                    } else {
+                        format!("{} {}", view.session_name(target), session_tree::short_id(target))
+                    };
                     let inspector = plan.dock.or(plan.overlay).map(|span| {
                         let ready = !target.is_empty() && target == view.inspected;
                         let selector = format!(
@@ -269,9 +271,7 @@ impl LotusWindow {
                         workspace,
                         inspector,
                         inspector_title: title.into(),
-                        inspector_rail: Some(
-                            view.render_inspector_rail(&legacy, cx).into_any_element(),
-                        ),
+                        inspector_rail: None,
                     }
                 })
             },
@@ -479,10 +479,15 @@ mod tests {
         cx.simulate_resize(size(px(1400.), px(900.)));
         draw(cx);
         let closed = cx.debug_bounds("shell-workspace").unwrap();
+        // Option 1: a closed inspector leaves no rail; the workspace reaches
+        // the window's right edge.
+        assert!(cx.debug_bounds("shell-inspector-rail").is_none());
+        assert_eq!(closed.right(), px(1400.));
         cx.simulate_keystrokes("ctrl-i");
         draw(cx);
         assert_eq!(cx.debug_bounds("shell-workspace").unwrap(), closed);
         assert!(cx.debug_bounds("lotus-inspector-ready-a").is_some());
+        assert!(cx.debug_bounds("inspector-view").is_some(), "view pop-up replaces the rail");
         cx.simulate_keystrokes("z");
         cx.update(|_, cx| {
             assert!(view.read(cx).keys.is_empty());
@@ -505,7 +510,7 @@ mod tests {
             assert!(view.read(cx).focus.is_focused(window));
         });
 
-        // Existing per-tile requests now use this same inspector and wide rail.
+        // Existing per-tile requests now use this same inspector.
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
                 view.workspace.layout = Layout::Split {
@@ -521,7 +526,7 @@ mod tests {
         });
         draw(cx);
         assert_eq!(cx.debug_bounds("shell-workspace").unwrap(), closed);
-        assert!(cx.debug_bounds("shell-inspector-rail").is_some());
+        assert!(cx.debug_bounds("shell-inspector-rail").is_none());
         assert!(cx.debug_bounds("lotus-inspector-waiting-b").is_some());
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {

@@ -113,6 +113,23 @@ impl Panel {
         Self::Timeline,
         Self::Result,
     ];
+    /// Order of the inspector's view pop-up: grouped as `group` lists them.
+    /// Twelve views exceed a tab view's 2 to about 6 tabs, so the panel uses
+    /// a pop-up menu at its top instead (HIG pp. 338, 341).
+    pub const MENU: [Self; 12] = [
+        Self::Cpu,
+        Self::Threads,
+        Self::Breakpoints,
+        Self::Memory,
+        Self::Gpu,
+        Self::Audio,
+        Self::Logs,
+        Self::Ipc,
+        Self::Timeline,
+        Self::States,
+        Self::Settings,
+        Self::Result,
+    ];
     pub fn at(index: usize) -> Self {
         Self::ALL.get(index).copied().unwrap_or(Self::Cpu)
     }
