@@ -45,6 +45,20 @@ To roll back the UI slice, build/run without --features silvestris-ui. Legacy
 layout keys remain usable and the feature-disabled store preserves the unknown
 silvestris object. No guest/card/workspace data migration is involved.
 
+Keep a native Lotus window running while developing this branch:
+
+    ./scripts/run-silvestris-preview.ps1 -Restart
+
+The Windows helper verifies the source pin, builds the opt-in GNU binary into
+Silvestris target/, then runs a separate executable copy. This avoids Windows
+locking Cargo's output during subsequent builds. It keeps the old window open
+until the replacement builds and restarts only the recorded executable/PID/start
+time. Without -Restart it leaves the existing preview alone; -NoBuild uses the
+last built artifact. Preferences/logs/process metadata stay under Silvestris
+target/, with an isolated desktop.json path. The helper starts without a host
+configuration or workers. The staging palette remains Geist Dark; a running
+preview is not evidence of completed Aqua migration or native input validation.
+
 ## Validation and rollout gates
 
 The adapter test compares shared Geist Dark surface/text/diagnostic colours
