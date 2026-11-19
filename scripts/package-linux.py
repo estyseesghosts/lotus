@@ -115,6 +115,15 @@ def rust_notices(metadata, destination):
     return notices
 
 
+def find_worker(build):
+    """ctr-worker in a CMake tree (bin/<config>/, bin/) or a CI native archive (root)."""
+    for pattern in ("bin/*/ctr-worker", "bin/ctr-worker", "ctr-worker"):
+        found = sorted(build.glob(pattern))
+        if found:
+            return found[0]
+    raise FileNotFoundError(f"no ctr-worker under {build}")
+
+
 def check_tool(path, name):
     url, expected = TOOLS[name]
     actual = digest(path)
@@ -160,7 +169,7 @@ def main():
             raise ValueError(f"Wrong source/flavor for {backend}: {manifest['source']} {manifest['branch']}")
         if f"-DCTR_BACKEND_NAME={identity}" not in manifest["cmake_flags"]:
             raise ValueError(f"Wrong backend identity for {backend}")
-        worker = next(build.glob("bin/*/ctr-worker"), None) or build / "bin/ctr-worker"
+        worker = find_worker(build)
         target = appdir / "runtimes" / backend / "ctr-worker"
         target.parent.mkdir(parents=True)
         shutil.copy2(worker, target)
