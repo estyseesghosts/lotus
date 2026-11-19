@@ -19,6 +19,9 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
   builtin preset reproduces the shipped keys (#57).
 - Preset import refuses binding values of the wrong JSON type instead of
   unbinding the action, and returns what it dropped as `warnings` (#114).
+- A stopped session's controller is unassigned within 250 ms even while
+  another pad streams events; before, cleanup waited for input to go quiet
+  (#111).
 - An MCP `lotus_workspace single` of a session other than the sidebar
   selection is no longer reverted on the next desktop tick (#112).
 - Space, `.`, Tab, Esc and modifier keys can no longer be bound to 3DS

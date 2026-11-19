@@ -475,17 +475,19 @@ impl InputRouting {
         shutdown: &AtomicBool,
     ) {
         let mut dropped = service.diagnostics().dropped;
-        let mut synced = Instant::now();
+        let mut maintained = Instant::now();
         while !shutdown.load(Ordering::Acquire) {
-            match events.recv_timeout(RECONCILE) {
+            match events.recv_timeout(RECONCILE.saturating_sub(maintained.elapsed())) {
                 Ok(event) => self.event(&event),
-                Err(RecvTimeoutError::Timeout) => self.reconcile(service, false),
+                Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
-            // Settings edits reach running sessions within one period, even under a steady
-            // event stream that never times out.
-            if synced.elapsed() >= RECONCILE {
-                synced = Instant::now();
+            // Maintenance runs on a deadline, not on a quiet receiver: under a steady event
+            // stream that never times out, ended sessions must still lose their pads (#111)
+            // and settings edits still reach running sessions within one period.
+            if maintained.elapsed() >= RECONCILE {
+                maintained = Instant::now();
+                self.reconcile(service, false);
                 self.sync_layouts(false);
             }
             let now = service.diagnostics().dropped;

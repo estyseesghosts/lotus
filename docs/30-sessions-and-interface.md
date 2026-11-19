@@ -572,9 +572,9 @@ controller events, so routing does not wait on GPUI frames.
   arrives there. A disconnect removes only that connection's contribution.
 - **Repair**: when the service's `dropped` counter rises, queued events are
   applied and then every controller's state is replaced from the service
-  snapshot. After 250 ms without events, connections missing from the device
-  list are removed and unknown ones are added unassigned. Sessions that ended
-  are dropped from every source.
+  snapshot. Every 250 ms, on a deadline whether or not events keep arriving
+  (#111), connections missing from the device list are removed and unknown ones
+  are added unassigned. Sessions that ended are dropped from every source.
 - **Refusals**: if a submission is refused for a session that still exists, the
   next change sends the full composed state. A worker without `analog_input`
   gets the same state without sticks (`analog_dropped`). The worker refuses live

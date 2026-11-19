@@ -716,3 +716,122 @@ fn runtime_layout_override_reaches_routing() {
     runtime.block_on(host.close());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// lotus#111: a stopped session loses its pad within a bounded time even while another
+/// pad streams events faster than the maintenance period, so the receiver never times out.
+#[test]
+fn a_stopped_session_is_forgotten_under_a_steady_event_stream() {
+    let base = std::env::temp_dir().join(format!("lotus-stream-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let host = Arc::new(Supervisor::new(config).expect("host"));
+    let ids: Vec<String> = (0..2)
+        .map(|_| {
+            runtime.block_on(async {
+                let info = host
+                    .create(
+                        SessionKind::Secondary { parent: None },
+                        Some("demo"),
+                        Actor::Host,
+                    )
+                    .await
+                    .expect("create");
+                host.run(&info.id, Actor::Host).await.expect("run");
+                info.id
+            })
+        })
+        .collect();
+    let (a, b) = (ids[0].as_str(), ids[1].as_str());
+    let store = base.join("store").canonicalize().expect("store");
+    let root = |id: &str| store.join("scratch").join(id);
+
+    let routing = InputRouting::new(host.clone());
+    let (backend, script) = Synthetic::new();
+    let script = Arc::new(script);
+    let (service, events) = ControllerService::start(move || Ok(backend)).expect("service");
+    let service = Arc::new(service);
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let thread = {
+        let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
+        std::thread::spawn(move || routing.run(&service, &events, &shutdown))
+    };
+    pad(&script, 0);
+    pad(&script, 1);
+    until("two pads", || routing.controllers().pads.len() == 2);
+    let devices: Vec<DeviceId> = service.devices().iter().map(|d| d.id).collect();
+    let (one, two) = (devices[0], devices[1]);
+    routing.assign(one, Some(a), false).expect("pad 1 to A");
+    routing.assign(two, Some(b), false).expect("pad 2 to B");
+
+    // Pad 2 moves every 5 ms, well inside the 250 ms maintenance period.
+    let streaming = Arc::new(AtomicBool::new(true));
+    let feeder = {
+        let (script, streaming) = (script.clone(), streaming.clone());
+        std::thread::spawn(move || {
+            let mut value = 1.0;
+            while streaming.load(std::sync::atomic::Ordering::Acquire) {
+                script.axis(1, Axis::LeftX, value);
+                value = -value;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    // Stops the feeder and the router even if an assertion fails, so a failure ends the test.
+    struct Stop {
+        streaming: Arc<AtomicBool>,
+        shutdown: Arc<AtomicBool>,
+    }
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            use std::sync::atomic::Ordering::Release;
+            self.streaming.store(false, Release);
+            self.shutdown.store(true, Release);
+        }
+    }
+    let stop = Stop {
+        streaming: streaming.clone(),
+        shutdown: shutdown.clone(),
+    };
+    let before = inputs(&root(b)).len();
+    until("B receives the stream", || {
+        inputs(&root(b)).len() > before + 10
+    });
+    runtime.block_on(host.stop(a, Actor::Host)).expect("stop a");
+    let stopped = Instant::now();
+    until("pad 1 unassigned", || {
+        routing.status()["assignments"][one.0.to_string()].is_null()
+    });
+    let forgotten = stopped.elapsed();
+    assert!(
+        forgotten < Duration::from_secs(1),
+        "pad 1 kept A for {forgotten:?}"
+    );
+    assert!(
+        routing
+            .controllers()
+            .remembered
+            .iter()
+            .all(|entry| entry.session != a),
+        "A still remembered"
+    );
+    let streamed = inputs(&root(b)).len();
+    until("B still receives the stream", || {
+        inputs(&root(b)).len() > streamed + 10
+    });
+    assert_eq!(
+        routing.status()["assignments"][two.0.to_string()],
+        serde_json::json!(b),
+        "pad 2 moved"
+    );
+
+    drop(stop);
+    feeder.join().expect("feeder");
+    thread.join().expect("router thread");
+    runtime.block_on(host.close());
+    let _ = std::fs::remove_dir_all(&base);
+}
