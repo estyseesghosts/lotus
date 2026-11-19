@@ -94,3 +94,8 @@ The desktop-only, opt-in Silvestris adapter is mapped in
 [38](38-silvestris-adoption.md): ui_framework.rs initializes the shared theme
 and fonts, theme.rs selects bundled font roles, and settings_window.rs mounts
 the first shared control. The controller/worker boundary above is unchanged.
+
+The staged navigation.rs adapter maps owned SessionSummary snapshots to generic
+source-list nodes. Identity/creation-time/epoch target validation remains
+Lotus-owned; session_tree.rs supplies shared status labels. It is not yet the
+mounted sidebar renderer; see the navigation section of [38](38-silvestris-adoption.md).

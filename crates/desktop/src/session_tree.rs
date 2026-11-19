@@ -96,6 +96,29 @@ pub fn next_card_name(existing: &[String]) -> String {
         .expect("unbounded candidate names")
 }
 
+/// Shared status copy for the legacy and Silvestris sidebar renderers.
+#[must_use]
+pub fn session_status(summary: &SessionSummary) -> &'static str {
+    use lotus_session::SessionState;
+    match summary.telemetry.state {
+        SessionState::Running => "running",
+        SessionState::Paused if summary.telemetry.playing => "running",
+        SessionState::Paused => "paused",
+        SessionState::Idle => "idle",
+        SessionState::Created => "starting",
+        SessionState::Stopped => "stopped",
+        SessionState::Crashed => "crashed",
+    }
+}
+
+#[must_use]
+pub fn session_detail(summary: &SessionSummary) -> String {
+    match session_status(summary) {
+        "running" if summary.telemetry.fps > 0.0 => format!("{:.0} fps", summary.telemetry.fps),
+        state => state.to_owned(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

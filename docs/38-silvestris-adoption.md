@@ -71,3 +71,31 @@ Verified compiled/tested on Windows GNU: feature-enabled desktop check and
 46 library tests; default desktop 45 library tests. The additional feature
 test compares shared/legacy Geist colours and font roles. Native Settings,
 live worker/HID/MCP and portable packaging are not verified by these tests.
+
+## Navigation adapter foundation
+
+navigation.rs projects the current session tree and saved-card names into
+generic SourceNodes with separate target metadata. Cards keep stable row IDs
+across primary restarts; secondaries retain creation order. Saved offline
+cards remain present and expandable, but cannot select a nonexistent primary.
+Card/session/group ID namespaces are separate from display labels.
+
+SessionTarget captures ID, creation time and guest epoch. resolve rejects a
+missing/replaced session or prior epoch; callers must additionally check each
+operation's current availability and control permission. Selection validates
+identity/creation time without rejecting a reset of the same session.
+A stable card row does not permit an old captured action to target its new
+primary. Existing status/FPS label logic is shared from session_tree.rs.
+
+The shared source list now offers accessory and row-decorator callbacks to
+preserve app-owned row actions and drag payloads without duplicating its
+selection/disclosure renderer. These are required before replacing Lotus's
+current rows: Start/Stop/Fork/Settings/tiling and workspace-revision drag
+checks must stay reachable. The projection is compiled/tested behind
+silvestris-ui but is not mounted in LotusWindow yet.
+
+Tests cover saved offline cards, nested/detached copies, selection mapping,
+namespace separation, stale epochs, reused session identities and primary
+replacement. Silvestris tests cover action/context extension routing and
+nonselectable container disclosure. No new worker commands are emitted by
+this foundation; main navigation behavior remains on the existing renderer.

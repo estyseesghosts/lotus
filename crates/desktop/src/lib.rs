@@ -21,3 +21,6 @@ pub mod tiling;
 pub mod ui_metrics;
 #[cfg(feature = "silvestris-ui")]
 pub mod ui_framework;
+
+#[cfg(feature = "silvestris-ui")]
+pub mod navigation;

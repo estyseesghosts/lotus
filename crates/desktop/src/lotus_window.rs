@@ -4194,15 +4194,7 @@ fn pairing(controllers: &crate::input_routing::Controllers, session: &str) -> Ve
 }
 
 fn state_name(summary: &SessionSummary) -> &'static str {
-    match summary.telemetry.state {
-        SessionState::Running => "running",
-        SessionState::Paused if summary.telemetry.playing => "running",
-        SessionState::Paused => "paused",
-        SessionState::Idle => "idle",
-        SessionState::Created => "starting",
-        SessionState::Stopped => "stopped",
-        SessionState::Crashed => "crashed",
-    }
+    session_tree::session_status(summary)
 }
 
 fn state_colour(summary: &SessionSummary) -> Rgba {
@@ -4224,10 +4216,7 @@ fn state_dot(summary: &SessionSummary, primary: bool) -> impl IntoElement {
 }
 
 fn row_meta(summary: &SessionSummary) -> String {
-    match state_name(summary) {
-        "running" if summary.telemetry.fps > 0.0 => format!("{:.0} fps", summary.telemetry.fps),
-        state => state.to_string(),
-    }
+    session_tree::session_detail(summary)
 }
 
 fn section_label(text: &'static str) -> impl IntoElement {
