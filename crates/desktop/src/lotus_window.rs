@@ -87,7 +87,6 @@ enum Menu {
     InspectorMore,
     /// Trace import, clipboard command, keyboard reference.
     InspectorUtility,
-    Preferences,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +221,11 @@ impl LotusWindow {
     ) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        // The Settings window belongs to this one; it never outlives it (lotus#53).
+        window.on_window_should_close(cx, |_, cx| {
+            crate::settings_window::close(cx);
+            true
+        });
         cx.on_blur(&focus, window, |view, _, _| view.release_input())
             .detach();
         cx.observe_window_activation(window, |view, window, _| {
@@ -1115,109 +1119,97 @@ impl LotusWindow {
     }
 
     fn preferences_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        icon_button("preferences", Icon::Gear, "Preferences").on_click(cx.listener(
-            |view, _: &ClickEvent, _, _| {
-                view.menu = match view.menu {
-                    Menu::Preferences => Menu::Closed,
-                    _ => Menu::Preferences,
-                };
+        icon_button("preferences", Icon::Gear, "Settings (Ctrl+,)").on_click(cx.listener(
+            |view, _: &ClickEvent, _, cx| {
+                view.open_settings(crate::settings_window::Target::Global, cx)
             },
         ))
     }
 
-    /// Desktop preferences popover; position is set by the caller.
-    fn render_preferences(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let values = &self.preferences.values;
-        let presence = values.discord_presence;
-        let hide = values.discord_hide_titles;
-        let available = crate::presence::application_id(values).is_some();
-        popover("preferences-menu")
-            .w(px(300.0))
-            .on_mouse_down_out(cx.listener(|view, _, _, _| view.menu = Menu::Closed))
-            .child(menu_heading("DISCORD"))
-            .child(
-                checkbox_item(
-                    "pref-discord",
-                    "Rich Presence",
-                    presence,
-                    available || presence,
-                )
-                .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
-                    let values = &mut view.preferences.values;
-                    if !available && !values.discord_presence {
-                        return;
-                    }
-                    values.discord_presence = !values.discord_presence;
-                    view.preferences.save();
-                    view.publish_presence();
-                })),
-            )
-            .child(
-                checkbox_item("pref-hide-titles", "Hide game titles", hide, presence).on_click(
-                    cx.listener(move |view, _: &ClickEvent, _, _| {
-                        if !presence {
-                            return;
-                        }
-                        let values = &mut view.preferences.values;
-                        values.discord_hide_titles = !values.discord_hide_titles;
-                        view.preferences.save();
-                        view.publish_presence();
-                    }),
-                ),
-            )
-            .child(
-                div()
-                    .px_2()
-                    .pb_2()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child(if available {
-                        "Shows which game is loaded on your Discord profile. Only the file name is sent, or nothing with titles hidden."
-                    } else {
-                        "Unavailable: discord_application_id in the preferences file is not a Discord application ID."
-                    }),
-            )
-            .when(presence, |menu| {
-                let status = self
-                    .controller
-                    .as_ref()
-                    .map(|controller| controller.presence.status())
-                    .unwrap_or_default();
-                let (colour, text) = match status {
-                    crate::presence::Status::Off => (theme::text_muted(), "Starting…".to_string()),
-                    crate::presence::Status::Waiting(_) => (
-                        theme::warning(),
-                        "Discord not reachable; retrying".to_string(),
-                    ),
-                    crate::presence::Status::Shown(None) => {
-                        (theme::success(), "Connected · nothing loaded".to_string())
-                    }
-                    crate::presence::Status::Shown(Some(activity)) => {
-                        (theme::success(), format!("Connected · {}", activity.details))
-                    }
-                };
-                menu.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_2()
-                        .px_2()
-                        .pb_2()
-                        .text_xs()
-                        .child(div().size(px(6.0)).rounded_full().bg(colour))
-                        .child(div().truncate().child(text)),
-                )
-            })
-            .when(self.preferences.path.is_none(), |menu| {
-                menu.child(
-                    div()
-                        .px_2()
-                        .pb_2()
-                        .text_xs()
-                        .text_color(theme::warning())
-                        .child("Preferences are not saved: no location, or the existing file is unreadable."),
-                )
-            })
+    /// Open (or focus) the one Settings window on `target` (lotus#53).
+    fn open_settings(&mut self, target: crate::settings_window::Target, cx: &mut Context<Self>) {
+        self.menu = Menu::Closed;
+        let host = self.controller.as_ref().map(|c| c.host().clone());
+        let lotus = cx.weak_entity();
+        let control = self.control;
+        cx.defer(move |cx| crate::settings_window::open(cx, lotus, host, control, target));
+    }
+
+    /// A `lotus.desktop.*` value from `desktop.json` (default when unset or unknown).
+    pub(crate) fn preference(&self, key: &str) -> serde_json::Value {
+        let field = key.strip_prefix("lotus.desktop.").unwrap_or(key);
+        serde_json::to_value(&self.preferences.values)
+            .ok()
+            .and_then(|values| values.get(field).cloned())
+            .unwrap_or_default()
+    }
+
+    /// Change one `lotus.desktop.*` value after checking it against the registry, save
+    /// `desktop.json` and apply it. Rich Presence stays off while the application ID is
+    /// unusable, as the popover it replaces did.
+    pub(crate) fn set_preference(
+        &mut self,
+        key: &str,
+        value: serde_json::Value,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(descriptor) = lotus_settings::Registry::builtin().get(key) else {
+            return;
+        };
+        if descriptor.validate(&value).is_err() {
+            return;
+        }
+        if key == "lotus.desktop.discord_presence"
+            && value == serde_json::Value::Bool(true)
+            && crate::presence::application_id(&self.preferences.values).is_none()
+        {
+            return;
+        }
+        let field = key.strip_prefix("lotus.desktop.").unwrap_or(key);
+        let Ok(serde_json::Value::Object(mut values)) =
+            serde_json::to_value(&self.preferences.values)
+        else {
+            return;
+        };
+        values.insert(field.to_string(), value);
+        let Ok(updated) = serde_json::from_value(serde_json::Value::Object(values)) else {
+            return;
+        };
+        self.preferences.values = updated;
+        self.preferences.save();
+        self.publish_presence();
+        cx.notify();
+    }
+
+    /// Rich Presence connection state for the Settings window: colour and text.
+    pub(crate) fn presence_line(&self) -> Option<(Rgba, String)> {
+        if !self.preferences.values.discord_presence {
+            return None;
+        }
+        let status = self
+            .controller
+            .as_ref()
+            .map(|controller| controller.presence.status())
+            .unwrap_or_default();
+        Some(match status {
+            crate::presence::Status::Off => (theme::text_muted(), "Starting…".to_string()),
+            crate::presence::Status::Waiting(_) => (
+                theme::warning(),
+                "Discord not reachable; retrying".to_string(),
+            ),
+            crate::presence::Status::Shown(None) => {
+                (theme::success(), "Connected · nothing loaded".to_string())
+            }
+            crate::presence::Status::Shown(Some(activity)) => (
+                theme::success(),
+                format!("Connected · {}", activity.details),
+            ),
+        })
+    }
+
+    /// Whether `desktop.json` is saved (a location exists and the file was readable).
+    pub(crate) fn preferences_saved(&self) -> bool {
+        self.preferences.path.is_some()
     }
 
     /// The `tile` that shows a running, loaded, hidden `summary` next to what is shown: beside
@@ -1574,6 +1566,20 @@ impl LotusWindow {
                 })),
             );
         }
+        if let SessionKind::Primary { card } = &summary.info.kind {
+            let card = card.clone();
+            actions = actions.child(
+                icon_button(
+                    SharedString::from(format!("card-settings-{id}")),
+                    Icon::Gear,
+                    "Card settings",
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.open_settings(crate::settings_window::Target::Card(card.clone()), cx);
+                })),
+            );
+        }
         if let Some(tile) = self.tile_with(summary) {
             actions = actions.child(
                 icon_button(
@@ -1680,6 +1686,18 @@ impl LotusWindow {
                     .text_color(theme::text_muted())
                     .child(card.to_string()),
             )
+            .child({
+                let card = card.to_string();
+                icon_button(
+                    SharedString::from(format!("card-settings-{card}")),
+                    Icon::Gear,
+                    "Card settings",
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    view.open_settings(crate::settings_window::Target::Card(card.clone()), cx);
+                }))
+            })
             .when(self.control, |row| {
                 row.child(
                     icon_button(
@@ -3915,6 +3933,10 @@ impl Render for LotusWindow {
                 }),
             )
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
+                if event.keystroke.modifiers.control && event.keystroke.key == "," {
+                    view.open_settings(crate::settings_window::Target::Global, cx);
+                    return;
+                }
                 if event.keystroke.modifiers.control && event.keystroke.key == "o" {
                     let session = view
                         .selected_summary()
@@ -3945,14 +3967,6 @@ impl Render for LotusWindow {
                     .filter(|_| self.split())
                     .map(|session| self.render_tile_inspector(&plan, &session, cx)),
             )
-            // At the root so it paints over the centre column it overhangs.
-            .when(self.menu == Menu::Preferences, |root| {
-                let popover = self.render_preferences(cx);
-                root.child(match plan.sessions {
-                    Some(_) => popover.bottom(px(56.0)).left(px(8.0)),
-                    None => popover.bottom(px(8.0)).left(px(layout::SESSION_RAIL + 4.0)),
-                })
-            })
     }
 }
 

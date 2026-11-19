@@ -239,7 +239,8 @@ Layout is computed in logical pixels by `desktop::layout` (pure, unit-tested):
   changing its saved state. Ctrl+B / Ctrl+I toggle the same state.
 - **Sidebar**: cards with their primary and secondaries nested beneath; square
   dot = primary, round = secondary, colour = state. Hover `+` copies a card,
-  `×` stops. Footer: MCP link, slot use, and the preferences gear. Long names
+  `×` stops. A card row's gear opens its settings. Footer: MCP link, slot use,
+  and the Settings gear. Long names
   truncate with an ellipsis; the rail shows one chip per session.
 - **Toolbar** by centre width: ≥ 780 px labelled buttons, ≥ 520 px icons with
   tooltips, otherwise Run/Pause and Step plus a ⋯ menu holding Reset, Load,
@@ -256,18 +257,18 @@ Layout is computed in logical pixels by `desktop::layout` (pure, unit-tested):
   and a chevron that shows the rest. Each pill shows the full detail in its tooltip.
 - **Keys**: Z/X A/B, A/S X/Y, Q/W L/R, arrows, Enter/Backspace Start/Select
   (only while the screen has focus); Space run/pause; `.` step; Ctrl+O open
-  file; Ctrl+1–7 rail views; Ctrl+[ / Ctrl+] cycle views; Tab / Shift+Tab move
+  file; Ctrl+, Settings; Ctrl+1–7 rail views; Ctrl+[ / Ctrl+] cycle views; Tab / Shift+Tab move
   focus; Esc closes menus.
 - **Icons** are original 16 × 16 stroke SVGs (`desktop::icons`), tinted by
   text colour, so they stay sharp at any scale.
 - **Theme**: Geist-derived dark neutrals with colour only for state
   (`desktop::theme`, after the workspace's `vercel.md`). Segoe UI and Consolas.
 
-Pane widths, open states and Discord options persist in `desktop.json`
+Pane widths, open states, Discord options and the Settings window bounds persist in `desktop.json`
 (`desktop::preferences`): `LOTUS_DESKTOP_PREFERENCES`, else
 `%APPDATA%\LOTUS\desktop.json`, else `$XDG_CONFIG_HOME/lotus/desktop.json`.
 The portable launcher keeps it in `data/`. If the file exists but does not parse,
-it is never overwritten, and the preferences menu says so.
+it is never overwritten, and the Settings window says so.
 
 ## Workspace (#67)
 
@@ -924,7 +925,55 @@ bounds or choices, default, scopes (`global`, `primary`,
 - **Discovery.** `ctr-cli settings schema [global|primary|secondary]` and
   `lotus_settings_schema` print the same JSON.
 
-The registry does not drive any UI yet (#53 onward).
+The registry drives the Settings window ([below](#settings-window-53)).
+
+## Settings window (#53)
+
+`desktop::settings_window`: one separate, resizable, non-modal window per
+process ("LOTUS Settings", 860 × 620, minimum 640 × 420). The sidebar gear,
+Ctrl+, and a card row's gear (offline cards and running primaries) open it, or
+focus it and switch its target if it is open. It replaces the preferences
+popover.
+
+- **Targets.** Global (saved defaults) and each card (its saved overrides,
+  scope `primary`), whether or not the primary runs. A secondary has no saved
+  settings and is not a target; its temporary overrides stay CLI and MCP only.
+- **Rows.** The left column picks the target and a registry group; groups with
+  no row at that scope are hidden. Each row shows the label, description, value
+  and source badge (`default`, `global`, `card`, `managed`, `desktop.json`,
+  `host.json`). Worker and input values come from `Supervisor::settings` and
+  are written with `Supervisor::set_setting` (`Actor::Desktop`); a save error
+  is shown in the header.
+- **Controls.** Booleans toggle, choices cycle, integers step by 1; floats by
+  1/100 of their range rounded up to 1, 2 or 5 × 10ⁿ (0.1 when unbounded),
+  clamped to the bounds. Reset
+  removes the target's value ("Reset to Global" on a card, "Reset to default"
+  on global). Text, JSON and binding values are shown read-only until #54.
+- **Read-only.** Host settings (`host.json`, read at start), values from the
+  host `profile` (`managed`), and every worker or input row when the host has
+  no `allow_control` or no host configuration. The tooltip says why.
+- **Desktop preferences** are the `lotus.desktop.*` rows, validated against
+  the registry and saved to `desktop.json` at once. Discord Rich Presence
+  cannot be turned on without a usable application ID; the Discord group
+  shows the connection state. If `desktop.json` has no location or did not
+  parse, the header says changes are not saved.
+- **Refresh.** Values reload on target switch, after each edit, when
+  `Supervisor::settings_revision` changes (checked every 250 ms; MCP edits in
+  the same process) and on activation (edits saved by `ctr-cli` meanwhile).
+- **Window state.** Closing it any way (title bar, Esc, the main window
+  closing) saves `gpui::Window::window_bounds` to `settings_bounds`; it reopens
+  there if the saved size is at least the minimum, otherwise centred. The main
+  window closes it. Keys typed in it never reach a guest: it has its own focus,
+  and the main window maps keys only while its screens are focused.
+
+`tests/test_settings_window.py` (**verified emulator**, mock worker, real key
+events, 2026-11-18): Ctrl+, three times leaves one Settings window, Esc closes
+it and saves bounds, it reopens at the same bounds, and closing the main
+window closes it. Unit tests cover the steps, every target having rows, and
+the bounds minimum. The reload on revision change and on activation is
+**source inspected** only. macOS and Linux are not built or run. `--mcp`
+mode keeps the process alive after its window closes, with or without
+Settings; that predates #53.
 
 ## Settings layers (#51)
 
@@ -980,7 +1029,7 @@ layout keys share these files and layers but never reach a worker.
 
 ## Discord Rich Presence
 
-Opt-in (preferences gear → Discord Rich Presence; off by default). Owned by
+Opt-in (Settings → Discord → Discord Rich Presence; off by default). Owned by
 the desktop only; `lotus-mcp` and `ctr-cli` never connect. Policy
 (`desktop::presence::derive`): sessions that are Running or Paused with content
 count. 0 clears the activity, 1 shows `Playing NAME...`, 2+ with the same

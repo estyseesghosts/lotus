@@ -15,6 +15,7 @@ pub mod preferences;
 pub mod presence;
 pub mod screen_geometry;
 pub mod session_tree;
+pub mod settings_window;
 pub mod theme;
 pub mod tiling;
 pub mod ui_metrics;

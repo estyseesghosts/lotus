@@ -34,6 +34,9 @@ pub struct Preferences {
     /// restoring tiles must never start a worker.
     pub split_axis: Axis,
     pub split_ratio: f32,
+    /// Settings window position and size `[x, y, width, height]` in logical pixels, saved
+    /// when it closes (lotus#53); `None` centres it.
+    pub settings_bounds: Option<[f32; 4]>,
 }
 
 impl Default for Preferences {
@@ -48,6 +51,7 @@ impl Default for Preferences {
             discord_application_id: None,
             split_axis: Axis::Auto,
             split_ratio: RATIO_DEFAULT,
+            settings_bounds: None,
         }
     }
 }

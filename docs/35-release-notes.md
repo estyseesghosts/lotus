@@ -17,6 +17,10 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
 - Input-layout preset format and resolver: stable 3DS action IDs, portable
   keyboard/controller bindings, global → card → secondary overrides; the
   builtin preset reproduces the shipped keys (#57).
+- Settings window (#53): one non-modal window (gear, Ctrl+, or a card's gear)
+  editing global and per-card settings from the registry with their sources,
+  and the desktop preferences it replaces the popover with. Text, list and
+  binding values are read-only until #54.
 - Input mapping profiles (#63): `lotus.input.*` settings layered like worker
   settings and applied live to each session's routing. Per-session mappings
   with Azahar's radial dead zone, sensitivity, inversion and a 0.5 axis

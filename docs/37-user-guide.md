@@ -108,7 +108,7 @@ secondaries (round dots) nested below; the dot colour is the state. Use `+`
 to start a session (hovering a card's `+` copies that card), **Open file…**
 or Ctrl+O to pick a `.3dsx`, and `×` to stop. A file picked here is approved
 as `local/<file>` for that run only. The footer shows the MCP link, slots in
-use, artifact storage and the preferences gear.
+use, artifact storage and the Settings gear.
 
 Content loads **paused**. Press Space or Run to start it.
 
@@ -182,12 +182,22 @@ audio sample rate and drops (output is muted), worker memory, PID and uptime,
 and who last acted (`you`, `agent`, `host`). These are host measurements, not
 guest timing. On a small window they collapse into pills; hover for detail.
 
-### Preferences
+### Settings window
 
-The gear in the sidebar footer. Pane widths and open states are saved as you
-drag. Discord Rich Presence is off by default; when on, it shows `Playing
-NAME` or `Debugging ...`, and **Hide game titles** removes file names. Only
-the sanitised file name is sent, over Discord's local pipe.
+The gear in the sidebar footer or Ctrl+, opens Settings; a card's gear opens
+it on that card. There is one window: opening it again focuses it. Pick
+**Global** or a card on the left, then a group. Each row shows where its value
+comes from; **Reset to Global** (on a card) or **Reset to default** removes the value saved
+at that level. Worker settings apply to sessions started afterwards; input
+layouts and window preferences apply at once. Host settings and `managed`
+values are read-only, and so is everything but window preferences when the host
+does not allow control. Text, list and binding values cannot be edited here
+yet (#54); use the CLI or MCP. Esc closes it.
+
+Pane widths and open states are saved as you drag. Discord Rich Presence
+(Settings → Discord) is off by default; when on, it shows `Playing NAME` or
+`Debugging ...`, and **Hide game titles** removes file names. Only the
+sanitised file name is sent, over Discord's local pipe.
 
 ## 4. Settings
 
@@ -256,8 +266,8 @@ They resolve in this order, later winning:
 4. a secondary session's temporary overrides (memory only)
 5. host `profile` (managed; cannot be changed from a client)
 
-Change them with the CLI or MCP (sections 6–7); there is no settings UI yet
-(#53 onward). Saved changes apply to sessions started afterwards, never to a
+Change them in the Settings window (Ctrl+,), or with the CLI or MCP
+(sections 6–7). Saved changes apply to sessions started afterwards, never to a
 running one; a running primary lists them as `pending`. A secondary's
 temporary overrides apply now, but the worker refuses settings that are not
 live while content is loaded. Use JSON values: `100`, `true`, `"text"`.
@@ -299,7 +309,7 @@ Details: [30](30-sessions-and-interface.md#input-layouts-57-63).
 
 Location: `LOTUS_DESKTOP_PREFERENCES` if set (the portable launcher sets
 `<data>/desktop.json`), else `%APPDATA%\LOTUS\desktop.json`. A file that does
-not parse is never overwritten; the preferences menu says so.
+not parse is never overwritten; the Settings window says so.
 
 | Key | Default |
 | --- | --- |
@@ -308,6 +318,7 @@ not parse is never overwritten; the preferences menu says so.
 | `discord_presence`, `discord_hide_titles` | `false`, `false` |
 | `discord_application_id` | built-in LOTUS application |
 | `split_axis`, `split_ratio` | `auto`, 0.5 (0.2–0.8) |
+| `settings_bounds` | `null` (Settings window centred) |
 
 ## 5. Running the programs directly
 
@@ -499,6 +510,7 @@ The inspector can copy a local failure report with log tails to the clipboard.
 
 - Early, unsigned developer build; Windows 11 x64 only.
 - Audio is emulated but muted.
-- No settings UI or controller remapping yet (#53–#58, #63).
+- The Settings window cannot edit text, list or binding values, and has no
+  search or input-layout editor yet (#54–#58, #64).
 - Real controllers and two-monitor DPI handling are untested.
 - No hardware-accuracy claim: the workers behave like Azahar.

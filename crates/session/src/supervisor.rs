@@ -444,6 +444,12 @@ impl Supervisor {
     }
 
     /// Persistent card names.
+    /// The host configuration this supervisor runs with (paths canonicalized).
+    #[must_use]
+    pub fn config(&self) -> &HostConfig {
+        &self.config
+    }
+
     pub fn cards(&self) -> io::Result<Vec<String>> {
         self.cards.list()
     }
