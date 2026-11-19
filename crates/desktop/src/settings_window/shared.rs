@@ -1,12 +1,11 @@
 //! #138: Settings as a System Preferences-style window (HIG pp. 243-244,
 //! 347-350; silvestris docs/preferences.md). Overview of category icons,
 //! one pane per registry Group, registry subgroups as the pane's tabs.
-//! Global/card scope is a pop-up in the toolbar's search position, because it
-//! changes every pane's values rather than selecting a pane.
+//! The toolbar holds the scope pop-up and a search field for its settings registry.
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
-use gpui::{AnyElement, Entity, Focusable, ImageFormat, Pixels};
+use gpui::{AnyElement, Entity, Focusable, ImageFormat, Pixels, StatefulInteractiveElement};
 use silvestris::controls::{
     Button, Checkbox, CheckState, ControlSize, PopUpButton, Segment, SegmentedControl, Stepper,
     TextField, TextFieldEvent,
@@ -123,6 +122,7 @@ pub(super) struct PreferencesState {
     pub navigator: PreferencesNavigator,
     tabs: HashMap<Group, &'static str>,
     fields: HashMap<String, Entity<TextField>>,
+    search: Option<Entity<TextField>>,
     sized_for: Option<Option<SharedString>>,
     /// Set when the pane or tab changes; cleared once the window fits, so
     /// the window is resized only on navigation, never every frame.
@@ -164,6 +164,9 @@ impl SettingsWindow {
     }
 
     fn after_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(search) = &self.prefs.search {
+            search.update(cx, |field, cx| field.set_text("", cx));
+        }
         if let Some(group) = self.prefs.navigator.current().and_then(|id| group_from(id)) {
             self.group = group;
         }
@@ -215,18 +218,74 @@ impl SettingsWindow {
             )
     }
 
+    fn search_field(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<TextField> {
+        self.prefs.search.get_or_insert_with(|| {
+            let field = cx.new(|cx| {
+                let mut field = TextField::new(window, cx);
+                field.set_label("Search Settings", cx);
+                field.set_placeholder("Search Settings", cx);
+                field.set_size(ControlSize::Small, cx);
+                field.set_search(true, cx);
+                field
+            });
+            cx.subscribe(&field, |_, _, event, cx| {
+                if matches!(event, TextFieldEvent::Changed) {
+                    cx.notify();
+                }
+            }).detach();
+            field
+        }).clone()
+    }
+
+    fn render_search(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let words: Vec<_> = query.split_whitespace().collect();
+        let rows: Vec<_> = BANDS.iter()
+            .flat_map(|(_, groups)| groups.iter().copied())
+            .flat_map(|group| self.rows(group))
+            .filter(|setting| {
+                let haystack = format!("{} {} {} {}", setting.key, setting.label, setting.subgroup, setting.group.label()).to_lowercase();
+                words.iter().all(|word| haystack.contains(word))
+            })
+            .collect();
+        let theme = cx.theme().clone();
+        let mut results = div()
+            .id("settings-search-results")
+            .debug_selector(|| "settings-search-results".into())
+            .flex_1().min_h_0().overflow_y_scroll().p(px(16.0));
+        if rows.is_empty() {
+            results = results.child(
+                div().text_color(silvestris::convert::hsla(theme.colors.text_secondary)).child("No settings match your search."),
+            );
+        } else {
+            let mut form = Form::new(LABEL_WIDTH);
+            for descriptor in rows {
+                form = form.row(self.form_row(descriptor, window, cx));
+            }
+            results = results.child(form);
+        }
+        results.into_any_element()
+    }
+
     pub(super) fn render_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // A scope with fewer groups may remove the shown pane.
         let categories = self.categories();
         self.prefs.navigator.retain(|id| prefs::find(&categories, id).is_some());
         self.fit_window(window);
         let this = cx.entity().downgrade();
+        let search = self.search_field(window, cx);
+        let query = search.read(cx).text().trim().to_lowercase();
         let toolbar = PreferencesToolbar::new(&self.prefs.navigator)
             .on_navigate(move |to, window, cx| {
                 let _ = this.update(cx, |view, cx| view.navigate(to, window, cx));
             })
-            .search(self.scope_popup(cx));
-        let content = match self.prefs.navigator.current().and_then(|id| group_from(id)) {
+            .search(
+                div().flex().items_center().gap(px(12.0))
+                    .child(self.scope_popup(cx))
+                    .child(div().w(px(166.0)).child(search)),
+            );
+        let content = if !query.is_empty() {
+            self.render_search(&query, window, cx)
+        } else { match self.prefs.navigator.current().and_then(|id| group_from(id)) {
             None => {
                 let this = cx.entity().downgrade();
                 let overview = PreferencesOverview::new(categories).on_select(move |id, window, cx| {
@@ -243,7 +302,8 @@ impl SettingsWindow {
                 .into_any_element()
             }
             Some(group) => self.render_pane(group, window, cx).into_any_element(),
-        };
+        }};
+
         let title = self.prefs.navigator.title(&self.categories(), OVERVIEW_TITLE);
         let height = cx.theme().metrics.toolbar_height;
         silvestris::chrome::WindowFrame::new(title)
@@ -627,4 +687,38 @@ fn subgroup_label(subgroup: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Focusable, TestAppContext};
+
+    #[test]
+    fn typing_and_escape_filter_settings_without_changing_the_pane() {
+        let mut app = TestAppContext::single();
+        app.update(|cx| silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx));
+        let (main, _) = app.add_window_view(LotusWindow::test_preview);
+        let (settings, cx) = app.add_window_view(|window, cx| {
+            SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx)
+        });
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let search = settings.read(cx).prefs.search.as_ref().unwrap().clone();
+            window.focus(&search.read(cx).focus_handle(cx), cx);
+        });
+        cx.simulate_keystrokes("d i s c o r d");
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let view = settings.read(cx);
+            assert_eq!(view.prefs.search.as_ref().unwrap().read(cx).text(), "discord");
+            assert!(view.prefs.navigator.current().is_none());
+        });
+        assert!(cx.debug_bounds("settings-search-results").is_some());
+        assert!(cx.debug_bounds("preference-pane-general").is_none());
+        cx.simulate_keystrokes("escape");
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("settings-search-results").is_none());
+        assert!(cx.debug_bounds("preference-pane-general").is_some());
+    }
 }

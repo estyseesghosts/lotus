@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, relative, uniform_list, AnyElement, AppContext, ClickEvent, Context, Div,
+    div, px, relative, AnyElement, AppContext, ClickEvent, Context, Div,
     DragMoveEvent, FocusHandle, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
     KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
     PathPromptOptions, Render, RenderImage, Rgba, SharedString, Stateful,
@@ -92,6 +92,7 @@ const KEYS: [(&str, &str); 16] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Menu {
     Closed,
+    #[cfg(not(feature = "silvestris-ui"))]
     NewSession,
     Load,
     /// Toolbar actions that do not fit.
@@ -100,6 +101,7 @@ enum Menu {
     #[cfg(not(feature = "silvestris-ui"))]
     InspectorMore,
     /// Trace import, clipboard command, keyboard reference.
+    #[cfg(not(feature = "silvestris-ui"))]
     InspectorUtility,
 }
 
@@ -1118,11 +1120,17 @@ impl LotusWindow {
                     .when(self.control, |row| {
                         row.child(
                             icon_button(theme, "new-session", Icon::Plus, "New session").on_click(
-                                cx.listener(|view, _: &ClickEvent, _, _| {
-                                    view.menu = match view.menu {
-                                        Menu::NewSession => Menu::Closed,
-                                        _ => Menu::NewSession,
-                                    };
+                                cx.listener(|view, event: &ClickEvent, window, cx| {
+                                    #[cfg(feature = "silvestris-ui")]
+                                    view.open_new_session_menu(event, window, cx);
+                                    #[cfg(not(feature = "silvestris-ui"))]
+                                    {
+                                        let _ = (event, window, cx);
+                                        view.menu = match view.menu {
+                                            Menu::NewSession => Menu::Closed,
+                                            _ => Menu::NewSession,
+                                        };
+                                    }
                                 }),
                             ),
                         )
@@ -1134,8 +1142,12 @@ impl LotusWindow {
             .when(!cfg!(feature = "silvestris-ui"), |sidebar| {
                 sidebar.child(self.divider(Pane::Sessions, cx))
             })
-            .when(self.menu == Menu::NewSession, |sidebar| {
-                sidebar.child(self.render_new_menu(cx))
+            .children({
+                #[cfg(feature = "silvestris-ui")]
+                let menu: Option<gpui::Empty> = None;
+                #[cfg(not(feature = "silvestris-ui"))]
+                let menu = (self.menu == Menu::NewSession).then(|| self.render_new_menu(cx));
+                menu
             })
             .into_any_element()
     }
@@ -1261,7 +1273,7 @@ impl LotusWindow {
         rail.into_any_element()
     }
 
-    fn preferences_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+    fn preferences_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         icon_button(theme, "preferences", Icon::Gear, "Settings (Ctrl+,)").on_click(cx.listener(
             |view, _: &ClickEvent, _, cx| {
@@ -1877,6 +1889,7 @@ impl LotusWindow {
             })
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_new_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         let mounted: Vec<&str> = self
@@ -2017,7 +2030,7 @@ impl LotusWindow {
                         } else {
                             "Identify"
                         };
-                        row.child(with_tooltip(
+                        row.child(compact_tooltip(
                             small_button(theme, "identify-controller", label, Tone::Plain, true)
                                 .on_click(cx.listener(|view, _: &ClickEvent, _, _| {
                                     if let Some(controller) = &view.controller {
@@ -2075,7 +2088,7 @@ impl LotusWindow {
                 } else {
                     ("Assign", "Drive the selected session with this controller")
                 };
-                row = row.child(with_tooltip(
+                row = row.child(compact_tooltip(
                     small_button(theme, format!("assign-{device}"), label, Tone::Plain, true)
                         .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
                             view.assign_controller(device, Some(session.clone()), replace);
@@ -3188,7 +3201,7 @@ impl LotusWindow {
                     "Split direction: top and bottom. Click for automatic",
                 ),
             };
-            header = header.child(with_tooltip(
+            header = header.child(compact_tooltip(
                 small_button(theme, "tile-axis", label, Tone::Plain, true).on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
@@ -3833,11 +3846,17 @@ impl LotusWindow {
                             "Trace import, clipboard command, keys",
                         )
                         .on_click(cx.listener(
-                            |view, _: &ClickEvent, _, _| {
-                                view.menu = match view.menu {
-                                    Menu::InspectorUtility => Menu::Closed,
-                                    _ => Menu::InspectorUtility,
-                                };
+                            |view, event: &ClickEvent, window, cx| {
+                                #[cfg(feature = "silvestris-ui")]
+                                view.open_inspector_utilities(event, window, cx);
+                                #[cfg(not(feature = "silvestris-ui"))]
+                                {
+                                    let _ = (event, window, cx);
+                                    view.menu = match view.menu {
+                                        Menu::InspectorUtility => Menu::Closed,
+                                        _ => Menu::InspectorUtility,
+                                    };
+                                }
                             },
                         )),
                     ),
@@ -3875,6 +3894,9 @@ impl LotusWindow {
             panel = panel.child(self.divider(Pane::Inspector, cx));
         }
         // Popovers paint last so the row list never covers them.
+        #[cfg(feature = "silvestris-ui")]
+        let utility: Option<gpui::Empty> = None;
+        #[cfg(not(feature = "silvestris-ui"))]
         let utility = (self.menu == Menu::InspectorUtility).then(|| self.render_utility_menu(cx));
         let view = self.inspection.as_ref().filter(|snapshot| {
             snapshot.1 == current
@@ -3934,9 +3956,13 @@ impl LotusWindow {
         let key_width = (width * 0.36).clamp(90.0, 220.0);
         let rows = view.rows.clone();
         let weak = cx.entity().downgrade();
+        #[cfg(feature = "silvestris-ui")]
+        use silvestris::controls::table::virtual_table as inspection_list;
+        #[cfg(not(feature = "silvestris-ui"))]
+        use gpui::uniform_list as inspection_list;
         panel
             .child(
-                uniform_list("inspection-rows", rows.len(), move |range, _, _| {
+                inspection_list("inspection-rows", rows.len(), move |range, _, cx| {
                     range
                         .map(|index| {
                             let row = &rows[index];
@@ -3944,7 +3970,11 @@ impl LotusWindow {
                             let target = target.clone();
                             let action = row.action.clone();
                             let tooltip = format!("{}\n{}", row.key, row.value);
-                            with_tooltip(
+                            #[cfg(feature = "silvestris-ui")]
+                            let line = silvestris::controls::table::code_row(("inspection-row", index), 28.0, cx);
+                            #[cfg(not(feature = "silvestris-ui"))]
+                            let line = {
+                                let _ = cx;
                                 div()
                                     .id(("inspection-row", index))
                                     .flex()
@@ -3955,6 +3985,9 @@ impl LotusWindow {
                                     .overflow_hidden()
                                     .font_family(theme.mono)
                                     .text_xs()
+                            };
+                            with_tooltip(
+                                line
                                     .when(show_lane, |line| {
                                         line.child(
                                             div()
@@ -4000,6 +4033,7 @@ impl LotusWindow {
     }
 
     /// Utilities that are not tied to the selected view.
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_utility_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         let target = self.inspection_target();
@@ -4038,25 +4072,29 @@ impl LotusWindow {
                 )
                 .on_click(cx.listener(move |view, _, _, cx| {
                     view.menu = Menu::Closed;
-                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                        let command = if text.len() <= 65536 {
-                            serde_json::from_str::<D>(&text).map_err(|e| e.to_string())
-                        } else {
-                            Err("Command exceeds 64 KiB".into())
-                        };
-                        match command {
-                            Ok(command) => match command.validate() {
-                                Ok(()) => view.debug_command(&target, command),
-                                Err(error) => view.error = error.into(),
-                            },
-                            Err(error) => view.error = error,
-                        }
-                    }
+                    view.run_clipboard_command(&target, cx);
                 })),
             )
             .child(div().h(px(1.0)).my_1().bg(theme.border))
             .child(menu_heading(theme, "KEYBOARD"))
             .child(keys)
+    }
+
+    fn run_clipboard_command(&mut self, target: &Option<SessionTarget>, cx: &mut gpui::App) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            return;
+        };
+        if text.len() > 65536 {
+            self.error = "Command exceeds 64 KiB".into();
+            return;
+        }
+        match serde_json::from_str::<D>(&text) {
+            Ok(command) => match command.validate() {
+                Ok(()) => self.debug_command(target, command),
+                Err(error) => self.error = error.into(),
+            },
+            Err(error) => self.error = error.to_string(),
+        }
     }
 
     fn render_error(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
@@ -4672,6 +4710,34 @@ fn button(
 }
 
 /// Inspector context command: shorter than toolbar buttons.
+#[cfg(feature = "silvestris-ui")]
+type CompactButton = silvestris::controls::Button;
+#[cfg(not(feature = "silvestris-ui"))]
+type CompactButton = Stateful<Div>;
+
+fn compact_tooltip(button: CompactButton, text: impl Into<SharedString>) -> CompactButton {
+    #[cfg(feature = "silvestris-ui")]
+    return button.tooltip(text);
+    #[cfg(not(feature = "silvestris-ui"))]
+    with_tooltip(button, text)
+}
+
+#[cfg(feature = "silvestris-ui")]
+fn small_button(
+    _: theme::Palette,
+    id: impl Into<SharedString>,
+    label: &'static str,
+    tone: Tone,
+    enabled: bool,
+) -> CompactButton {
+    CompactButton::new(id.into(), label)
+        .size(silvestris::controls::ControlSize::Small)
+        .default_button(matches!(tone, Tone::Primary))
+        .destructive(matches!(tone, Tone::Danger))
+        .disabled(!enabled)
+}
+
+#[cfg(not(feature = "silvestris-ui"))]
 fn small_button(
     theme: theme::Palette,
     id: impl Into<SharedString>,
@@ -4796,8 +4862,10 @@ impl Render for DragGhost {
 }
 
 /// Small text tooltip; GPUI tooltips are views.
+#[cfg(not(feature = "silvestris-ui"))]
 struct Tooltip(SharedString);
 
+#[cfg(not(feature = "silvestris-ui"))]
 impl Render for Tooltip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
@@ -4816,11 +4884,30 @@ impl Render for Tooltip {
     }
 }
 
+#[cfg(feature = "silvestris-ui")]
+pub(crate) use silvestris::controls::tooltip::attach as with_tooltip;
+
+#[cfg(not(feature = "silvestris-ui"))]
 pub(crate) fn with_tooltip(element: Stateful<Div>, text: impl Into<SharedString>) -> Stateful<Div> {
     let text = text.into();
     element.tooltip(move |_, cx| cx.new(|_| Tooltip(text.clone())).into())
 }
 
+#[cfg(feature = "silvestris-ui")]
+fn icon_button(
+    _: theme::Palette,
+    id: impl Into<SharedString>,
+    glyph: Icon,
+    description: impl Into<SharedString>,
+) -> CompactButton {
+    let description = description.into();
+    CompactButton::new(id.into(), description.clone())
+        .style(silvestris::controls::ButtonStyle::Gradient)
+        .icon(move |ink| icon(glyph, 12.0, ink))
+        .tooltip(description)
+}
+
+#[cfg(not(feature = "silvestris-ui"))]
 fn icon_button(
     theme: theme::Palette,
     id: impl Into<SharedString>,

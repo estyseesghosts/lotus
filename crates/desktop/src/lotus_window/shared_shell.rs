@@ -489,18 +489,15 @@ mod tests {
         assert!(cx.debug_bounds("lotus-inspector-ready-a").is_some());
         assert!(cx.debug_bounds("inspector-view").is_some(), "view pop-up replaces the rail");
         cx.simulate_keystrokes("z");
-        cx.update(|_, cx| {
-            assert!(view.read(cx).keys.is_empty());
-            view.update(cx, |view, cx| {
-                view.menu = Menu::InspectorUtility;
-                cx.notify();
-            });
-        });
+        cx.update(|_, cx| assert!(view.read(cx).keys.is_empty()));
+        let utility = cx.debug_bounds("inspector-utility").expect("inspector utility button");
+        cx.simulate_click(utility.center(), gpui::Modifiers::default());
         draw(cx);
+        cx.update(|_, cx| assert!(view.read(cx).shared_commands.menu.read(cx).is_open()));
         cx.simulate_keystrokes("escape");
         draw(cx);
         cx.update(|_, cx| {
-            assert_eq!(view.read(cx).menu, Menu::Closed);
+            assert!(!view.read(cx).shared_commands.menu.read(cx).is_open());
             assert!(view.read(cx).preferences.values.inspector_open);
         });
         cx.simulate_keystrokes("escape");

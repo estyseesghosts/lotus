@@ -384,3 +384,30 @@ Panel::group lists them: twelve views exceed a tab view's 2 to about 6
 tabs, and HIG p. 341 allows a pop-up in that case. Run/pause and step stay
 in the toolbar, so the rail's copies are gone. The legacy (non-silvestris-ui)
 build keeps its rail. Ctrl+1..7 and [ / ] still select views.
+
+
+## Compact controls, Settings search and window separation
+
+Source-list accessories, tile utility actions and inspector commands use
+Silvestris icon and small push buttons in the staged build. New Session
+and Inspector Utilities use the shared command popup. Opening a popup
+releases guest input, commands that create sessions recheck card and
+permission state, and clipboard dispatch reuses the existing inspector
+target check. Inspector data rows use shared alternating materials and
+keep the existing virtualized list. Settings search matches setting keys,
+labels, subgroups and group names in the current scope and displays the
+existing editable rows. Escape clears a query and restores the pane.
+
+A native Aqua Light desktop capture at 100% DPI confirms Main and Settings
+have a visible DWM outline and rounded corners. No exterior shadow was
+visible in the overlap capture or the standard Win32 comparison on this
+desktop. The framework lets DWM own that effect, including its compositor
+and window-state limits. See Silvestris docs/exceptions.md, handbook 06,
+and issues #127, #128, #129 and #134.
+
+The opt-in build's regression suite checks the inspector menu's Escape
+ordering and Settings search from actual GPUI key events. Aqua cutover
+still requires the validation in #138. Some workspace/rail controls and
+gauges still use the legacy renderer. Native worker/HID, mixed DPI,
+additional OS behavior, portable packaging and performance parity remain
+unverified.

@@ -17,8 +17,8 @@ pub(super) struct SharedCommands {
     pub menu: Entity<PopupMenu>,
     target: Option<SessionTarget>,
     session_ids: Vec<CommandId>,
-    /// Per-open "load this asset" commands; replaced on each Load.
-    asset_ids: Vec<CommandId>,
+    /// Commands whose handlers capture the model at the time a popup opens.
+    popup_ids: Vec<CommandId>,
     /// Where the Actions menu last opened; Load reopens the menu there.
     anchor: gpui::Point<gpui::Pixels>,
     bound: bool,
@@ -99,7 +99,7 @@ impl SharedCommands {
         let menu = cx.new(|cx| PopupMenu::new(MenuModel { label: "Actions".into(), entries: Vec::new() }, registry.clone(), window, cx));
         // Menu state invalidation must repaint its mounted deferred overlay.
         cx.observe(&menu, |_, _, cx| cx.notify()).detach();
-        Self { registry, menu, target: None, session_ids: Vec::new(), asset_ids: Vec::new(), anchor: gpui::Point::default(), bound: false }
+        Self { registry, menu, target: None, session_ids: Vec::new(), popup_ids: Vec::new(), anchor: gpui::Point::default(), bound: false }
     }
 }
 
@@ -114,7 +114,7 @@ impl LotusWindow {
             if menu.read(cx).is_open() {
                 menu.update(cx, |menu, cx| menu.dismiss(window, cx, true));
             }
-            for id in self.shared_commands.session_ids.drain(..).chain(self.shared_commands.asset_ids.drain(..)) {
+            for id in self.shared_commands.session_ids.drain(..).chain(self.shared_commands.popup_ids.drain(..)) {
                 registry.update(cx, |r, cx| r.remove(&id, cx));
             }
             for command in SessionCommand::ALL {
@@ -196,10 +196,145 @@ impl LotusWindow {
         command.id(self.selected_summary().map(SessionTarget::from_summary).as_ref())
     }
 
+    fn clear_popup_commands(&mut self, cx: &mut Context<Self>) {
+        let registry = self.shared_commands.registry.clone();
+        for id in self.shared_commands.popup_ids.drain(..) {
+            registry.update(cx, |r, cx| r.remove(&id, cx));
+        }
+    }
+
+    fn popup_action(
+        &mut self,
+        descriptor: CommandDescriptor,
+        invoke: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> MenuEntry {
+        let id = descriptor.id.clone();
+        let owner = cx.weak_entity();
+        self.shared_commands.registry.update(cx, |registry, cx| {
+            registry.register(descriptor, move |_, _, cx| {
+                let _ = owner.update(cx, |view, cx| {
+                    invoke(view, cx);
+                    cx.notify();
+                });
+            }, cx).expect("unique popup command");
+        });
+        self.shared_commands.popup_ids.push(id.clone());
+        MenuEntry::Command(id)
+    }
+
+    fn open_popup_at(
+        &mut self,
+        model: MenuModel,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.release_input();
+        self.menu = Menu::Closed;
+        self.shared_commands.menu.update(cx, |menu, cx| {
+            menu.set_model(model, window, cx);
+            menu.open(position, window, cx);
+        });
+    }
+
+    pub(super) fn open_new_session_menu(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_popup_commands(cx);
+        let cards = self.cards.clone();
+        let mut entries = vec![MenuEntry::Heading("Persistent Card".into())];
+        for (index, card) in cards.iter().enumerate() {
+            if self.card_is_mounted(card) {
+                continue;
+            }
+            let name = card.clone();
+            entries.push(self.popup_action(
+                CommandDescriptor::action(&format!("new.open.{index}"), card),
+                move |view, _| {
+                    if view.control && view.cards.contains(&name) && !view.card_is_mounted(&name) {
+                        view.create(SessionKind::Primary { card: name.clone() }, None);
+                    }
+                },
+                cx,
+            ));
+        }
+        let fresh = session_tree::next_card_name(&cards);
+        entries.push(self.popup_action(
+            CommandDescriptor::action("new.card", &format!("New Card ({fresh})")),
+            move |view, _| {
+                if view.control && !view.cards.contains(&fresh) && !view.card_is_mounted(&fresh) {
+                    view.create(SessionKind::Primary { card: fresh.clone() }, None);
+                }
+            },
+            cx,
+        ));
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Heading("Temporary Session".into()));
+        entries.push(self.popup_action(
+            CommandDescriptor::action("new.empty", "Blank Card"),
+            |view, _| {
+                if view.control {
+                    view.create(SessionKind::Secondary { parent: None }, None);
+                }
+            },
+            cx,
+        ));
+        for (index, card) in cards.into_iter().enumerate() {
+            entries.push(self.popup_action(
+                CommandDescriptor::action(&format!("new.copy.{index}"), &format!("Copy of {card}")),
+                move |view, _| {
+                    if view.control && view.cards.contains(&card) {
+                        view.create(SessionKind::Secondary { parent: Some(card.clone()) }, None);
+                    }
+                },
+                cx,
+            ));
+        }
+        self.open_popup_at(MenuModel { label: "New Session".into(), entries }, event.position(), window, cx);
+    }
+
+    fn card_is_mounted(&self, name: &str) -> bool {
+        self.sessions.iter().any(|summary| {
+            matches!(&summary.info.kind, SessionKind::Primary { card } if card == name)
+        })
+    }
+
+    pub(super) fn open_inspector_utilities(
+        &mut self,
+        event: &ClickEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.clear_popup_commands(cx);
+        let target = self.inspection_target();
+        let can_debug = self.control && target.is_some();
+        let mut entries = vec![
+            self.popup_action(
+                CommandDescriptor::action("inspector.trace", "Open JSONL Trace").needs_input(),
+                |view, cx| view.open_trace(cx),
+                cx,
+            ),
+            self.popup_action(
+                CommandDescriptor::action("inspector.clipboard", "Run Clipboard JSON").enabled(can_debug),
+                move |view, cx| view.run_clipboard_command(&target, cx),
+                cx,
+            ),
+            MenuEntry::Separator,
+            MenuEntry::Heading("Keyboard".into()),
+        ];
+        entries.extend(KEYS.iter().map(|(key, action)| MenuEntry::Heading(format!("{key}  {action}"))));
+        self.open_popup_at(MenuModel { label: "Inspector Utilities".into(), entries }, event.position(), window, cx);
+    }
+
     pub(super) fn open_shared_actions(&mut self, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.release_input();
         self.menu = Menu::Closed;
         self.sync_shared_commands(window, cx);
+        self.clear_popup_commands(cx);
         let session = |command| MenuEntry::Command(self.session_command_id(command));
         let global = |command: GlobalCommand| MenuEntry::Command(command.id().into());
         let model = MenuModel { label: "Actions".into(), entries: vec![
@@ -221,10 +356,8 @@ impl LotusWindow {
     /// legacy load popover). Each asset is a command scoped to `target`, so a
     /// menu left open across a reset cannot load into the new guest.
     fn open_load_menu(&mut self, target: SessionTarget, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_popup_commands(cx);
         let registry = self.shared_commands.registry.clone();
-        for id in self.shared_commands.asset_ids.drain(..) {
-            registry.update(cx, |r, cx| r.remove(&id, cx));
-        }
         let mut entries = vec![MenuEntry::Heading("Approved Content".into())];
         let scope = format!("{}:{}:{}:{}", target.id.len(), target.id, target.created_unix_ms, target.epoch);
         if self.assets.is_empty() {
@@ -233,7 +366,7 @@ impl LotusWindow {
                 r.register(CommandDescriptor::action(id.as_str(), "None Configured for This Host").enabled(false), |_, _, _| {}, cx)
                     .expect("unique asset placeholder")
             });
-            self.shared_commands.asset_ids.push(id.clone());
+            self.shared_commands.popup_ids.push(id.clone());
             entries.push(MenuEntry::Command(id));
         }
         for (index, asset) in self.assets.iter().enumerate() {
@@ -256,7 +389,7 @@ impl LotusWindow {
                 )
                 .expect("unique asset command")
             });
-            self.shared_commands.asset_ids.push(id.clone());
+            self.shared_commands.popup_ids.push(id.clone());
             entries.push(MenuEntry::Command(id));
         }
         entries.push(MenuEntry::Separator);
@@ -374,7 +507,7 @@ mod tests {
         let assets = cx.update(|_, cx| {
             assert!(menu.read(cx).is_open());
             assert_eq!(view.read(cx).menu, Menu::Closed, "no legacy popover");
-            view.read(cx).shared_commands.asset_ids.clone()
+            view.read(cx).shared_commands.popup_ids.clone()
         });
         assert_eq!(assets.len(), 2);
         cx.update(|_, cx| {
