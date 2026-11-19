@@ -78,6 +78,42 @@ impl Layout {
             Self::Split { first, second, .. } => vec![first, second],
         }
     }
+
+    /// The screen arrangement `session` is shown with, if it is visible.
+    #[must_use]
+    pub fn screens_of(&self, session: &str) -> Option<ScreenLayout> {
+        match self {
+            Self::Single {
+                session: s,
+                screens,
+            } if s == session => Some(*screens),
+            Self::Split {
+                first,
+                second,
+                screens,
+                ..
+            } if first == session || second == session => {
+                Some(screens[usize::from(second == session)])
+            }
+            _ => None,
+        }
+    }
+
+    /// The session in `viewport`; a single view has only the first.
+    #[must_use]
+    pub fn session_at(&self, viewport: Viewport) -> Option<&str> {
+        match (self, viewport) {
+            (Self::Single { session, .. }, Viewport::First)
+            | (Self::Split { first: session, .. }, Viewport::First)
+            | (
+                Self::Split {
+                    second: session, ..
+                },
+                Viewport::Second,
+            ) => Some(session),
+            _ => None,
+        }
+    }
 }
 
 /// Split settings used when a `tile` leaves them out; the desktop persists them.
@@ -102,6 +138,14 @@ pub struct Snapshot {
     pub layout: Layout,
     /// Tile receiving keyboard and touch input; always `First` outside a split.
     pub focused_viewport: Viewport,
+}
+
+impl Snapshot {
+    /// The session keyboard input goes to: the focused tile's, or the single view's.
+    #[must_use]
+    pub fn focused_session(&self) -> Option<&str> {
+        self.layout.session_at(self.focused_viewport)
+    }
 }
 
 /// What `lotus_status.workspace` and `lotus_workspace get` report.
@@ -274,44 +318,34 @@ impl Workspace {
                     return Err(WorkspaceError::Duplicate(first.clone()));
                 }
                 let ratio = ratio.map(check_ratio).transpose()?;
-                let (current_axis, current_ratio, current_screens) = match &layout {
-                    Layout::Split {
-                        axis,
-                        ratio,
-                        screens,
-                        ..
-                    } => (*axis, *ratio, *screens),
-                    _ => (
-                        self.defaults.axis,
-                        self.defaults.ratio,
-                        [ScreenLayout::Auto; 2],
-                    ),
+                let (current_axis, current_ratio) = match &layout {
+                    Layout::Split { axis, ratio, .. } => (*axis, *ratio),
+                    _ => (self.defaults.axis, self.defaults.ratio),
                 };
+                // Screen arrangement and keyboard focus belong to sessions, not slots, so a
+                // reorder carries them (#110). A session new to the workspace starts `auto`;
+                // if the focused session left, focus stays on its slot.
+                let carried = [
+                    layout.screens_of(first).unwrap_or(ScreenLayout::Auto),
+                    layout.screens_of(second).unwrap_or(ScreenLayout::Auto),
+                ];
+                let focused_session = layout.session_at(focused).map(str::to_string);
+                if focused_session.as_deref() == Some(first.as_str()) {
+                    focused = Viewport::First;
+                } else if focused_session.as_deref() == Some(second.as_str()) {
+                    focused = Viewport::Second;
+                }
                 layout = Layout::Split {
                     first: first.clone(),
                     second: second.clone(),
                     axis: axis.unwrap_or(current_axis),
                     ratio: ratio.unwrap_or(current_ratio),
-                    screens: screens.unwrap_or(current_screens),
+                    screens: screens.unwrap_or(carried),
                 };
             }
             Operation::Single { session } => {
                 known(session)?;
-                let screens = match &layout {
-                    Layout::Single {
-                        session: s,
-                        screens,
-                    } if s == session => *screens,
-                    Layout::Split {
-                        first,
-                        second,
-                        screens,
-                        ..
-                    } if first == session || second == session => {
-                        screens[usize::from(second == session)]
-                    }
-                    _ => ScreenLayout::Auto,
-                };
+                let screens = layout.screens_of(session).unwrap_or(ScreenLayout::Auto);
                 layout = Layout::Single {
                     session: session.clone(),
                     screens,
@@ -442,6 +476,78 @@ mod tests {
             ratio: None,
             screens: None,
         }
+    }
+
+    #[test]
+    fn tile_carries_focus_and_screens_by_session() {
+        let mut w = Workspace::default();
+        w.apply(&tile("a", "b"), None, live).unwrap();
+        w.apply(
+            &Operation::SetScreenLayout {
+                viewport: Viewport::First,
+                screens: ScreenLayout::Stacked,
+            },
+            None,
+            live,
+        )
+        .unwrap();
+        w.apply(
+            &Operation::SetScreenLayout {
+                viewport: Viewport::Second,
+                screens: ScreenLayout::SideBySide,
+            },
+            None,
+            live,
+        )
+        .unwrap();
+        w.apply(
+            &Operation::FocusViewport {
+                viewport: Viewport::First,
+            },
+            None,
+            live,
+        )
+        .unwrap();
+        // Reorder: A keeps focus and stacked screens in the second tile.
+        let s = w.apply(&tile("b", "a"), None, live).unwrap();
+        assert_eq!(s.layout.session_at(s.focused_viewport), Some("a"));
+        assert_eq!(s.layout.screens_of("a"), Some(ScreenLayout::Stacked));
+        assert_eq!(s.layout.screens_of("b"), Some(ScreenLayout::SideBySide));
+        // Replacing the unfocused B: A keeps everything, C starts auto.
+        let s = w.apply(&tile("c", "a"), None, live).unwrap();
+        assert_eq!(s.layout.session_at(s.focused_viewport), Some("a"));
+        assert_eq!(s.layout.screens_of("a"), Some(ScreenLayout::Stacked));
+        assert_eq!(s.layout.screens_of("c"), Some(ScreenLayout::Auto));
+        // Replacing the focused A: focus stays on its slot, which B now fills.
+        let s = w.apply(&tile("c", "b"), None, live).unwrap();
+        assert_eq!(s.focused_viewport, Viewport::Second);
+        assert_eq!(s.layout.session_at(s.focused_viewport), Some("b"));
+        // An explicit `screens` still wins.
+        let s = w
+            .apply(
+                &Operation::Tile {
+                    first: "b".into(),
+                    second: "c".into(),
+                    axis: None,
+                    ratio: None,
+                    screens: Some([ScreenLayout::Auto, ScreenLayout::Stacked]),
+                },
+                None,
+                live,
+            )
+            .unwrap();
+        assert_eq!(s.layout.screens_of("c"), Some(ScreenLayout::Stacked));
+        // From a single view, the shown session keeps focus and screens wherever it lands.
+        w.apply(
+            &Operation::Single {
+                session: "a".into(),
+            },
+            None,
+            live,
+        )
+        .unwrap();
+        let s = w.apply(&tile("b", "a"), None, live).unwrap();
+        assert_eq!(s.layout.session_at(s.focused_viewport), Some("a"));
     }
 
     #[test]

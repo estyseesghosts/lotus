@@ -835,3 +835,72 @@ fn a_stopped_session_is_forgotten_under_a_steady_event_stream() {
     runtime.block_on(host.close());
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// lotus#110: a reorder `tile` carries keyboard focus with its session, end to end: the
+/// workspace's focused session is where the window sends keys, and the guest sees them.
+#[test]
+fn keyboard_follows_the_focused_session_through_a_reorder() {
+    use lotus_session::workspace::{Operation, Viewport};
+    let base = std::env::temp_dir().join(format!("lotus-reorder-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let host = Arc::new(Supervisor::new(config).expect("host"));
+    host.enable_workspace(Default::default());
+    let ids: Vec<String> = (0..2)
+        .map(|_| {
+            runtime.block_on(async {
+                let info = host
+                    .create(
+                        SessionKind::Secondary { parent: None },
+                        Some("demo"),
+                        Actor::Host,
+                    )
+                    .await
+                    .expect("create");
+                host.run(&info.id, Actor::Host).await.expect("run");
+                info.id
+            })
+        })
+        .collect();
+    let (a, b) = (ids[0].as_str(), ids[1].as_str());
+    let store = base.join("store").canonicalize().expect("store");
+    let root = |id: &str| store.join("scratch").join(id);
+    let routing = InputRouting::new(host.clone());
+    let apply = |operation: Operation| {
+        host.update_workspace(&operation, None, Actor::Mcp)
+            .expect("workspace")
+    };
+    let tile = |first: &str, second: &str| Operation::Tile {
+        first: first.into(),
+        second: second.into(),
+        axis: None,
+        ratio: None,
+        screens: None,
+    };
+    apply(tile(a, b));
+    apply(Operation::FocusViewport {
+        viewport: Viewport::First,
+    });
+    let snapshot = apply(tile(b, a));
+    assert_eq!(snapshot.focused_session(), Some(a));
+
+    let (before_a, before_b) = (buttons(&root(a)).len(), buttons(&root(b)).len());
+    routing.keyboard_keys(snapshot.focused_session(), ["z".to_string()].into());
+    until("Z presses A on A", || {
+        buttons(&root(a))[before_a..].contains(&u64::from(bits::A))
+    });
+    routing.keyboard_keys(snapshot.focused_session(), Default::default());
+    until("Z released on A", || buttons(&root(a)).last() == Some(&0));
+    assert!(
+        !buttons(&root(b))[before_b..].contains(&u64::from(bits::A)),
+        "the key reached B"
+    );
+
+    runtime.block_on(host.close());
+    let _ = std::fs::remove_dir_all(&base);
+}

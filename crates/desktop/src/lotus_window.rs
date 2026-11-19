@@ -730,20 +730,18 @@ impl LotusWindow {
         .detach();
     }
 
-    /// The session keyboard input drives: the focused tile of a split, otherwise the
-    /// selected session. Selecting a session in the sidebar never moves it off a tile.
+    /// The session keyboard input drives: the focused tile of a split or the single view,
+    /// which an MCP `single` may set apart from the selection (#112); the selection only
+    /// while nothing is shown. Selecting in the sidebar never moves it off a tile.
     fn keyboard_target(&self) -> Option<String> {
-        let id = match &self.workspace.layout {
-            Layout::Split { first, second, .. } => match self.workspace.focused_viewport {
-                Viewport::First => first,
-                Viewport::Second => second,
-            },
-            _ => &self.selected,
-        };
+        let id = self
+            .workspace
+            .focused_session()
+            .unwrap_or(self.selected.as_str());
         self.sessions
             .iter()
-            .any(|s| s.info.id == *id)
-            .then(|| id.clone())
+            .any(|s| s.info.id == id)
+            .then(|| id.to_string())
     }
 
     /// Keyboard goes to [`Self::keyboard_target`] and pointer touch to the tile it started

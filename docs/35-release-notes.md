@@ -24,6 +24,9 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
   (#111).
 - An MCP `lotus_workspace single` of a session other than the sidebar
   selection is no longer reverted on the next desktop tick (#112).
+- Dragging a split tile to the other edge keeps keyboard focus and each
+  session's screen arrangement with the session instead of the slot; outside a
+  split the keyboard goes to the shown session, not the sidebar selection (#110).
 - Space, `.`, Tab, Esc and modifier keys can no longer be bound to 3DS
   actions: settings reject them and import drops them with a warning. Holding
   Space or `.` no longer leaks the key to the session as a game key (#113).

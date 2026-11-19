@@ -287,6 +287,10 @@ same state through `Supervisor::update_workspace`; neither keeps its own layout.
   nothing. `revision` increments only when the state changes; a repeated
   operation is a no-op. `expected_revision` refuses a stale request
   (`ResourceBusy`), so an agent cannot overwrite a newer drag.
+- `tile` carries screens and keyboard focus by session, not slot (#110): a
+  reorder (an edge drag) keeps each session's arrangement and focus; a session
+  new to the split starts at `auto`; if the focused session left, focus stays on
+  its slot. Explicit `screens` wins. `swap` is unchanged.
 - Separate from the workspace, and never changed by it: the selection
   (`Update::selected`), controller input, audio focus and worker execution.
   Outside a split, selecting a session in the sidebar or with
@@ -329,7 +333,7 @@ cycles the axis auto → left/right → top/bottom).
 - Previews: the controller requests one per shown session per tick, each with its
   own in-flight slot (#45), so a stalled tile never delays the other.
 - Input: keyboard goes to the focused viewport (a click on a tile sends
-  `focus_viewport`); what it held is released when it moves. Pointer touch goes to
+  `focus_viewport`), outside a split to the shown session, not the selection; what it held is released when it moves. Pointer touch goes to
   the tile it started on. Controllers follow their assignment (#62), never focus,
   tile order or selection. Selecting a session in the sidebar changes the
   inspector, audio focus and gauges, never the tiles or keyboard.
