@@ -270,3 +270,36 @@ compiled** for both pins in Docker ubuntu:24.04 (GCC 13.3, CMake 3.28), and
 with two AZAHAR sessions of an owned `.3dsx` in `lotus-desktop --mcp` under
 WSLg. The frames advance at about 8 fps each with software rendering in a
 GPU-less container; that is not a performance result.
+
+## 12. Linux AppImage
+
+`scripts/package-linux.py` assembles `LOTUS-v<version>-linux-x86_64.AppImage`
+from the tested Rust binaries and both worker build directories (#108):
+
+```sh
+cargo metadata --locked --format-version 1 --filter-platform x86_64-unknown-linux-gnu > build/metadata.json
+python3 scripts/package-linux.py --rust target/release --metadata build/metadata.json \
+  --azahar build/native-integration --citnlo build/native-experimental --version <version> \
+  --output build/dist --appimagetool <appimagetool-x86_64.AppImage> --runtime <runtime-x86_64>
+```
+
+AppDir layout: `AppRun` (the launcher, [37](37-user-guide.md#linux-appimage)),
+`lotus.desktop`, `lotus.png`, `usr/bin/{lotus-desktop,lotus-mcp,ctr-cli}`,
+`runtimes/{azahar,citnlo}/ctr-worker` with build manifests, licenses,
+`SOURCE.md` and `release-manifest.json` (pins, minimum glibc, host libraries,
+file hashes). The tools are pinned by URL and SHA-256 in the script:
+appimagetool 1.9.1 and type2-runtime 20251108. The static runtime needs no
+libfuse2. Without FUSE, run with `APPIMAGE_EXTRACT_AND_RUN=1` or
+`--appimage-extract`. Packaging needs the `file` command.
+
+Nothing is bundled into `usr/lib`. Every library the binaries load belongs to
+the host: glibc, `libstdc++`, `libgcc_s`, `libudev`, xcb/xkbcommon, and Wayland,
+Vulkan and audio through `dlopen`. These must match the host's drivers and xkb
+data. A binary that needs any other library fails packaging. Built on Ubuntu
+24.04, so the **minimum is glibc 2.39** (Ubuntu 24.04, Debian 13, Fedora 40 or
+newer).
+
+On a `v*` tag, `linux.yml` attaches the AppImage and its `.sha256` to the
+release, and `windows.yml` attaches the ZIP. Whichever finishes first creates
+the release and the other uploads to it (`scripts/publish-release.sh`).
+Existing assets are never replaced.

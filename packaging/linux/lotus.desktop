@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=LOTUS
+Comment=Nintendo 3DS homebrew sessions (AZAHAR / CITnLO)
+Exec=AppRun %f
+Icon=lotus
+Categories=Game;Emulator;
+Terminal=false
+MimeType=application/x-3dsx;

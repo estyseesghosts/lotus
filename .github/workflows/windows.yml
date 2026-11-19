@@ -255,5 +255,8 @@ jobs:
           $verify = @()
           if ($env:GITHUB_REF_TYPE -eq 'tag') { $tag = $env:GITHUB_REF_NAME; $verify = @('--verify-tag') }
           $assets = @(Get-ChildItem build/dist/*.zip, build/dist/*-packaged-acceptance.json | ForEach-Object FullName)
-          gh release create $tag @assets build/dist/SHA256SUMS.txt @verify --target $env:GITHUB_SHA --title "LOTUS $tag" --notes-file packaging/release-notes.md
+          # linux.yml may have created the release first (#108); never overwrite an asset.
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) { gh release upload $tag @assets build/dist/SHA256SUMS.txt }
+          else { gh release create $tag @assets build/dist/SHA256SUMS.txt @verify --target $env:GITHUB_SHA --title "LOTUS $tag" --notes-file packaging/release-notes.md }
           exit $LASTEXITCODE

@@ -15,6 +15,8 @@ documents; this page only says what changed. Labels follow the
   outlive their worker (#104).
 - Both native workers build on Linux with `scripts/build-azahar.sh` and a
   Linux CI matrix that runs `--self-test` and the protocol test (#103).
+- Linux x86_64 AppImage with the desktop, MCP, CLI and both workers; needs
+  glibc 2.39 or newer (#108).
 - Linux AppImage launcher: data defaults to `~/.local/lotus` (override with
   `--data-dir` or `LOTUS_DATA_DIR`), `host.json` is regenerated per start, and
   an old `desktop.json` can be imported without overwriting (#105).
