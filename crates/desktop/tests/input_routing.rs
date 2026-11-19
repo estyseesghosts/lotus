@@ -56,6 +56,19 @@ fn buttons(root: &Path) -> Vec<u64> {
     inputs(root).into_iter().map(|(b, _)| b).collect()
 }
 
+/// Stops the router and closes the host when a test panics. Without it a failed
+/// assertion leaves the router thread and mock workers running, the workers keep the
+/// test's output pipes open, and CI shows a hang instead of the assertion.
+struct PanicTeardown<F: FnMut()>(F);
+
+impl<F: FnMut()> Drop for PanicTeardown<F> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            (self.0)();
+        }
+    }
+}
+
 fn until(what: &str, mut done: impl FnMut() -> bool) {
     let deadline = Instant::now() + Duration::from_secs(10);
     while !done() {
@@ -118,6 +131,10 @@ fn two_sessions_take_keyboard_and_controllers_independently() {
         let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
         std::thread::spawn(move || routing.run(&service, &events, &shutdown))
     };
+    let _teardown = PanicTeardown(|| {
+        shutdown.store(true, std::sync::atomic::Ordering::Release);
+        runtime.block_on(host.close());
+    });
 
     // Two identical pads stay two connections; neither routes anywhere until assigned.
     pad(&script, 0);
@@ -272,6 +289,10 @@ fn controller_pairing_policy_against_running_sessions() {
         let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
         std::thread::spawn(move || routing.run(&service, &events, &shutdown))
     };
+    let _teardown = PanicTeardown(|| {
+        shutdown.store(true, std::sync::atomic::Ordering::Release);
+        runtime.block_on(host.close());
+    });
     let model = |handle: usize, uuid: &str| {
         script.connect(
             handle,
@@ -469,6 +490,10 @@ fn two_pads_soak_without_crossover_or_stuck_input() {
         let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
         std::thread::spawn(move || routing.run(&service, &events, &shutdown))
     };
+    let _teardown = PanicTeardown(|| {
+        shutdown.store(true, std::sync::atomic::Ordering::Release);
+        runtime.block_on(host.close());
+    });
     // Identical models, so only the connection tells them apart.
     pad(&script, 0);
     pad(&script, 1);
@@ -651,6 +676,10 @@ fn runtime_layout_override_reaches_routing() {
         let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
         std::thread::spawn(move || routing.run(&service, &events, &shutdown))
     };
+    let _teardown = PanicTeardown(|| {
+        shutdown.store(true, std::sync::atomic::Ordering::Release);
+        runtime.block_on(host.close());
+    });
     pad(&script, 0);
     until("pad", || routing.controllers().pads.len() == 1);
     let one = routing.controllers().pads[0].id;
@@ -760,6 +789,10 @@ fn a_stopped_session_is_forgotten_under_a_steady_event_stream() {
         let (routing, service, shutdown) = (routing.clone(), service.clone(), shutdown.clone());
         std::thread::spawn(move || routing.run(&service, &events, &shutdown))
     };
+    let _teardown = PanicTeardown(|| {
+        shutdown.store(true, std::sync::atomic::Ordering::Release);
+        runtime.block_on(host.close());
+    });
     pad(&script, 0);
     pad(&script, 1);
     until("two pads", || routing.controllers().pads.len() == 2);
