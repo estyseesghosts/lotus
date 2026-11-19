@@ -772,10 +772,6 @@ impl LotusWindow {
     fn key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let modifiers = &event.keystroke.modifiers;
         let key = event.keystroke.key.as_str();
-        eprintln!(
-            "KEYDBG {:?} ctrl={} shift={} alt={}",
-            key, modifiers.control, modifiers.shift, modifiers.alt
-        );
         if modifiers.control && modifiers.shift && self.split() && self.split_shortcut(key) {
             return;
         }
