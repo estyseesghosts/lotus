@@ -885,11 +885,13 @@ impl Supervisor {
         self.settings.export_preset(name)
     }
 
-    /// Create, import, duplicate, rename or delete a saved input preset; returns its name.
+    /// Create, import, duplicate, rename or delete a saved input preset; returns its name
+    /// and what an import or save dropped or filled in (unknown actions and bindings,
+    /// actions taking the builtin bindings).
     pub fn change_input_preset(
         &self,
         change: crate::settings_store::PresetChange,
-    ) -> io::Result<String> {
+    ) -> io::Result<(String, Vec<lotus_input::layout::Problem>)> {
         self.require_control()?;
         let result = self.settings.change_preset(change);
         self.settings_revision.fetch_add(1, Ordering::AcqRel);

@@ -17,6 +17,8 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
 - Input-layout preset format and resolver: stable 3DS action IDs, portable
   keyboard/controller bindings, global → card → secondary overrides; the
   builtin preset reproduces the shipped keys (#57).
+- Preset import refuses binding values of the wrong JSON type instead of
+  unbinding the action, and returns what it dropped as `warnings` (#114).
 - Settings window (#53): one non-modal window (gear, Ctrl+, or a card's gear)
   editing global and per-card settings from the registry with their sources,
   and the desktop preferences it replaces the popover with. Text, list and

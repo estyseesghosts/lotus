@@ -766,7 +766,10 @@ and the desktop applies it to running sessions. The editor is #64.
   also the export format. On import, unknown action IDs and unparseable
   bindings are dropped and reported, and duplicates within an action collapse.
   Actions the file omits (an older preset) take the builtin bindings. A missing,
-  zero or newer `version` or an empty name refuses the file.
+  zero or newer `version`, an empty name, a `bindings` that is not an object, or
+  a known action whose value is not a list (`null`, `{}`, a string…) refuses
+  the file (#114): only `[]` unbinds. A stored `lotus.input.bind.*` value that
+  is not a list is reported and skipped, so the layer below applies.
 - **Builtin presets** (read-only). `default` reproduces the shipped controls:
   the keyboard table under Window, and for controllers `default_button`, both
   sticks, and the trigger axes `left_z`/`right_z` as ZL/ZR past the threshold.
@@ -813,7 +816,9 @@ and the desktop applies it to running sessions. The editor is #64.
   is listed as a problem and skipped. Renaming or deleting a preset leaves
   selections of the old name to fall back to `default`.
   `lotus_input_presets` (MCP) does list, export, import, duplicate, rename and
-  delete.
+  delete; a change returns `{"name", "warnings"}`, the warnings being what an
+  import dropped or filled from the builtin. Saving over a preset file this
+  build cannot read (newer version, malformed) is refused.
 - **Conflicts and gaps.** One binding on several actions presses all of them.
   `Resolved::conflicts` lists them and `Resolved::unbound` lists actions with no
   binding; neither is refused. Both, with each session's preset and problems,

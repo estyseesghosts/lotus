@@ -328,8 +328,11 @@ impl LotusServer {
                     name: need(args.name, "name")?,
                 },
             };
-            let name = host.change_input_preset(change)?;
-            Ok(serde_json::json!({ "name": name }))
+            let (name, warnings) = host.change_input_preset(change)?;
+            Ok(serde_json::json!({
+                "name": name,
+                "warnings": warnings.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            }))
         })();
         tool_result(result)
     }

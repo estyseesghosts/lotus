@@ -162,6 +162,30 @@ pub enum Problem {
     MissingAction(Action),
     /// A selected preset that is not in the library; the builtin was used instead.
     MissingPreset(String),
+    /// A stored binding value that is not a list; ignored, so the layer below applies.
+    NotAList { action: Action, value: Value },
+}
+
+impl std::fmt::Display for Problem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Problem::UnknownAction(id) => write!(f, "unknown action '{id}' ignored"),
+            Problem::InvalidBinding { action, binding } => {
+                write!(f, "{}: unreadable binding {binding} ignored", action.id())
+            }
+            Problem::MissingAction(action) => {
+                write!(f, "{}: not listed, builtin bindings used", action.id())
+            }
+            Problem::MissingPreset(name) => write!(f, "preset '{name}' not found, builtin used"),
+            Problem::NotAList { action, value } => {
+                write!(
+                    f,
+                    "{}: {value} is not a list of bindings, ignored",
+                    action.id()
+                )
+            }
+        }
+    }
 }
 
 /// Why a preset file cannot be loaded at all.
@@ -171,6 +195,9 @@ pub enum LoadError {
     /// Missing, zero or newer than [`VERSION`]; the file must not be rewritten.
     Version(Option<u64>),
     NoName,
+    /// `bindings` is not an object, or an action's value is not a list. `[]` is a list
+    /// (an explicit unbind); anything else would silently unbind the action.
+    Malformed(String),
 }
 
 impl std::fmt::Display for LoadError {
@@ -182,6 +209,7 @@ impl std::fmt::Display for LoadError {
             }
             LoadError::Version(None) => write!(f, "preset has no version"),
             LoadError::NoName => write!(f, "preset has no name"),
+            LoadError::Malformed(what) => write!(f, "malformed preset: {what}"),
         }
     }
 }
@@ -267,7 +295,8 @@ impl Preset {
 
     /// Parse an exported preset. Unknown actions and unparseable bindings are dropped and
     /// reported; actions the file omits (a preset from before an action existed) take the
-    /// builtin bindings. A wrong version or a non-preset is refused.
+    /// builtin bindings. A wrong version, a non-preset, or a `bindings` value or known
+    /// action's list of the wrong JSON type is refused.
     pub fn import(json: &str) -> Result<(Self, Vec<Problem>), LoadError> {
         let value: Value =
             serde_json::from_str(json).map_err(|e| LoadError::NotJson(e.to_string()))?;
@@ -285,9 +314,14 @@ impl Preset {
         let mut problems = Vec::new();
         let listed = match file.get("bindings") {
             Some(Value::Object(map)) => map.clone(),
-            _ => Map::new(),
+            None => Map::new(),
+            Some(other) => {
+                return Err(LoadError::Malformed(format!(
+                    "bindings is {other}, not an object"
+                )))
+            }
         };
-        let (bindings, mut more) = parse_bindings(&listed);
+        let (bindings, mut more) = parse_bindings(&listed)?;
         problems.append(&mut more);
         let builtin = Self::builtin();
         let mut complete = BTreeMap::new();
@@ -319,29 +353,46 @@ impl Preset {
     }
 }
 
-/// Parse `{"action_id": [binding, ...]}`, keeping what this build understands.
-fn parse_bindings(map: &Map<String, Value>) -> (BTreeMap<Action, Vec<Binding>>, Vec<Problem>) {
+type Bindings = BTreeMap<Action, Vec<Binding>>;
+
+/// Parse `{"action_id": [binding, ...]}`, keeping what this build understands. A known
+/// action whose value is not a list fails the whole map.
+fn parse_bindings(map: &Map<String, Value>) -> Result<(Bindings, Vec<Problem>), LoadError> {
     let mut problems = Vec::new();
     let mut out = BTreeMap::new();
+    let mut malformed = Vec::new();
     for (id, list) in map {
         let Ok(action) = serde_json::from_value::<Action>(Value::String(id.clone())) else {
             problems.push(Problem::UnknownAction(id.clone()));
             continue;
         };
-        let (parsed, mut more) = parse_list(action, list);
-        problems.append(&mut more);
-        out.insert(action, parsed);
+        match parse_list(action, list) {
+            Ok((parsed, mut more)) => {
+                problems.append(&mut more);
+                out.insert(action, parsed);
+            }
+            Err(_) => malformed.push(format!("bindings.{id} is {list}, not a list")),
+        }
     }
-    (out, problems)
+    if !malformed.is_empty() {
+        return Err(LoadError::Malformed(malformed.join("; ")));
+    }
+    Ok((out, problems))
 }
 
 /// Parse one action's stored binding list (a settings value). Unparseable entries are
-/// dropped and reported; duplicates collapse.
-#[must_use]
-pub fn parse_list(action: Action, value: &Value) -> (Vec<Binding>, Vec<Problem>) {
+/// dropped and reported; duplicates collapse. A value that is not a list is refused with
+/// [`Problem::NotAList`] so callers never mistake it for `[]` (an explicit unbind).
+pub fn parse_list(action: Action, value: &Value) -> Result<(Vec<Binding>, Vec<Problem>), Problem> {
+    let Some(list) = value.as_array() else {
+        return Err(Problem::NotAList {
+            action,
+            value: value.clone(),
+        });
+    };
     let mut problems = Vec::new();
     let mut parsed = Vec::new();
-    for binding in value.as_array().into_iter().flatten() {
+    for binding in list {
         match serde_json::from_value::<Binding>(binding.clone()) {
             Ok(b) if !parsed.contains(&b) => parsed.push(b),
             Ok(_) => {}
@@ -351,7 +402,7 @@ pub fn parse_list(action: Action, value: &Value) -> (Vec<Binding>, Vec<Problem>)
             }),
         }
     }
-    (parsed, problems)
+    Ok((parsed, problems))
 }
 
 /// Where a resolved action's bindings came from, lowest first. The settings layers (lotus#51)
@@ -837,6 +888,60 @@ mod tests {
         assert!(matches!(Preset::import("[]"), Err(LoadError::NotJson(_))));
     }
 
+    #[test]
+    fn import_refuses_lists_of_the_wrong_type() {
+        for bad in ["null", "{}", r#""z""#, "true", "1"] {
+            let json = format!(r#"{{"version":1,"name":"n","bindings":{{"a":{bad}}}}}"#);
+            assert!(
+                matches!(Preset::import(&json), Err(LoadError::Malformed(ref m)) if m.contains("bindings.a")),
+                "bindings.a = {bad}"
+            );
+            let json = format!(r#"{{"version":1,"name":"n","bindings":{bad}}}"#);
+            if bad != "{}" {
+                assert!(
+                    matches!(Preset::import(&json), Err(LoadError::Malformed(_))),
+                    "bindings = {bad}"
+                );
+            }
+            let value: Value = serde_json::from_str(bad).unwrap();
+            assert_eq!(
+                parse_list(Action::A, &value),
+                Err(Problem::NotAList {
+                    action: Action::A,
+                    value: value.clone()
+                })
+            );
+        }
+        // `[]` still unbinds; an unknown action keeps forward compatibility whatever its type;
+        // a mixed list keeps what parses.
+        let json = r#"{"version":1,"name":"n","bindings":{"a":[],"teleport":{},
+            "b":[{"device":"keyboard","key":"k"},7,{"device":"keyboard"}]}}"#;
+        let (preset, problems) = Preset::import(json).unwrap();
+        assert_eq!(preset.bindings[&Action::A], vec![]);
+        assert_eq!(preset.bindings[&Action::B], vec![key("k")]);
+        assert!(problems.contains(&Problem::UnknownAction("teleport".into())));
+        let invalid = problems
+            .iter()
+            .filter(|p| {
+                matches!(
+                    p,
+                    Problem::InvalidBinding {
+                        action: Action::B,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(invalid, 2, "{problems:?}");
+        assert_eq!(
+            Problem::UnknownAction("teleport".into()).to_string(),
+            "unknown action 'teleport' ignored"
+        );
+        // No bindings at all: every action takes the builtin.
+        let (preset, _) = Preset::import(r#"{"version":1,"name":"n"}"#).unwrap();
+        assert_eq!(preset.bindings, Preset::builtin().bindings);
+    }
+
     fn over(entries: &[(Action, Vec<Binding>, Layer)]) -> Overrides {
         entries
             .iter()
@@ -907,7 +1012,7 @@ mod tests {
             {"device":"axis","axis":"left_z","direction":"positive"},
             {"device":"button","button":"paddle_9"}
         ]);
-        let (list, problems) = parse_list(Action::Zl, &value);
+        let (list, problems) = parse_list(Action::Zl, &value).unwrap();
         assert_eq!(list, vec![axis(Axis::LeftZ, Direction::Positive)]);
         assert!(matches!(
             problems.as_slice(),

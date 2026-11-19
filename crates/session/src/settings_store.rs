@@ -151,9 +151,15 @@ impl Resolution {
             if entry.value.is_null() {
                 continue;
             }
-            let (list, mut more) = layout::parse_list(action, &entry.value);
-            problems.append(&mut more);
-            overrides.insert(action, (list, layer));
+            // A non-list (hand-edited file) is reported and skipped so the layer below
+            // applies; treating it as `[]` would unbind the action (lotus#114).
+            match layout::parse_list(action, &entry.value) {
+                Ok((list, mut more)) => {
+                    problems.append(&mut more);
+                    overrides.insert(action, (list, layer));
+                }
+                Err(problem) => problems.push(problem),
+            }
         }
         let stick = |name: &str| StickProfile {
             deadzone: float(&format!("lotus.input.{name}.deadzone"), 0.0),
@@ -530,10 +536,14 @@ impl SettingsStore {
             })
     }
 
-    /// Apply one library change and return the name of the preset it created or changed.
+    /// Apply one library change; return the name of the preset it created or changed and,
+    /// for an import or save, the problems [`Preset::import`] reported (lotus#114).
     /// Builtin presets cannot be replaced, renamed or deleted. Renaming or deleting a preset
     /// leaves selections of the old name in place; they fall back to `default` and report it.
-    pub fn change_preset(&self, change: PresetChange) -> io::Result<String> {
+    pub fn change_preset(
+        &self,
+        change: PresetChange,
+    ) -> io::Result<(String, Vec<layout::Problem>)> {
         self.locked(|| {
             let dir = self.presets_dir();
             let path = |name: &str| dir.join(format!("{name}.json"));
@@ -562,23 +572,40 @@ impl SettingsStore {
                 fs::rename(&temporary, &target)?;
                 Ok(preset.name.clone())
             };
+            let import = |json: &str| {
+                Preset::import(json)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))
+            };
             match change {
                 PresetChange::Save { preset, replace } => {
-                    let (preset, _) = Preset::import(&preset.export())
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
-                    write(&preset, replace)
+                    let (preset, problems) = import(&preset.export())?;
+                    // Never replace a file this build cannot read (a newer version, or one
+                    // edited by hand): the user would lose it without having seen it.
+                    let target = path(&preset.name);
+                    if replace && target.exists() {
+                        fs::read_to_string(&target)
+                            .map_err(io::Error::other)
+                            .and_then(|json| {
+                                import(&json).map_err(|e| {
+                                    io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        format!("{} is not replaced: {e}", target.display()),
+                                    )
+                                })
+                            })?;
+                    }
+                    Ok((write(&preset, replace)?, problems))
                 }
                 PresetChange::Import { json } => {
-                    let (mut preset, _) = Preset::import(&json)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e.to_string()))?;
+                    let (mut preset, problems) = import(&json)?;
                     preset_name(&preset.name)?;
                     preset.name = self.free_name(&preset.name)?;
-                    write(&preset, false)
+                    Ok((write(&preset, false)?, problems))
                 }
                 PresetChange::Duplicate { from, to } => {
                     let mut preset = self.find_preset(&from)?;
                     preset.name = to;
-                    write(&preset, false)
+                    Ok((write(&preset, false)?, Vec::new()))
                 }
                 PresetChange::Rename { from, to } => {
                     writable(&from)?;
@@ -586,13 +613,13 @@ impl SettingsStore {
                     preset.name = to;
                     let name = write(&preset, false)?;
                     fs::remove_file(path(&from))?;
-                    Ok(name)
+                    Ok((name, Vec::new()))
                 }
                 PresetChange::Delete { name } => {
                     writable(&name)?;
                     self.find_preset(&name)?;
                     fs::remove_file(path(&name))?;
-                    Ok(name)
+                    Ok((name, Vec::new()))
                 }
             }
         })
@@ -990,7 +1017,7 @@ mod tests {
                 replace,
             })
         };
-        assert_eq!(save(&mine, false).unwrap(), "mine");
+        assert_eq!(save(&mine, false).unwrap(), ("mine".to_string(), vec![]));
         assert_eq!(
             save(&mine, false).unwrap_err().kind(),
             io::ErrorKind::AlreadyExists
@@ -1013,11 +1040,15 @@ mod tests {
             .change_preset(PresetChange::Import {
                 json: exported.clone(),
             })
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(imported, "mine-2");
         let json = store.export_preset("xbox-labels").unwrap();
         assert_eq!(
-            store.change_preset(PresetChange::Import { json }).unwrap(),
+            store
+                .change_preset(PresetChange::Import { json })
+                .unwrap()
+                .0,
             "xbox-labels-2"
         );
         assert!(store
@@ -1054,6 +1085,48 @@ mod tests {
                 name: "default".into()
             })
             .is_err());
+
+        // lotus#114: a list of the wrong type is refused and nothing is written; dropped
+        // entries come back as warnings.
+        let malformed = r#"{"version":1,"name":"broken-a","bindings":{"a":null}}"#;
+        let error = store
+            .change_preset(PresetChange::Import {
+                json: malformed.into(),
+            })
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("bindings.a"), "{error}");
+        assert!(!store.presets_dir().join("broken-a.json").exists());
+        let (name, warnings) = store
+            .change_preset(PresetChange::Import {
+                json: r#"{"version":1,"name":"partial","bindings":{
+                    "a":[{"device":"wheel"}],"teleport":[]}}"#
+                    .into(),
+            })
+            .unwrap();
+        assert_eq!(name, "partial");
+        use lotus_input::layout::Problem as P;
+        assert!(warnings.contains(&P::UnknownAction("teleport".into())));
+        assert!(warnings
+            .iter()
+            .any(|p| matches!(p, P::InvalidBinding { .. })));
+        assert!(warnings.iter().any(|p| matches!(p, P::MissingAction(_))));
+        fs::remove_file(store.presets_dir().join("partial.json")).unwrap();
+
+        // Save never replaces a file this build cannot read.
+        let newer = store.presets_dir().join("newer.json");
+        fs::write(&newer, r#"{"version":9,"name":"newer"}"#).unwrap();
+        let mut over = Preset::builtin();
+        over.name = "newer".into();
+        assert_eq!(
+            save(&over, true).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        assert_eq!(
+            fs::read_to_string(&newer).unwrap(),
+            r#"{"version":9,"name":"newer"}"#
+        );
+        fs::remove_file(&newer).unwrap();
 
         // A stray file with a bad name or content is reported, not loaded.
         fs::write(store.presets_dir().join("Bad Name.json"), "{}").unwrap();

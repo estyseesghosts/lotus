@@ -375,8 +375,9 @@ impl Descriptor {
                     return Err(invalid(format!("more than {max} bindings")));
                 }
                 // Any action parses the same bindings; the key names the action.
-                let (_, problems) =
-                    lotus_input::layout::parse_list(lotus_input::layout::Action::A, value);
+                let problems =
+                    lotus_input::layout::parse_list(lotus_input::layout::Action::A, value)
+                        .map_or_else(|p| vec![p], |(_, problems)| problems);
                 if !problems.is_empty() {
                     return Err(invalid(format!(
                         "{} binding(s) this build cannot read",
