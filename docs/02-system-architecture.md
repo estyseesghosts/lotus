@@ -97,5 +97,9 @@ the first shared control. The controller/worker boundary above is unchanged.
 
 The staged navigation.rs adapter maps owned SessionSummary snapshots to generic
 source-list nodes. Identity/creation-time/epoch target validation remains
-Lotus-owned; session_tree.rs supplies shared status labels. It is not yet the
-mounted sidebar renderer; see the navigation section of [38](38-silvestris-adoption.md).
+Lotus-owned; session_tree.rs supplies shared status labels. See [38](38-silvestris-adoption.md).
+
+The opt-in renderer is now mounted by lotus_window/shared_navigation.rs.
+It consumes navigation.rs descriptors through SourceList accessory/decorator
+slots, retaining DesktopController commands and SessionDrag revision checks.
+Default builds still use the original session rows.

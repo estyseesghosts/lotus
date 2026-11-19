@@ -39,6 +39,9 @@ use crate::theme;
 use crate::tiling::{self, DividerDrag, SessionDrag, Source, Target};
 use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
+#[cfg(feature = "silvestris-ui")]
+mod shared_navigation;
+
 const TOOLBAR_HEIGHT: f32 = 52.0;
 const SCREEN_GAP: f32 = 12.0;
 const CONTENT_PADDING: f32 = 24.0;
@@ -154,6 +157,14 @@ enum Tone {
 }
 
 pub struct LotusWindow {
+    #[cfg(feature = "silvestris-ui")]
+    shared_sources: gpui::Entity<silvestris::controls::SourceList>,
+    #[cfg(feature = "silvestris-ui")]
+    navigation: crate::navigation::Navigation,
+    #[cfg(feature = "silvestris-ui")]
+    source_branches: std::collections::BTreeSet<String>,
+    #[cfg(feature = "silvestris-ui")]
+    source_context: (u64, bool, String),
     controller: Option<DesktopController>,
     startup_error: String,
     sessions: Vec<SessionSummary>,
@@ -273,7 +284,17 @@ impl LotusWindow {
                     ratio: preferences.values.split_ratio,
                 });
         }
+        #[cfg(feature = "silvestris-ui")]
+        let shared_sources = Self::make_shared_sources(cx);
         Self {
+            #[cfg(feature = "silvestris-ui")]
+            shared_sources,
+            #[cfg(feature = "silvestris-ui")]
+            navigation: crate::navigation::Navigation::default(),
+            #[cfg(feature = "silvestris-ui")]
+            source_branches: std::collections::BTreeSet::new(),
+            #[cfg(feature = "silvestris-ui")]
+            source_context: (0, false, String::new()),
             controller,
             startup_error,
             sessions: Vec::new(),
@@ -642,6 +663,8 @@ impl LotusWindow {
                 }
             }
         }
+        #[cfg(feature = "silvestris-ui")]
+        self.sync_shared_sources(cx);
         ui.poll_completed();
     }
 
@@ -884,47 +907,57 @@ impl LotusWindow {
         let Some(width) = plan.sessions else {
             return self.render_rail(plan, cx);
         };
-        let tree = session_tree::session_tree(&self.sessions);
-        let mut list = div()
-            .id("session-tree")
-            .flex()
-            .flex_col()
+        #[cfg(feature = "silvestris-ui")]
+        let list = div()
             .flex_1()
-            .gap(px(2.0))
-            .py_1()
-            .overflow_y_scroll();
-        if tree.is_empty() {
-            list = list.child(
-                div()
-                    .px_4()
-                    .py_2()
-                    .text_xs()
-                    .text_color(theme::text_muted())
-                    .child("No sessions running."),
-            );
-        }
-        for node in &tree {
-            match node {
-                TreeNode::Card {
-                    card,
-                    primary,
-                    secondaries,
-                } => {
-                    list = list.child(match primary {
-                        Some(primary) => {
-                            self.session_row(primary, Depth::Top, cx).into_any_element()
+            .min_h_0()
+            .child(self.shared_sources.clone())
+            .into_any_element();
+        #[cfg(not(feature = "silvestris-ui"))]
+        let list = {
+            let tree = session_tree::session_tree(&self.sessions);
+            let mut list = div()
+                .id("session-tree")
+                .flex()
+                .flex_col()
+                .flex_1()
+                .gap(px(2.0))
+                .py_1()
+                .overflow_y_scroll();
+            if tree.is_empty() {
+                list = list.child(
+                    div()
+                        .px_4()
+                        .py_2()
+                        .text_xs()
+                        .text_color(theme::text_muted())
+                        .child("No sessions running."),
+                );
+            }
+            for node in &tree {
+                match node {
+                    TreeNode::Card {
+                        card,
+                        primary,
+                        secondaries,
+                    } => {
+                        list = list.child(match primary {
+                            Some(primary) => {
+                                self.session_row(primary, Depth::Top, cx).into_any_element()
+                            }
+                            None => self.offline_card_row(card, cx).into_any_element(),
+                        });
+                        for secondary in secondaries {
+                            list = list.child(self.session_row(secondary, Depth::Nested, cx));
                         }
-                        None => self.offline_card_row(card, cx).into_any_element(),
-                    });
-                    for secondary in secondaries {
-                        list = list.child(self.session_row(secondary, Depth::Nested, cx));
+                    }
+                    TreeNode::Detached(secondary) => {
+                        list = list.child(self.session_row(secondary, Depth::Top, cx));
                     }
                 }
-                TreeNode::Detached(secondary) => {
-                    list = list.child(self.session_row(secondary, Depth::Top, cx));
-                }
             }
-        }
+            list.into_any_element()
+        };
         div()
             .relative()
             .flex()
@@ -1493,6 +1526,7 @@ impl LotusWindow {
             })
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn session_row(
         &self,
         summary: &SessionSummary,
@@ -1655,6 +1689,7 @@ impl LotusWindow {
             .on_click(cx.listener(move |view, _: &ClickEvent, _, _| view.select(id.clone())))
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn offline_card_row(&self, card: &str, cx: &mut Context<Self>) -> impl IntoElement {
         let mounted = card.to_string();
         div()
@@ -4215,6 +4250,7 @@ fn state_dot(summary: &SessionSummary, primary: bool) -> impl IntoElement {
         .bg(state_colour(summary))
 }
 
+#[cfg(not(feature = "silvestris-ui"))]
 fn row_meta(summary: &SessionSummary) -> String {
     session_tree::session_detail(summary)
 }
@@ -4441,8 +4477,11 @@ fn icon_button(
     glyph: Icon,
     description: impl Into<SharedString>,
 ) -> Stateful<Div> {
+    let description: SharedString = description.into();
     let button = div()
         .id(id.into())
+        .role(gpui::Role::Button)
+        .aria_label(description.clone())
         .tab_index(0)
         .flex()
         .flex_none()

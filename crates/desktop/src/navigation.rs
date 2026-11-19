@@ -78,14 +78,11 @@ impl Navigation {
                 } => {
                     let mut node = SourceNode::new(card_row(&card), card.clone());
                     node.selectable = primary.is_some();
-                    node.icon = Some(
-                        if primary.is_some() {
-                            "card.live"
-                        } else {
-                            "card.offline"
-                        }
-                        .into(),
-                    );
+                    node.icon = Some(if primary.is_some() {
+                        format!("state:{}", node.id)
+                    } else {
+                        "card.offline".into()
+                    });
                     node.badge = Some(
                         primary
                             .as_ref()
@@ -129,7 +126,7 @@ impl Navigation {
                 session_tree::short_id(&summary.info.id)
             ),
         );
-        node.icon = Some("session.secondary".into());
+        node.icon = Some(format!("state:{}", node.id));
         node.badge = Some(session_tree::session_detail(summary));
         self.targets.insert(
             node.id.clone(),

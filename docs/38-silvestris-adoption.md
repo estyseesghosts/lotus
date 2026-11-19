@@ -89,13 +89,47 @@ primary. Existing status/FPS label logic is shared from session_tree.rs.
 
 The shared source list now offers accessory and row-decorator callbacks to
 preserve app-owned row actions and drag payloads without duplicating its
-selection/disclosure renderer. These are required before replacing Lotus's
-current rows: Start/Stop/Fork/Settings/tiling and workspace-revision drag
-checks must stay reachable. The projection is compiled/tested behind
-silvestris-ui but is not mounted in LotusWindow yet.
+selection/disclosure renderer. The mounted adapter in
+lotus_window/shared_navigation.rs retains Start/Stop/Fork/Settings/tiling
+and workspace-revision drag checks.
 
 Tests cover saved offline cards, nested/detached copies, selection mapping,
 namespace separation, stale epochs, reused session identities and primary
 replacement. Silvestris tests cover action/context extension routing and
-nonselectable container disclosure. No new worker commands are emitted by
-this foundation; main navigation behavior remains on the existing renderer.
+nonselectable container disclosure. Worker commands continue through
+DesktopController; the default build retains its existing renderer.
+
+## Mounted source list
+
+With silvestris-ui, the expanded sidebar now mounts SourceList. Controller
+snapshots synchronize nodes and selection without firing user selection
+callbacks. New branches start expanded to preserve visibility of copies;
+subsequent polls retain the person's disclosure choice. Target/epoch,
+permission and workspace changes invalidate app-owned action snapshots even
+when visible text is unchanged. No inspector/session ownership is inferred
+from an icon or label.
+
+Start primary, Fork secondary, Card Settings, Stop and Show Beside remain
+available as row accessories. Guest mutations check the captured target and
+current control permission. Tiling is a UI operation and remains available
+in read-only mode; its request carries the workspace revision through
+Command::WorkspaceAt. Source row drags retain the existing SessionDrag
+payload and drop path. The current collapsed rail, controllers section,
+New Session menu, footer and pane divider remain on their existing paths.
+
+Primary/secondary state indicators reuse state_dot and the old palette.
+Icon buttons now expose their existing descriptions as accessible button
+names. Source input consumes mouse-down at its boundary so accessory clicks
+do not return focus to the guest responder. Guest keyboard handling still
+requires the main window's focus handle.
+
+Mounted GPUI tests use no host/workers: selecting a copy updates the Lotus
+target, disclosure keeps workspace selection, a snapshot update does not
+reissue selection, a source row starts a drag, and source/accessory focus
+does not hold guest keys. Epoch/permission invalidation is also exercised.
+The framework's test-support feature supplies only mock theme/action setup;
+production initialization still registers the bundled fonts.
+
+Native worker drag/drop, row-action execution against live sessions, long
+label/DPI visual review, expansion persistence, source-list context menus and
+the full shell/inspector cutover remain open. No Aqua default change occurs.
