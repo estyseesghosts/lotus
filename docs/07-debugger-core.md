@@ -6,6 +6,15 @@ A debugger should answer **what happened**, **which execution context produced i
 
 ## CPU execution inspection
 
+Desktop inspector publication retains the request's SessionTarget (ID, creation
+time, guest epoch). Worker reply epoch tags, including the memory-read epoch in
+host-derived disassembly, must match before publishing. Target/generation and
+current owned summaries are checked again under the desktop publication lock.
+Cached registers, rows and surface images expire on a reported target/epoch
+transition; imported local traces have no worker target. This metadata adds no
+worker request or wire-envelope change. It does not make a multi-request CPU
+view an atomic register/memory snapshot, or guard queued mutations at dispatch.
+
 Initial backend: Azahar `ARM_Interface` / Dynarmic; interpreter stepping where appropriate. Source `src/core/core.h` provides `GetCore(core_id)`, `GetNumCores`, `GetRunningCore`; `RunLoop` operates across cores and schedules threads. Avoid treating `SingleStep` as a precise per-thread instruction without testing it.
 
 Capabilities in order:

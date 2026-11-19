@@ -189,6 +189,34 @@ pin width reservation, narrow demotion/redocking, split rail/target transition,
 Escape ordering, key isolation, outside dismissal and stale-epoch/read-only
 action rejection. Preference tests verify explicit migration, unknown metadata,
 idempotence and no-overwrite behavior. Native live-screen/touch geometry,
-in-flight debugger response epochs, swap/untile/stop races, native DPI/focus,
+native in-flight debugger response epochs, swap/untile/stop races, native DPI/focus,
 resize cancellation and all-theme main/Settings rendering remain unverified.
 This is progress toward #131/#132/#138, not their acceptance sign-off.
+
+## Inspector response provenance
+
+The controller now tags register, inspection and surface results with their
+captured SessionTarget. Reply epoch tags are checked as well as the latest
+reported session metadata and inspected-generation guard. This rejects a reply
+from a new guest executed behind a reset even while host telemetry still reports
+the old epoch. Host disassembly preserves the underlying read's epoch; a CPU
+view spanning two different reported reply epochs is discarded. Formatting
+remains off the GPUI thread and outside the shared publication lock.
+
+Publication rechecks target metadata under that lock. Polling keys include
+identity/epoch so on-change panels refresh after a reset even while playing.
+Cached registers, rows and images are removed when a published target disappears,
+changes identity or advances epoch. The window repeats these checks and evicts
+uploaded stale images. A different command result also clears an earlier image
+from the same epoch. Changing selection alone keeps a valid explicitly inspected
+tile's image. Local trace results carry no worker target and cannot inherit a
+worker surface. Draw comparisons are scoped to identity/epoch.
+
+Verified compiled/mock: unit regressions cover late replies, cached data,
+same-ID replacement, epoch/target changes, removal, explicit reply tags and local
+trace provenance. GPUI tests cover result-image retention/replacement and epoch
+eviction. The mock-worker controller suite covers reset without a replacement
+panel, stalled replies, independent tiled previews, inspected-target swap/untile
+and MCP single-view persistence. Native Azahar behavior and UI-thread performance
+remain unverified. Queued mutating commands still need an atomic expected-epoch
+dispatch guard; reply validation does not prevent a mutation executing late.

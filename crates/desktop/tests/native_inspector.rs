@@ -61,9 +61,15 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             .unwrap();
         controller.inspector.store(true, Ordering::Release);
         wait(&controller, |update| {
-            update.inspection.as_ref().is_some_and(|(_, panel, data)| {
-                *panel == Panel::Cpu && data.rows.iter().any(|r| r.key == "r15")
-            })
+            update
+                .inspection
+                .as_ref()
+                .is_some_and(|(target, panel, data)| {
+                    target.as_ref().is_some_and(|target| {
+                        target.is_current(&update.inspected, &update.sessions)
+                    }) && *panel == Panel::Cpu
+                        && data.rows.iter().any(|r| r.key == "r15")
+                })
         });
         let pc = {
             let update = controller.latest.lock().unwrap();
@@ -109,10 +115,9 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             .send(Command::OpenTrace { path })
             .unwrap();
         wait(&controller, |update| {
-            update
-                .inspection
-                .as_ref()
-                .is_some_and(|(_, _, view)| view.rows.len() == 100000 && view.lost == 0)
+            update.inspection.as_ref().is_some_and(|(target, _, view)| {
+                target.is_none() && view.rows.len() == 100000 && view.lost == 0
+            })
         });
         controller.commands.send(Command::Stop(id)).unwrap();
         wait(&controller, |update| update.sessions.is_empty());

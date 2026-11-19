@@ -28,6 +28,38 @@ impl SessionTarget {
                 && s.telemetry.epoch == self.epoch
         })
     }
+
+    pub fn is_current(&self, inspected: &str, sessions: &[SessionSummary]) -> bool {
+        self.id == inspected && self.resolve(sessions).is_some()
+    }
+
+    /// NativeSession::finish tags worker replies with their actual epoch. Host
+    /// metadata/errors may omit it; an explicit tag must match the request.
+    pub fn accepts_reply(&self, value: &Value) -> bool {
+        value
+            .get("epoch")
+            .is_none_or(|epoch| epoch.as_u64() == Some(self.epoch))
+            && value.get("disassembly").is_none_or(|assembly| {
+                assembly
+                    .get("epoch")
+                    .is_none_or(|epoch| epoch.as_u64() == Some(self.epoch))
+            })
+    }
+}
+
+/// None is an imported local trace, not data from the currently selected worker.
+/// Worker results always retain their request's identity/creation time/epoch.
+pub type InspectionSnapshot = (Option<SessionTarget>, Panel, Arc<Inspection>);
+
+pub fn snapshot_current(
+    snapshot: &InspectionSnapshot,
+    inspected: &str,
+    sessions: &[SessionSummary],
+) -> bool {
+    snapshot
+        .0
+        .as_ref()
+        .is_none_or(|target| target.is_current(inspected, sessions))
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
@@ -482,6 +514,24 @@ impl Inspection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_reply_epochs_override_a_lagging_telemetry_snapshot() {
+        let target = SessionTarget {
+            id: "a".into(),
+            created_unix_ms: 1,
+            epoch: 4,
+        };
+        assert!(target.accepts_reply(&serde_json::json!({"epoch":4})));
+        assert!(target.accepts_reply(&serde_json::json!({"host_metadata":true})));
+        for reply in [
+            serde_json::json!({"epoch":5}),
+            serde_json::json!({"epoch":null}),
+            serde_json::json!({"epoch":"4"}),
+            serde_json::json!({"epoch":4,"disassembly":{"epoch":5}}),
+        ] {
+            assert!(!target.accepts_reply(&reply), "{reply}");
+        }
+    }
     #[test]
     fn rail_and_overflow_cover_every_panel_once() {
         let ids: std::collections::BTreeSet<_> = Panel::ALL.into_iter().map(Panel::id).collect();

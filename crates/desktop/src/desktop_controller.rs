@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::inspection::{Inspection, Panel};
+use crate::inspection::{self, Inspection, InspectionSnapshot, Panel, SessionTarget};
 use crate::presence::{self, Presence};
 use crate::ui_metrics::UiMetrics;
 use lotus_mcp::server::{Frontend, LotusServer};
@@ -102,7 +102,7 @@ pub struct Preview {
 }
 
 pub struct DebugImage {
-    pub session: String,
+    pub target: SessionTarget,
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
@@ -130,9 +130,9 @@ pub struct Update {
     /// Newest preview of each session the workspace shows, replaced whole per session.
     /// Sessions no longer shown are removed. Independent per session (lotus#65).
     pub previews: BTreeMap<String, Preview>,
-    /// Registers of the selected session at its last paused frame.
-    pub registers: Option<(String, Value)>,
-    pub inspection: Option<(String, Panel, Arc<Inspection>)>,
+    /// Registers of the inspected session at its last paused frame, with provenance.
+    pub registers: Option<(SessionTarget, Value)>,
+    pub inspection: Option<InspectionSnapshot>,
     pub debug_image: Option<DebugImage>,
     pub error: String,
     /// Worker operations of this window pending longer than one second.
@@ -142,6 +142,37 @@ pub struct Update {
     pub mcp: McpLink,
     /// Commands still in flight.
     pub pending: usize,
+}
+
+impl Update {
+    // Recheck under the publication lock after the live-host/generation check.
+    fn publish_inspection(&mut self, snapshot: InspectionSnapshot) -> bool {
+        if !inspection::snapshot_current(&snapshot, &self.inspected, &self.sessions) {
+            return false;
+        }
+        self.inspection = Some(snapshot);
+        true
+    }
+
+    /// A target/epoch transition invalidates cached data even before another
+    /// request completes. UI consumers also validate the provenance they hold.
+    fn retain_current_inspection(&mut self) {
+        self.registers = self
+            .registers
+            .take()
+            .filter(|(target, _)| target.is_current(&self.inspected, &self.sessions));
+        self.inspection = self.inspection.take().filter(|snapshot| {
+            inspection::snapshot_current(snapshot, &self.inspected, &self.sessions)
+        });
+        let local = self
+            .inspection
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.0.is_none());
+        self.debug_image = self
+            .debug_image
+            .take()
+            .filter(|image| !local && image.target.is_current(&self.inspected, &self.sessions));
+    }
 }
 
 pub struct DesktopController {
@@ -215,8 +246,8 @@ pub struct PendingOperation {
 
 /// Inspector refresh state, updated by the requests' own tasks.
 struct InspectorKeys {
-    registers: Option<(String, u64, u64)>,
-    inspection: Option<(String, Panel, u32, (u64, u64))>,
+    registers: Option<(SessionTarget, u64)>,
+    inspection: Option<(SessionTarget, Panel, u32, u64)>,
     inspected_at: Instant,
 }
 
@@ -310,7 +341,7 @@ struct Loops {
     published: Arc<Mutex<Update>>,
     inspector: Arc<AtomicBool>,
     inspection_selection: Arc<Mutex<(Panel, u32)>>,
-    previous_draw: Arc<Mutex<Option<(String, Value)>>>,
+    previous_draw: Arc<Mutex<Option<(SessionTarget, Value)>>>,
     shutdown: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
     /// The selected session, for the preview, inspector and audio tasks.
@@ -430,6 +461,7 @@ impl Loops {
                     .inspect_tile
                     .clone()
                     .unwrap_or_else(|| selected.clone());
+                update.retain_current_inspection();
                 update.inspected.clone()
             };
             self.inspected.send_if_modified(|current| {
@@ -528,14 +560,26 @@ impl Loops {
         output
     }
 
-    /// Whether a result requested at `generation` for `session` still matches the view.
-    fn current(&self, session: &str, generation: u64) -> bool {
-        let current = *self.inspected.borrow() == session
-            && self.generation.load(Ordering::Acquire) == generation;
+    /// Whether a result's target and request generation still match the view.
+    fn current(&self, target: &SessionTarget, generation: u64) -> bool {
+        let current = *self.inspected.borrow() == target.id
+            && self.generation.load(Ordering::Acquire) == generation
+            && self
+                .host
+                .summary(&target.id)
+                .is_ok_and(|summary| target.resolve(std::slice::from_ref(&summary)).is_some());
         if !current {
             lock(&self.metrics).stale_dropped += 1;
         }
         current
+    }
+
+    fn current_reply(&self, target: &SessionTarget, generation: u64, value: &Value) -> bool {
+        if !target.accepts_reply(value) {
+            lock(&self.metrics).stale_dropped += 1;
+            return false;
+        }
+        self.current(target, generation)
     }
 
     /// Sessions the workspace shows now, in tile order.
@@ -607,7 +651,7 @@ impl Loops {
         }
     }
 
-    /// Inspector data for the selected session while the inspector is open. Live panels
+    /// Inspector data for the inspected session while the inspector is open. Live panels
     /// refresh every 500 ms; on-change panels ([`Panel::live`]) only when the view or the
     /// paused frame changes. Registers and inspection each run as their own task, one per
     /// session at a time, so a worker stalled on the previous selection never delays the
@@ -629,9 +673,10 @@ impl Loops {
             let Ok(summary) = self.host.summary(&selected) else {
                 continue;
             };
+            let target = SessionTarget::from_summary(&summary);
             let telemetry = &summary.telemetry;
             let paused = telemetry.state == SessionState::Paused && !telemetry.playing;
-            let key = paused.then(|| (selected.clone(), telemetry.epoch, telemetry.frames));
+            let key = paused.then(|| (target.clone(), telemetry.frames));
             let registers_due = {
                 let mut keys = lock(&state);
                 if key.is_none() {
@@ -642,31 +687,30 @@ impl Loops {
             if registers_due && self.begin("registers", &selected) {
                 let (loops, state, selected, key) =
                     (self.clone(), state.clone(), selected.clone(), key.clone());
+                let target = target.clone();
                 tokio::spawn(async move {
                     let result = loops
                         .timed("registers", &selected, loops.host.registers(&selected, 0))
                         .await;
                     if let Ok(value) = result {
-                        if loops.current(&selected, generation) {
-                            lock(&loops.published).registers = Some((selected, value));
+                        let mut update = lock(&loops.published);
+                        if loops.current_reply(&target, generation, &value)
+                            && target.is_current(&update.inspected, &update.sessions)
+                        {
+                            update.registers = Some((target, value));
                             lock(&state).registers = key;
                         }
                     }
                 });
             }
             let (panel, offset) = *lock(&self.inspection_selection);
-            let view_key = (
-                selected.clone(),
-                panel,
-                offset,
-                (telemetry.epoch, telemetry.frames),
-            );
+            let view_key = (target.clone(), panel, offset, telemetry.frames);
             let due = {
                 let keys = lock(&state);
                 match &keys.inspection {
                     None => true,
-                    Some((session, old_panel, old_offset, frame)) => {
-                        (session, old_panel, old_offset) != (&selected, &panel, &offset)
+                    Some((old_target, old_panel, old_offset, frame)) => {
+                        (old_target, old_panel, old_offset) != (&target, &panel, &offset)
                             || if panel.live() {
                                 keys.inspected_at.elapsed() >= INSPECT_PERIOD
                             } else {
@@ -695,14 +739,15 @@ impl Loops {
                     )
                     .await;
                 lock(&state).inspected_at = Instant::now();
-                if loops.current(&selected, generation)
+                if !loops.current_reply(&target, generation, &value) {
+                    return;
+                }
+                let view = Arc::new(Inspection::from_value(&value, panel));
+                let mut update = lock(&loops.published);
+                if loops.current(&target, generation)
                     && *lock(&loops.inspection_selection) == (panel, offset)
+                    && update.publish_inspection((Some(target), panel, view))
                 {
-                    lock(&loops.published).inspection = Some((
-                        selected,
-                        panel,
-                        Arc::new(Inspection::from_value(&value, panel)),
-                    ));
                     lock(&state).inspection = Some(view_key);
                 }
             });
@@ -890,7 +935,14 @@ impl Loops {
             }
             Command::Select(_) | Command::Inspect(_) => {}
             Command::Debug { session, command } => {
+                let target = SessionTarget::from_summary(&host.summary(&session)?);
+                let generation = self.generation.load(Ordering::Acquire);
                 let mut value = host.debug(&session, &command, actor).await?;
+                // The operation finishes even if its view has moved. Its result
+                // must not become evidence about a different worker/guest epoch.
+                if !self.current_reply(&target, generation, &value) {
+                    return Ok(());
+                }
                 if matches!(
                     command,
                     DebugCommand::GpuDraw { .. } | DebugCommand::ShaderTrace { .. }
@@ -905,18 +957,19 @@ impl Loops {
                         if matches!(command, DebugCommand::GpuDraw { .. }) {
                             let mut previous = lock(&self.previous_draw);
                             if let Some((id, before)) =
-                                previous.as_ref().filter(|(id, _)| id == &session)
+                                previous.as_ref().filter(|(id, _)| id == &target)
                             {
                                 let _ = id;
                                 value["draw_changes"] =
                                     serde_json::to_value(Inspection::draw_diff(before, &capture))
                                         .map_err(io::Error::other)?;
                             }
-                            *previous = Some((session.clone(), capture.clone()));
+                            *previous = Some((target.clone(), capture.clone()));
                         }
                         value["capture"] = capture;
                     }
                 }
+                let mut image = None;
                 if matches!(command, DebugCommand::Surface { .. }) {
                     if let (Some(uri), Some(width), Some(height)) = (
                         value["artifacts"][0]["uri"].as_str(),
@@ -930,8 +983,8 @@ impl Loops {
                         {
                             return Err(io::Error::other("invalid surface image bounds"));
                         }
-                        lock(&self.published).debug_image = Some(DebugImage {
-                            session: session.clone(),
+                        image = Some(DebugImage {
+                            target: target.clone(),
                             width: width as u32,
                             height: height as u32,
                             bgra: bytes,
@@ -939,15 +992,23 @@ impl Loops {
                     }
                 }
                 let view = Arc::new(Inspection::from_value(&value, Panel::Result));
-                lock(&self.published).inspection = Some((session, Panel::Result, view));
+                let mut update = lock(&self.published);
+                if self.current(&target, generation)
+                    && *lock(&self.inspection_selection) == (Panel::Result, 0)
+                    && update.publish_inspection((Some(target), Panel::Result, view))
+                {
+                    update.debug_image = image;
+                }
             }
             Command::OpenTrace { path } => {
                 let view = tokio::task::spawn_blocking(move || Inspection::load_trace(&path))
                     .await
                     .map_err(io::Error::other)??;
-                let mut update = lock(&self.published);
-                let inspected = update.inspected.clone();
-                update.inspection = Some((inspected, Panel::Result, Arc::new(view)));
+                if *lock(&self.inspection_selection) == (Panel::Result, 0) {
+                    let mut update = lock(&self.published);
+                    update.debug_image = None;
+                    update.publish_inspection((None, Panel::Result, Arc::new(view)));
+                }
             }
             Command::Play(id) => host.run(&id, actor).await?,
             Command::Pause(id) => {
@@ -1035,4 +1096,98 @@ impl Controllers {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lotus_session::{supervisor::SessionInfo, telemetry::Telemetry};
+
+    fn summary() -> SessionSummary {
+        let mut telemetry = Telemetry::new();
+        telemetry.epoch = 4;
+        SessionSummary {
+            info: SessionInfo {
+                id: "a".into(),
+                kind: SessionKind::Secondary { parent: None },
+                asset: None,
+                created_unix_ms: 10,
+            },
+            telemetry,
+        }
+    }
+    fn reply(target: &SessionTarget) -> InspectionSnapshot {
+        (
+            Some(target.clone()),
+            Panel::Memory,
+            Arc::new(Inspection::from_value(
+                &serde_json::json!({"old_guest": 1}),
+                Panel::Memory,
+            )),
+        )
+    }
+    fn image(target: &SessionTarget) -> DebugImage {
+        DebugImage {
+            target: target.clone(),
+            width: 1,
+            height: 1,
+            bgra: vec![0; 4],
+        }
+    }
+
+    #[test]
+    fn cached_and_late_inspection_cannot_cross_epoch_identity_or_target_changes() {
+        for transition in 0..4 {
+            let summary = summary();
+            let target = SessionTarget::from_summary(&summary);
+            let mut update = Update {
+                sessions: vec![summary],
+                inspected: "a".into(),
+                ..Default::default()
+            };
+            assert!(
+                update.publish_inspection(reply(&target)),
+                "current reply accepted"
+            );
+            update.registers = Some((target.clone(), serde_json::json!({"r0":1})));
+            update.debug_image = Some(image(&target));
+            match transition {
+                0 => update.sessions[0].telemetry.epoch += 1,
+                1 => update.sessions[0].info.created_unix_ms += 1,
+                2 => update.inspected = "b".into(),
+                _ => update.sessions.clear(),
+            }
+            update.retain_current_inspection();
+            assert!(update.inspection.is_none());
+            assert!(update.registers.is_none());
+            assert!(update.debug_image.is_none());
+            // The request captured its target before the transition; it now
+            // finishes after the publication lock has moved to the new state.
+            assert!(
+                !update.publish_inspection(reply(&target)),
+                "late reply rejected"
+            );
+            assert!(update.inspection.is_none());
+        }
+    }
+
+    #[test]
+    fn local_trace_keeps_its_own_provenance_and_never_inherits_a_surface() {
+        let summary = summary();
+        let target = SessionTarget::from_summary(&summary);
+        let mut update = Update {
+            sessions: vec![summary],
+            inspected: "a".into(),
+            ..Default::default()
+        };
+        let trace = Inspection::from_value(&serde_json::json!({"trace":"local"}), Panel::Result);
+        assert!(update.publish_inspection((None, Panel::Result, Arc::new(trace))));
+        update.debug_image = Some(image(&target));
+        update.sessions.clear();
+        update.inspected.clear();
+        update.retain_current_inspection();
+        assert!(update.inspection.as_ref().unwrap().0.is_none());
+        assert_eq!(update.inspection.as_ref().unwrap().2.rows.len(), 1);
+        assert!(update.debug_image.is_none());
+    }
 }

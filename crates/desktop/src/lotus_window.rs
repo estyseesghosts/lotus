@@ -32,7 +32,7 @@ use serde_json::Value;
 use crate::desktop_controller::{Command, DesktopController, McpLink, McpMode};
 use crate::gauges;
 use crate::icons::{icon, Icon};
-use crate::inspection::{Inspection, Panel, SessionTarget};
+use crate::inspection::{self, InspectionSnapshot, Panel, SessionTarget};
 use crate::layout::{self, Drag, GaugeMode, Pane, PaneState, Plan, ToolbarDensity};
 use crate::preferences::{self, Store};
 use crate::screen_geometry::TouchTransform;
@@ -202,10 +202,11 @@ pub struct LotusWindow {
     split_held: Cell<Option<SplitPlan>>,
     /// Last resolved layout handed to the supervisor, to report only changes.
     resolved_sent: Cell<Option<workspace::Resolved>>,
-    registers: Option<(String, Value)>,
-    inspection: Option<(String, Panel, Arc<Inspection>)>,
+    registers: Option<(SessionTarget, Value)>,
+    inspection: Option<InspectionSnapshot>,
     inspection_panel: Panel,
     surface_image: Option<Arc<RenderImage>>,
+    surface_target: Option<SessionTarget>,
     error: String,
     dismissed_error: String,
     mcp: McpLink,
@@ -349,6 +350,7 @@ impl LotusWindow {
                 }
             },
             surface_image: None,
+            surface_target: None,
             error: String::new(),
             dismissed_error: String::new(),
             mcp: McpLink::Off,
@@ -610,6 +612,7 @@ impl LotusWindow {
             return;
         };
         let ui = controller.ui.clone();
+        let latest = controller.latest.clone();
         ui.poll_started();
         let controllers = controller.input().controllers();
         if controllers != self.controllers {
@@ -617,7 +620,7 @@ impl LotusWindow {
         }
         let target = self.keyboard_target();
         let (previews, selected, surface) = {
-            let mut update = controller.ui.lock_update(&controller.latest);
+            let mut update = ui.lock_update(&latest);
             self.sessions = update.sessions.clone();
             self.cards = update.cards.clone();
             self.assets = update.assets.clone();
@@ -628,7 +631,7 @@ impl LotusWindow {
             self.waiting.clone_from(&update.waiting);
             self.artifacts.clone_from(&update.artifacts);
             self.registers = update.registers.clone();
-            self.inspection = update.inspection.clone();
+            self.set_inspection(update.inspection.clone(), cx);
             self.workspace.clone_from(&update.workspace);
             if update.inspected != self.inspected {
                 self.inspected.clone_from(&update.inspected);
@@ -675,20 +678,21 @@ impl LotusWindow {
         };
         if selected != self.selected {
             self.selected = selected;
-            if let Some(old) = self.surface_image.take() {
-                cx.drop_image(old, None);
-            }
         }
         // Keyboard follows the selection outside a split and the focused tile inside one;
         // what it held is released when it moves.
         if self.keyboard_target() != target {
             self.release_input();
         }
-        if let Some(surface) = surface.filter(|surface| surface.session == self.inspected) {
+        self.retain_current_inspection(cx);
+        if let Some(surface) =
+            surface.filter(|surface| surface.target.is_current(&self.inspected, &self.sessions))
+        {
             if let Some(old) = self.surface_image.take() {
                 cx.drop_image(old, None);
             }
             if let Some(pixels) = RgbaImage::from_raw(surface.width, surface.height, surface.bgra) {
+                self.surface_target = Some(surface.target);
                 self.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(pixels)])));
             }
         }
@@ -3295,6 +3299,45 @@ impl LotusWindow {
             *controller.inspection_selection.lock().unwrap() = (panel, offset);
         }
     }
+    fn set_inspection(&mut self, snapshot: Option<InspectionSnapshot>, cx: &mut Context<Self>) {
+        // Polls clone the same immutable Arc. A new result must not inherit a
+        // previous command's image, even when both belong to the same epoch.
+        let old = self.inspection.as_ref().map(|s| Arc::as_ptr(&s.2));
+        let new = snapshot.as_ref().map(|s| Arc::as_ptr(&s.2));
+        if old != new {
+            self.surface_target = None;
+            if let Some(image) = self.surface_image.take() {
+                cx.drop_image(image, None);
+            }
+        }
+        self.inspection = snapshot;
+    }
+
+    fn retain_current_inspection(&mut self, cx: &mut Context<Self>) {
+        self.registers = self
+            .registers
+            .take()
+            .filter(|(target, _)| target.is_current(&self.inspected, &self.sessions));
+        self.inspection = self.inspection.take().filter(|snapshot| {
+            inspection::snapshot_current(snapshot, &self.inspected, &self.sessions)
+        });
+        let local_trace = self
+            .inspection
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.0.is_none());
+        if local_trace
+            || self
+                .surface_target
+                .as_ref()
+                .is_none_or(|target| !target.is_current(&self.inspected, &self.sessions))
+        {
+            self.surface_target = None;
+            if let Some(old) = self.surface_image.take() {
+                cx.drop_image(old, None);
+            }
+        }
+    }
+
     fn inspection_target(&self) -> Option<SessionTarget> {
         #[cfg(feature = "silvestris-ui")]
         if self.shared_inspector_target() != Some(self.inspected.as_str()) {
@@ -3706,10 +3749,10 @@ impl LotusWindow {
         }
         // Popovers paint last so the row list never covers them.
         let utility = (self.menu == Menu::InspectorUtility).then(|| self.render_utility_menu(cx));
-        let view = self
-            .inspection
-            .as_ref()
-            .filter(|(session, tab, _)| *session == self.inspected && *tab == current);
+        let view = self.inspection.as_ref().filter(|snapshot| {
+            snapshot.1 == current
+                && inspection::snapshot_current(snapshot, &self.inspected, &self.sessions)
+        });
         let Some((_, _, view)) = view else {
             return panel
                 .child(

@@ -109,4 +109,6 @@ One effective plan fits previews and positions sidebar, inspector and rail.
 Inspector visibility/width keep the legacy preference keys; namespaced pin and
 stable panel metadata migrate existing dock intent. SessionTarget in
 inspection.rs is shared by navigation and painted inspector action guards.
-Controller inspection requests and worker/MCP interfaces remain unchanged.
+Request interfaces remain unchanged. Inspector reply/cache provenance is
+validated in desktop_controller.rs and again by the window; host-derived
+disassembly retains its source memory-read epoch. See [07](07-debugger-core.md).

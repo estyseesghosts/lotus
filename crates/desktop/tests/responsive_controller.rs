@@ -129,7 +129,11 @@ fn a_stalled_selected_worker_never_freezes_the_window_or_its_siblings() {
     std::thread::sleep(Duration::from_millis(3500));
     let update = controller.latest.lock().expect("snapshot");
     if let Some((session, _, _)) = &update.inspection {
-        assert_eq!(session, &b, "stale inspection from A published under B");
+        assert_eq!(
+            session.as_ref().map(|target| &target.id),
+            Some(&b),
+            "stale inspection from A published under B"
+        );
     }
     let metrics = controller.host().frontend_metrics();
     assert!(
@@ -147,6 +151,84 @@ fn root(base: &std::path::Path, id: &str) -> PathBuf {
         .expect("store")
         .join("scratch")
         .join(id)
+}
+
+/// Reset keeps the session ID but starts a new guest epoch. A cached static
+/// panel must disappear before the next request, rather than becoming new-guest data.
+#[test]
+fn reset_invalidates_cached_inspection_without_waiting_for_a_replacement_panel() {
+    use lotus_desktop::inspection::Panel;
+    let base = std::env::temp_dir().join(format!(
+        "lotus-inspection-epoch-{}",
+        SessionUuid::generate()
+    ));
+    std::fs::create_dir_all(&base).unwrap();
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").unwrap();
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    controller
+        .commands
+        .send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some("demo".into()),
+        })
+        .unwrap();
+    wait(&controller, "created session", |u| !u.selected.is_empty());
+    let id = controller.latest.lock().unwrap().selected.clone();
+    controller
+        .commands
+        .send(Command::Pause(id.clone()))
+        .unwrap();
+    *controller.inspection_selection.lock().unwrap() = (Panel::Memory, 0);
+    controller.inspector.store(true, Ordering::Release);
+    wait(&controller, "initial memory snapshot", |u| {
+        u.inspection.as_ref().is_some_and(|(target, panel, _)| {
+            target.as_ref().is_some_and(|t| t.id == id) && *panel == Panel::Memory
+        })
+    });
+    let before = controller
+        .latest
+        .lock()
+        .unwrap()
+        .inspection
+        .as_ref()
+        .unwrap()
+        .0
+        .clone()
+        .unwrap();
+    // Result has no polling command. No replacement can hide a stale cache.
+    *controller.inspection_selection.lock().unwrap() = (Panel::Result, 0);
+    controller
+        .commands
+        .send(Command::Reset(id.clone()))
+        .unwrap();
+    wait(&controller, "new guest epoch", |u| {
+        u.sessions
+            .iter()
+            .any(|s| s.info.id == id && s.telemetry.epoch != before.epoch)
+    });
+    {
+        let update = controller.latest.lock().unwrap();
+        assert!(update.inspection.is_none(), "old epoch remained published");
+        assert!(update
+            .registers
+            .as_ref()
+            .is_none_or(|(target, _)| target.epoch != before.epoch));
+    }
+    *controller.inspection_selection.lock().unwrap() = (Panel::Memory, 0);
+    wait(&controller, "new memory snapshot", |u| {
+        u.inspection.as_ref().is_some_and(|(target, _, _)| {
+            target.as_ref().is_some_and(|t| {
+                t.id == id && t.epoch != before.epoch && t.resolve(&u.sessions).is_some()
+            })
+        })
+    });
+    drop(controller);
+    assert!(base.is_absolute() && base.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(base).unwrap();
 }
 
 /// lotus#45: with A's preview and inspector exchanges stalled, B's first preview and
@@ -219,7 +301,7 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
         update
             .inspection
             .as_ref()
-            .is_some_and(|(session, _, _)| *session == b)
+            .is_some_and(|(session, _, _)| session.as_ref().is_some_and(|target| target.id == b))
     });
     let inspection_latency = started.elapsed();
     eprintln!(
@@ -263,7 +345,7 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
             "A's late preview shown after A left the view"
         );
         if let Some((session, _, _)) = &update.inspection {
-            assert_eq!(session, &b);
+            assert_eq!(session.as_ref().map(|target| &target.id), Some(&b));
         }
     }
     let metrics = controller.host().frontend_metrics();
@@ -461,10 +543,9 @@ fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
         "B's inspection while A stays selected",
         |update| {
             update.inspected == b
-                && update
-                    .inspection
-                    .as_ref()
-                    .is_some_and(|(session, _, _)| *session == b)
+                && update.inspection.as_ref().is_some_and(|(session, _, _)| {
+                    session.as_ref().is_some_and(|target| target.id == b)
+                })
         },
     );
     assert_eq!(controller.latest.lock().expect("snapshot").selected, a);
@@ -497,7 +578,7 @@ fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
         update
             .inspection
             .as_ref()
-            .is_some_and(|(session, _, _)| *session == a)
+            .is_some_and(|(session, _, _)| session.as_ref().is_some_and(|target| target.id == a))
     });
     let update = controller.latest.lock().expect("snapshot");
     assert!(

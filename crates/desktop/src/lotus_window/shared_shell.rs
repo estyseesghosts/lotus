@@ -325,7 +325,45 @@ mod tests {
                 );
                 view.inspected = "b".into(); // controller acknowledges the request
                 let target = view.inspection_target();
+                let snapshot = (
+                    target.clone(),
+                    Panel::Result,
+                    Arc::new(inspection::Inspection::from_value(
+                        &serde_json::json!({"old": 1}),
+                        Panel::Result,
+                    )),
+                );
+                view.set_inspection(Some(snapshot.clone()), cx);
+                view.surface_target = target.clone();
+                view.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(
+                    RgbaImage::new(1, 1),
+                )])));
+                view.set_inspection(Some(snapshot), cx);
+                assert!(
+                    view.surface_image.is_some(),
+                    "ordinary poll retains the same result image"
+                );
+                let replacement = (
+                    target.clone(),
+                    Panel::Result,
+                    Arc::new(inspection::Inspection::from_value(
+                        &serde_json::json!({"new": 2}),
+                        Panel::Result,
+                    )),
+                );
+                view.set_inspection(Some(replacement), cx);
+                assert!(
+                    view.surface_image.is_none(),
+                    "a different command result cannot inherit the image"
+                );
+                view.surface_target = target.clone();
+                view.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(
+                    RgbaImage::new(1, 1),
+                )])));
                 view.sessions[1].telemetry.epoch += 1;
+                view.retain_current_inspection(cx);
+                assert!(view.inspection.is_none());
+                assert!(view.surface_image.is_none(), "old epoch image is evicted");
                 view.debug_command(&target, D::Registers { core: 0 });
                 assert_eq!(
                     view.inspection_panel,

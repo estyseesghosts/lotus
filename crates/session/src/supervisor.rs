@@ -1534,7 +1534,7 @@ impl Supervisor {
             let text = crate::disassembly::decode(&handle.root, *address, &bytes, *thumb).await?;
             let mut result = serde_json::json!({"address":address,"bytes":bytes,"thumb":thumb,"assembly":text,
                 "paused":result["paused"],"safe_point":true,"rasterizer_cache_flush":true,
-                "profile_hash":native.profile_hash()});
+                "profile_hash":native.profile_hash(), "epoch":result["epoch"]});
             if let Some(symbols) = lock(&handle.symbols).as_ref() {
                 result["source"] =
                     serde_json::to_value(symbols.locate(*address)?).map_err(io::Error::other)?;
