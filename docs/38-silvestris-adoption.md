@@ -334,9 +334,13 @@ IDs, the old IDs become Missing, and an open Actions menu is dismissed
 Descriptors are republished each render; CommandSet::upsert only bumps its
 version on a real change, so this converges without extra frames.
 
-Keyboard shortcuts are still handled by key_down and call the same methods;
-they are shown in menu rows but are not yet installed through
-CommandRegistry::bindings. Load still opens the legacy asset popover.
+Global shortcuts (Ctrl+B sidebar, Ctrl+I inspector, Ctrl+, settings,
+Ctrl+O open) are installed once through CommandRegistry::bindings_where in
+the LotusCommands && !SilvestrisTextField context; the root is wrapped in a
+CommandScope, so a bound key dispatches the registry command before the
+root's key_down. Session commands are left out: their IDs change with each
+target, and Space/period are reserved keys key_down handles only while the
+window itself is focused. Load still opens the legacy asset popover.
 The GPUI test actions_menu_shares_toolbar_commands_and_drops_a_replaced_target
 covers all four themes.
 

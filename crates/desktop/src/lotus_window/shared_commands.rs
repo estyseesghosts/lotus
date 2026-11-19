@@ -7,11 +7,17 @@ use silvestris::core::command::{CommandDescriptor, CommandId, MenuEntry, MenuMod
 use silvestris::menu::PopupMenu;
 use silvestris::ActiveTheme;
 
+/// Key context of the main window's command scope. Text fields keep their
+/// own editing keys (silvestris commands.md).
+pub(super) const COMMAND_CONTEXT: &str = "LotusCommands";
+const BINDING_PREDICATE: &str = "LotusCommands && !SilvestrisTextField";
+
 pub(super) struct SharedCommands {
     pub registry: Entity<CommandRegistry>,
     pub menu: Entity<PopupMenu>,
     target: Option<SessionTarget>,
     session_ids: Vec<CommandId>,
+    bound: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -89,7 +95,7 @@ impl SharedCommands {
         let menu = cx.new(|cx| PopupMenu::new(MenuModel { label: "Actions".into(), entries: Vec::new() }, registry.clone(), window, cx));
         // Menu state invalidation must repaint its mounted deferred overlay.
         cx.observe(&menu, |_, _, cx| cx.notify()).detach();
-        Self { registry, menu, target: None, session_ids: Vec::new() }
+        Self { registry, menu, target: None, session_ids: Vec::new(), bound: false }
     }
 }
 
@@ -123,6 +129,22 @@ impl LotusWindow {
         for command in SessionCommand::ALL {
             let descriptor = command.descriptor(self, target.as_ref());
             registry.update(cx, |r, cx| r.publish(descriptor, cx).expect("registered session UI command"));
+        }
+        if !self.shared_commands.bound {
+            self.shared_commands.bound = true;
+            // Global shortcuts only: session IDs change with every target, and
+            // Space/period (reserved keys) stay with the root key handler, which
+            // acts only while the window itself is focused so a focused control
+            // keeps Space (key_down; lotus_input::layout::RESERVED_KEYS).
+            let bindings = registry.read(cx).bindings_where(
+                BINDING_PREDICATE,
+                |d| !d.id.as_str().starts_with("session."),
+                cx,
+            );
+            match bindings {
+                Ok(bindings) => cx.bind_keys(bindings),
+                Err(error) => tracing::warn!("command shortcuts not installed: {error}"),
+            }
         }
     }
 

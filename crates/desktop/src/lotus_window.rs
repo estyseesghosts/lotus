@@ -4249,7 +4249,7 @@ impl Render for LotusWindow {
             Some(gpui::deferred(self.shared_commands.menu.clone()).with_priority(1));
         #[cfg(not(feature = "silvestris-ui"))]
         let menu_overlay: Option<gpui::Empty> = None;
-        div()
+        let root = div()
             .id("lotus")
             .relative()
             .flex()
@@ -4319,7 +4319,19 @@ impl Render for LotusWindow {
             }))
             .child(content)
             // Silvestris menus.md: mount once as a priority-1 deferred overlay.
-            .children(menu_overlay)
+            .children(menu_overlay);
+        // Silvestris commands.md: registry shortcuts dispatch at this responder
+        // boundary, ahead of the root's key_down (and so guest input).
+        #[cfg(feature = "silvestris-ui")]
+        return silvestris::command::CommandScope::new(
+            "lotus-commands",
+            shared_commands::COMMAND_CONTEXT,
+            self.shared_commands.registry.clone(),
+        )
+        .child(root)
+        .into_any_element();
+        #[cfg(not(feature = "silvestris-ui"))]
+        root.into_any_element()
     }
 }
 
