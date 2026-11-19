@@ -1,7 +1,9 @@
 [toolchain]
-# The toolchain is pinned with an explicit host triple. This machine has no
-# MSVC linker installed, so the GNU toolchain is the one that can link here.
-# See docs/17-scaffold-and-pins.md for the toolchain situation.
-channel = "1.98.1-x86_64-pc-windows-gnu"
+# The channel carries no host triple so Linux can install it (#102). Windows
+# needs the GNU host because this machine has no MSVC linker:
+# scripts/bootstrap.ps1 sets a directory override to
+# 1.98.1-x86_64-pc-windows-gnu and Windows CI sets RUSTUP_TOOLCHAIN; both take
+# precedence over this file. See docs/17-scaffold-and-pins.md.
+channel = "1.98.1"
 profile = "minimal"
 components = ["rustfmt", "clippy"]

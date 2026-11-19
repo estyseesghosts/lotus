@@ -2,8 +2,10 @@
 
 Authoritative commands. CI ([windows.yml](../.github/workflows/windows.yml)) runs
 the same steps; **verified compiled** there (run 43795955719, 2026-11-16). The
-local-checkout variant below differs only in paths. MSVC, Linux and macOS are
-untested. Rationale and release contents: [26](26-portable-release.md).
+local-checkout variant below differs only in paths. MSVC and macOS are
+untested; Linux covers the Rust workspace only
+([section 10](#10-linux-rust-workspace)). Rationale and release contents:
+[26](26-portable-release.md).
 
 ## 0. Just run it
 
@@ -20,7 +22,7 @@ are unsigned, so SmartScreen may warn.
 | Windows | 11 x64 | Direct3D 11 |
 | Git | any recent | submodule support |
 | Python | 3.11+ (CI: 3.14) | `tomllib`, `hashlib.file_digest` |
-| rustup | any | installs the pin in `rust-toolchain.toml` (`1.98.1-x86_64-pc-windows-gnu`) automatically |
+| rustup | any | `scripts/bootstrap.ps1` installs `1.98.1-x86_64-pc-windows-gnu` and sets it as the directory override; the default MSVC host does not link |
 | `gh` | optional | CI dispatch and logs |
 
 GCC, CMake, Ninja and the FXC shader compiler are **not** taken from the system.
@@ -206,3 +208,33 @@ MCP host configs are JSON (`storage_root`, `allow_control`, `assets`, `worker`;
 [23](23-local-mcp.md)); give each run a fresh `storage_root`. Python on
 Windows needs absolute paths for the server and config. Results and
 retrospective: [31](31-wave-3-progress.md), [33](33-wave-3-retrospective.md).
+
+## 10. Linux (Rust workspace)
+
+Ubuntu 24.04 x86_64, CI [linux.yml](../.github/workflows/linux.yml) (#102).
+Desktop, MCP, CLI and mock workers only; native workers and the AppImage are
+#103-#109. System packages, one per `-sys` crate in `Cargo.lock`:
+
+| Package | Needed by |
+|---|---|
+| build-essential, pkg-config, cmake | C builds, pkg-config probes |
+| libfontconfig-dev | `yeslogic-fontconfig-sys` (GPUI text) |
+| libudev-dev | `libudev-sys` (gilrs controllers) |
+| libwayland-dev | `wayland-sys` (GPUI Wayland) |
+| libxkbcommon-x11-dev, libx11-xcb-dev | `xkbcommon`, `x11rb` (GPUI X11) |
+
+```sh
+rustup toolchain install 1.98.1 --profile minimal --component rustfmt --component clippy
+cargo build --locked --release --bin lotus-desktop --bin lotus-mcp --bin ctr-cli
+cargo test --locked --release --workspace
+python3 tests/test_headless_smoke.py target/release
+```
+
+`rust-toolchain.toml` names no host, so the Linux host toolchain is used.
+`gpui_platform` gets the `wayland` and `x11` features on Linux; without them
+the desktop opens no window and exits 0.
+
+Status: **verified compiled** and headless-tested (unit/integration suite,
+CLI and desktop `--help`, both mock workers, MCP initialize) in Docker
+ubuntu:24.04, 3 consecutive clean full-suite runs. Windowed desktop on
+Wayland/X11/WSLg is untested until #106.

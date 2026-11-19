@@ -252,6 +252,8 @@ async fn reset_cancels_pending_input_and_stop_ends_tasks() {
         .is_err());
 }
 
+// tasklist is Windows-only, like the test that uses it; Unix termination is #104.
+#[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
     let output = std::process::Command::new("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])

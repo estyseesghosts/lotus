@@ -62,6 +62,8 @@ fn main() {
     }
     gpui_platform::application().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, gpui::size(gpui::px(1280.0), gpui::px(880.0)), cx);
+        // Only Windows uses the handle: `ensure_visible` undoes a parent's SW_HIDE.
+        #[cfg_attr(not(windows), allow(unused_variables))]
         let handle = cx
             .open_window(
                 WindowOptions {

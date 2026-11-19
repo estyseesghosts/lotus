@@ -91,6 +91,10 @@ $expectedRust = $pins['rust']['channel']
 $rustcVersion = (& rustc --version)
 Test-Pin -Name 'rust toolchain' -Ok ($rustcVersion -like "*$expectedRust*") `
     -Detail ("expected {0}, found {1}" -f $expectedRust, $rustcVersion.Trim())
+$expectedHost = $pins['rust']['host']
+$rustcHost = ((& rustc -vV) | Where-Object { $_ -like 'host: *' }) -replace '^host: ', ''
+Test-Pin -Name 'rust host' -Ok ($rustcHost -eq $expectedHost) `
+    -Detail ("expected {0}, found {1}" -f $expectedHost, $rustcHost)
 
 if ($failures -gt 0) {
     Write-Host ''

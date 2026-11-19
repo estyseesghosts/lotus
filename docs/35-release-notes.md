@@ -4,6 +4,13 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## v0.0.7 (unreleased)
+
+- Linux CI for the Rust workspace on Ubuntu 24.04: build, clippy, tests and a
+  headless smoke test; GPUI gets its Wayland and X11 backends (#102).
+- `worker.lock` is retried for up to 250 ms on Unix while a sibling fork
+  still holds an inherited copy (#116).
+
 ## v0.0.6 (2026-11-18)
 
 Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental

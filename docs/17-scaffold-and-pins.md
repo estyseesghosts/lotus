@@ -7,8 +7,11 @@ branches currently share integration code; no accuracy experiments exist yet.
 Immutable revisions live in [config/pins.toml](../config/pins.toml); Cargo.lock
 pins Rust dependencies and vendor/azahar pins native source. Upstream control:
 `11eceda5e0e682a1f44e396bf954a1b9137097ca`. GPUI/Zed:
-`6b720973027999bae402df23d469026f4cced988`. Rust:
-`1.98.1-x86_64-pc-windows-gnu`.
+`6b720973027999bae402df23d469026f4cced988`. Rust: `1.98.1`
+([rust-toolchain.toml](../rust-toolchain.toml) names no host, so Linux can
+install it). Windows uses the `x86_64-pc-windows-gnu` host from pins.toml:
+`scripts/bootstrap.ps1` sets a rustup directory override and windows.yml sets
+`RUSTUP_TOOLCHAIN`; both outrank the toolchain file.
 
 ## Build
 

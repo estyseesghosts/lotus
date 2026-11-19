@@ -36,6 +36,11 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 discord-rich-presence = "=1.1.0"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Without a backend gpui_linux runs headless and `run` returns at once (gpui_platform
+# Cargo.toml `wayland`/`x11` features; gpui_linux `current_platform`).
+gpui_platform = { workspace = true, features = ["wayland", "x11"] }
+
 [target.'cfg(windows)'.dependencies]
 # Versions already locked through GPUI; used to re-show a window started hidden (main.rs).
 raw-window-handle = "=0.6.2"

@@ -37,6 +37,9 @@ jobs:
     if: ${{ !inputs.reuse_build_run }}
     runs-on: windows-2025
     timeout-minutes: 90
+    env:
+      # rust-toolchain.toml has no host triple (#102); the runner's default host is MSVC.
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-pc-windows-gnu
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
