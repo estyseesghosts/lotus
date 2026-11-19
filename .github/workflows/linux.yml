@@ -97,3 +97,50 @@ jobs:
         with:
           name: linux-rust-provenance
           path: build/linux-provenance.txt
+      - name: Stage applications
+        run: |
+          cargo metadata --locked --format-version 1 --filter-platform x86_64-unknown-linux-gnu > build/metadata.json
+          tar -cf build/rust-linux.tar -C target/release lotus-desktop lotus-mcp ctr-cli -C ../../build metadata.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rust-linux
+          path: build/rust-linux.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  # Pinned ctr-worker per flavor, each in its own source and build tree (#103).
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: [integration, experimental]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             build-essential cmake ninja-build pkg-config git libpulse-dev libasound2-dev
+      - name: Pinned native source
+        run: |
+          commit=$(python3 -c 'import tomllib; print(tomllib.load(open("config/pins.toml","rb"))["azahar"]["${{ matrix.branch }}_commit"])')
+          git clone --no-checkout https://github.com/estyseesghosts/azahar.git build/native-source
+          git -C build/native-source checkout --detach "$commit"
+          git -C build/native-source submodule update --init --recursive --depth 1
+      - name: Native build and contract checks
+        run: |
+          bash scripts/build-azahar.sh ${{ matrix.branch }} build/native-source build/native "$(nproc)"
+          worker=$(ls build/native/bin/*/ctr-worker build/native/bin/ctr-worker 2>/dev/null | head -1)
+          "$worker" --self-test
+          python3 tests/test_native_protocol.py "$worker"
+          cp "$worker" build/native/ctr-worker
+          tar -cf build/native-${{ matrix.branch }}.tar -C build/native ctr-worker lotus-build-manifest.json
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-linux-${{ matrix.branch }}
+          path: build/native-${{ matrix.branch }}.tar
+          if-no-files-found: error
+          retention-days: 7

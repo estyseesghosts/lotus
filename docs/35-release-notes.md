@@ -13,6 +13,8 @@ documents; this page only says what changed. Labels follow the
 - Unix workers run in their own process group; abort, the stop kill switch
   and clean-stop cleanup kill the whole group, so descendants no longer
   outlive their worker (#104).
+- Both native workers build on Linux with `scripts/build-azahar.sh` and a
+  Linux CI matrix that runs `--self-test` and the protocol test (#103).
 - Linux AppImage launcher: data defaults to `~/.local/lotus` (override with
   `--data-dir` or `LOTUS_DATA_DIR`), `host.json` is regenerated per start, and
   an old `desktop.json` can be imported without overwriting (#105).

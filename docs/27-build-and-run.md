@@ -242,3 +242,31 @@ Status: **verified compiled** and headless-tested (unit/integration suite,
 CLI and desktop `--help`, both mock workers, MCP initialize) in Docker
 ubuntu:24.04, 3 consecutive clean full-suite runs. Windowed desktop on
 Wayland/X11/WSLg is untested until #106.
+
+## 11. Linux native workers
+
+`scripts/build-azahar.sh` is `build-azahar.ps1` for Linux (#103): same pin check
+against `config/pins.toml`, clean-source check, one build directory per flavor
+with a cache-ownership check, and the same CMake options (Qt, SDL, Libretro,
+OpenGL, room/web services, GDB stub and LTO off; software renderer, Vulkan and
+cubeb on; `CTR_BACKEND_NAME` AZAHAR or CITnLO). One deviation: the stale oracle
+include is cleared with `-UCMAKE_PROJECT_citra_INCLUDE`, because CMake 3.28
+treats an empty `-DCMAKE_PROJECT_citra_INCLUDE=` as a directory and fails.
+
+```sh
+sudo apt install build-essential cmake ninja-build pkg-config git libpulse-dev libasound2-dev
+git clone --no-checkout https://github.com/estyseesghosts/azahar.git azahar-integration
+git -C azahar-integration checkout --detach <integration_commit from pins.toml>
+git -C azahar-integration submodule update --init --recursive --depth 1
+scripts/build-azahar.sh integration azahar-integration build/native-integration
+build/native-integration/bin/Release/ctr-worker --self-test
+python3 tests/test_native_protocol.py build/native-integration/bin/Release/ctr-worker
+```
+
+The worker links only glibc (`libc`, `libm`, `libmvec`), `libstdc++` and
+`libgcc_s`; cubeb loads PulseAudio/ALSA at run time. Status: **verified
+compiled** for both pins in Docker ubuntu:24.04 (GCC 13.3, CMake 3.28), and
+`--self-test` and the protocol test pass. `tests/test_windowed_mcp.py` passes
+with two AZAHAR sessions of an owned `.3dsx` in `lotus-desktop --mcp` under
+WSLg. The frames advance at about 8 fps each with software rendering in a
+GPU-less container; that is not a performance result.
