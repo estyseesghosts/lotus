@@ -1,9 +1,11 @@
 # Desktop artwork
 
-lotus.png is an unchanged copy of the user's lotus-0.1.0/lotus-icon.png.
-SHA-256: 5FE3C42774E6830691F08C80090E4F9C43EA7970E8FCDFC5A2C1570C6CDF001A
+`lotus.png` is the user's `lotus-0.1.0/lotus-icon.png` resized to 576 × 531
+using Lanczos. The disconnected-view image fits a 144 logical-pixel square.
+The packaged size covers 400% scaling and reduces decoded image and atlas
+memory at startup.
 
-The staged disconnected workspace uses this existing application artwork.
-It is embedded locally, never downloaded, and loaded through one shared GPUI
-Image handle so repainting does not re-create or re-decode its source.
-Redistribution/licensing review remains part of the #138 release gate.
+- Original SHA-256 `5fe3c42774e6830691f08c80090e4f9c43ea7970e8fcdfc5a2c1570c6cdf001a`
+- Packaged SHA-256 `57c056ee84d35bf1656bfcad945b32874230f90237592539eb22b0a103cabe80`
+
+Lotus embeds the PNG and keeps a single shared GPUI image handle.

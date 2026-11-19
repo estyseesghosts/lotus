@@ -183,7 +183,8 @@ jobs:
             --azahar build/azahar --citnlo build/citnlo --azahar-source vendor/azahar \
             --version "$version" --output build/dist \
             --appimagetool build/tools/appimagetool --runtime build/tools/runtime
-          xvfb-run -a python3 tests/test_appimage.py "build/dist/LOTUS-v$version-linux-x86_64.AppImage"
+          sudo unshare --net -- runuser -u "$(id -un)" -- \
+            xvfb-run -a python3 tests/test_appimage.py "build/dist/LOTUS-v$version-linux-x86_64.AppImage"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: LOTUS-linux-x86_64

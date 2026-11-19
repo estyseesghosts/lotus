@@ -121,7 +121,7 @@ def main() -> int:
         home.mkdir()
         cwd.mkdir()
         env = {"PATH": os.environ["PATH"], "HOME": str(home), "APPIMAGE_EXTRACT_AND_RUN": "1",
-               "TMPDIR": str(base / "tmp")}
+               "TMPDIR": str(base / "tmp"), "XDG_CACHE_HOME": str(base / "tmp" / "cache")}
         (base / "tmp").mkdir()
         data = home / ".local/lotus"
 

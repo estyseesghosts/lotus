@@ -94,7 +94,24 @@ def main():
                 gauges = listed[session]["telemetry"]
                 print(f"{listed[session]['kind']:9} fps={gauges['fps']:.1f} speed={gauges['speed']:.2f} "
                       f"frames={gauges['frames']} memory={gauges['memory_bytes']}")
+
+            workspace = tool("lotus_workspace", {"operation": {
+                "op": "tile", "first": primary, "second": secondary, "axis": "horizontal"}})
+            layout = workspace["workspace"]["layout"]
+            assert workspace["committed"] and (layout["mode"], layout["first"], layout["second"]) == (
+                "split", primary, secondary
+            ), workspace
+            wait("both tiled guests advancing", lambda rows: all(
+                rows[i]["telemetry"]["frames"] > listed[i]["telemetry"]["frames"] for i in (primary, secondary)))
+            for session in (primary, secondary):
+                reply = send("tools/call", {"name": "lotus_capture", "arguments": {"session": session}})
+                assert not reply.get("isError"), reply
+                links = reply["content"]
+                assert len(links) == 2 and all(link.get("type") == "resource_link" for link in links), links
             tool("lotus_focus_session", {"session": secondary})
+            assert tool("lotus_workspace", {"operation": {"op": "get"}})["revision"] == (
+                workspace["workspace"]["revision"]
+            ), "inspector focus changed the split"
 
             # Independently addressed: pausing one leaves the other running.
             tool("lotus_control", {"session": secondary, "operation": "pause"})
@@ -113,7 +130,7 @@ def main():
             assert set(sessions()) == {primary}
             tool("lotus_control", {"session": primary, "operation": "stop"})
             assert (storage / "cards" / "dev").is_dir(), "primary card persists"
-            print("Windowed MCP: primary/secondary concurrency, addressing, gauges, discard: passed")
+            print("Windowed MCP: two tiled workers, two-screen capture, debug, card persistence and discard passed")
         finally:
             process.stdin.close()
             try:
