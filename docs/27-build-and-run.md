@@ -303,3 +303,21 @@ On a `v*` tag, `linux.yml` attaches the AppImage and its `.sha256` to the
 release, and `windows.yml` attaches the ZIP. Whichever finishes first creates
 the release and the other uploads to it (`scripts/publish-release.sh`).
 Existing assets are never replaced.
+
+`tests/test_appimage.py <AppImage>` gates publication (#109). It checks the
+name, version and `.sha256`, every file against `release-manifest.json`, both
+worker pins and identities, and that every binary resolves its libraries.
+Then it runs the image, renamed into a path with spaces, from another
+directory, with an isolated `HOME`. It uses `APPIMAGE_EXTRACT_AND_RUN` because
+hosted runners have no FUSE. The runs cover `cli --help`, `--configure-only`
+for both backends, an MCP initialize, and each worker's `--self-test` and
+protocol test. The test fails if anything is written outside `~/.local/lotus`.
+GUI qualification stays manual: hosted runners have no GPU.
+
+WSL2 (Windows-only developers): an Ubuntu 24.04 container or distro with the
+packages in sections 10 and 11 runs this whole loop. WSLg exposes
+`/mnt/wslg/runtime-dir/wayland-0` and `/tmp/.X11-unix/X0`. Mount both, set
+`XDG_RUNTIME_DIR=/mnt/wslg/runtime-dir WAYLAND_DISPLAY=wayland-0 DISPLAY=:0`,
+and `lotus-desktop` opens a window on the Windows desktop. WSLg has no Vulkan
+device in a plain container, so emulation falls back to software and
+performance numbers do not carry over to native Linux.

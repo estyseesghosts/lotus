@@ -17,6 +17,8 @@ documents; this page only says what changed. Labels follow the
   Linux CI matrix that runs `--self-test` and the protocol test (#103).
 - Linux x86_64 AppImage with the desktop, MCP, CLI and both workers; needs
   glibc 2.39 or newer (#108).
+- AppImage publication requires `tests/test_appimage.py` against the packaged
+  image (#109).
 - Linux AppImage launcher: data defaults to `~/.local/lotus` (override with
   `--data-dir` or `LOTUS_DATA_DIR`), `host.json` is regenerated per start, and
   an old `desktop.json` can be imported without overwriting (#105).
