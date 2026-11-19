@@ -128,3 +128,103 @@ async fn abort_terminates_descendants_and_releases_root_lock() {
     replacement.stop().await.expect("replacement exits");
     std::fs::remove_dir_all(spec.storage_root).expect("files released");
 }
+
+/// Unix: the worker leads a process group; abort SIGKILLs it, descendants included (#104).
+#[cfg(unix)]
+fn gone(pid: u32) -> bool {
+    // A zombie is dead; whether it is reaped depends on the container's init.
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(stat) => stat
+            .rsplit_once(") ")
+            .is_some_and(|(_, rest)| rest.starts_with('Z')),
+    }
+}
+
+#[cfg(unix)]
+async fn descendant_of(spec: &WorkerSpec) -> u32 {
+    for _ in 0..100 {
+        if let Ok(text) = std::fs::read_to_string(spec.storage_root.join("descendant.pid")) {
+            if let Ok(pid) = text.trim().parse() {
+                return pid;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("descendant PID");
+}
+
+#[cfg(unix)]
+async fn wait_gone(pid: u32) -> bool {
+    for _ in 0..300 {
+        if gone(pid) {
+            return true;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    false
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_abort_terminates_descendants_and_releases_root_lock() {
+    let spec = spec("spawn_descendant");
+    let mut worker = ControlledWorker::spawn(&spec, Duration::from_secs(3))
+        .await
+        .expect("grouped parent");
+    let pid = descendant_of(&spec).await;
+    assert!(!gone(pid));
+    worker.abort().await;
+    assert!(wait_gone(pid).await, "descendant {pid} outlived abort");
+    let mut replacement = ControlledWorker::spawn(
+        &WorkerSpec::new(&spec.executable, &spec.storage_root),
+        Duration::from_secs(3),
+    )
+    .await
+    .expect("lock released after abort");
+    replacement.stop().await.expect("replacement exits");
+    std::fs::remove_dir_all(spec.storage_root).expect("files released");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_kill_switch_ends_a_hung_worker_but_not_its_sibling() {
+    let hung_spec = spec("spawn_descendant");
+    let sibling_spec = spec("");
+    let mut hung = ControlledWorker::spawn(&hung_spec, Duration::from_secs(3))
+        .await
+        .expect("hung worker");
+    let mut sibling = ControlledWorker::spawn(&sibling_spec, Duration::from_secs(3))
+        .await
+        .expect("sibling");
+    let pid = descendant_of(&hung_spec).await;
+    assert!(hung.kill_switch().terminate());
+    assert!(
+        wait_gone(pid).await,
+        "descendant {pid} outlived the kill switch"
+    );
+    assert!(hung.status().await.is_err());
+    assert_eq!(hung.state(), SessionState::Crashed);
+    assert!(
+        !hung.kill_switch().terminate(),
+        "released group is never signalled"
+    );
+    sibling.status().await.expect("sibling unaffected");
+    sibling.stop().await.expect("sibling exits");
+    for spec in [hung_spec, sibling_spec] {
+        std::fs::remove_dir_all(spec.storage_root).expect("files released");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unix_clean_stop_reaps_worker_and_descendants() {
+    let spec = spec("spawn_descendant");
+    let mut worker = ControlledWorker::spawn(&spec, Duration::from_secs(3))
+        .await
+        .expect("worker");
+    let pid = descendant_of(&spec).await;
+    worker.stop().await.expect("graceful exit");
+    assert!(wait_gone(pid).await, "descendant {pid} outlived stop");
+    std::fs::remove_dir_all(spec.storage_root).expect("files released");
+}

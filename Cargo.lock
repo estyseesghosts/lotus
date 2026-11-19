@@ -3097,6 +3097,7 @@ dependencies = [
 name = "lotus-session"
 version = "0.0.6"
 dependencies = [
+ "libc",
  "lotus-debugger",
  "lotus-input",
  "lotus-protocol",

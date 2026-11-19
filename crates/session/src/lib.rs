@@ -12,6 +12,8 @@ pub mod failure;
 pub mod native_session;
 pub mod policy;
 pub mod preview_ring;
+#[cfg(unix)]
+mod process_group;
 #[cfg(windows)]
 mod process_job;
 mod process_memory;

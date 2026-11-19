@@ -162,7 +162,15 @@ poll) (**verified compiled**, mock workers).
 most 3 s for the session lock and the worker's clean exit. If a stalled
 exchange or command still holds the session, the supervisor terminates the
 worker's job through a kill switch that needs no lock (`KillSwitch` in
-`controlled_worker.rs`, a weak reference to the job). The in-flight exchange
+`controlled_worker.rs`, a weak reference to the job). On Unix the "job" is the
+worker's own process group: the worker is spawned with `setpgid(0, 0)`, and
+abort, the kill switch and a clean stop's cleanup send `SIGKILL` to the group,
+so descendants that did not detach with `setsid`/`setpgid` die with it
+(`process_group.rs`, #104). There is no SIGTERM stage: the protocol `Stop` is
+the graceful path, as on Windows. The group is signalled only while its leader
+is unreaped or members remain, so a reused PID is never hit. Unlike a job
+object, a group does not die with the host if the host itself is killed.
+The in-flight exchange
 then fails on the closed pipe within the 2 s release deadline, and the stop
 reports `TimedOut`. A secondary that ended abnormally keeps only its logs.
 

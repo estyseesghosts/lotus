@@ -20,6 +20,10 @@ use crate::{SessionState, WorkerSpec};
 /// Owns the child and its unshared pipe ends. Drop kills the direct child.
 #[derive(Debug)]
 pub struct ControlledWorker {
+    /// Declared before `child`: fields drop in order, so the group is killed while its
+    /// leader is still unreaped.
+    #[cfg(unix)]
+    group: Option<std::sync::Arc<crate::process_group::ProcessGroup>>,
     child: Child,
     input: ChildStdin,
     output: tokio::sync::mpsc::Receiver<io::Result<Reply>>,
@@ -45,16 +49,23 @@ pub struct ControlledWorker {
 pub struct KillSwitch {
     #[cfg(windows)]
     job: std::sync::Weak<crate::process_job::ProcessJob>,
+    #[cfg(unix)]
+    group: std::sync::Weak<crate::process_group::ProcessGroup>,
 }
 
 impl KillSwitch {
     /// End the worker and its contained descendants; false if it was already released.
     /// The in-flight exchange then fails on the closed pipe and the connection is marked
-    /// crashed. Not available off Windows, where this returns false.
+    /// crashed. Windows ends the job object, Unix the worker's process group.
     pub fn terminate(&self) -> bool {
         #[cfg(windows)]
         if let Some(job) = self.job.upgrade() {
             job.terminate();
+            return true;
+        }
+        #[cfg(unix)]
+        if let Some(group) = self.group.upgrade() {
+            group.terminate();
             return true;
         }
         false
@@ -90,7 +101,11 @@ impl ControlledWorker {
             .kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x0800_0004);
+        #[cfg(unix)]
+        command.process_group(0);
         let mut child = command.spawn()?;
+        #[cfg(unix)]
+        let group = crate::process_group::ProcessGroup::new(child.id().expect("new child has PID"));
         #[cfg(windows)]
         let job = match crate::process_job::ProcessJob::attach_and_resume(
             child.id().expect("new child has PID"),
@@ -160,6 +175,8 @@ impl ControlledWorker {
             root_lock: Some(root_lock),
             #[cfg(windows)]
             job: Some(std::sync::Arc::new(job)),
+            #[cfg(unix)]
+            group: Some(std::sync::Arc::new(group)),
             root: spec.storage_root.clone(),
             last_method: None,
             failure: None,
@@ -212,6 +229,12 @@ impl ControlledWorker {
                 .as_ref()
                 .map(std::sync::Arc::downgrade)
                 .unwrap_or_default(),
+            #[cfg(unix)]
+            group: self
+                .group
+                .as_ref()
+                .map(std::sync::Arc::downgrade)
+                .unwrap_or_default(),
         }
     }
 
@@ -250,6 +273,7 @@ impl ControlledWorker {
     async fn fail_with(&mut self, error: io::Error) -> io::Error {
         let pid = self.child.id();
         self.state = SessionState::Crashed;
+        self.retire_group();
         let _ = self.child.kill().await;
         let exit_code = self
             .child
@@ -296,6 +320,7 @@ impl ControlledWorker {
 
     async fn fail(&mut self) {
         self.state = SessionState::Crashed;
+        self.retire_group();
         let _ = self.child.kill().await;
         let _ = self.child.wait().await;
         self.release_resources();
@@ -311,7 +336,16 @@ impl ControlledWorker {
         {
             self.job.take();
         }
+        self.retire_group();
         self.root_lock.take();
+    }
+
+    /// Unix: kill the worker's group before the leader is reaped (`process_group.rs`).
+    fn retire_group(&mut self) {
+        #[cfg(unix)]
+        if let Some(group) = self.group.take() {
+            group.retire();
+        }
     }
 
     pub async fn command(

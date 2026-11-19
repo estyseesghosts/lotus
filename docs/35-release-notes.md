@@ -10,6 +10,9 @@ documents; this page only says what changed. Labels follow the
   headless smoke test; GPUI gets its Wayland and X11 backends (#102).
 - `worker.lock` is retried for up to 250 ms on Unix while a sibling fork
   still holds an inherited copy (#116).
+- Unix workers run in their own process group; abort, the stop kill switch
+  and clean-stop cleanup kill the whole group, so descendants no longer
+  outlive their worker (#104).
 - Faster CI: no 2-job cargo cap, dependency-only caching (Swatinem/rust-cache),
   fmt and clippy in a parallel job, mold on Linux; dev builds keep line tables
   only (#117).
