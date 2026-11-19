@@ -42,6 +42,8 @@ use crate::tiling::{self, DividerDrag, SessionDrag, Source, Target};
 use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 #[cfg(feature = "silvestris-ui")]
+mod shared_commands;
+#[cfg(feature = "silvestris-ui")]
 mod shared_navigation;
 #[cfg(feature = "silvestris-ui")]
 mod shared_shell;
@@ -171,6 +173,8 @@ pub struct LotusWindow {
     preference_save: Option<gpui::Task<()>>,
     #[cfg(feature = "silvestris-ui")]
     shared_sources: gpui::Entity<silvestris::controls::SourceList>,
+    #[cfg(feature = "silvestris-ui")]
+    shared_commands: shared_commands::SharedCommands,
     #[cfg(feature = "silvestris-ui")]
     navigation: crate::navigation::Navigation,
     #[cfg(feature = "silvestris-ui")]
@@ -326,6 +330,8 @@ impl LotusWindow {
         }
         #[cfg(feature = "silvestris-ui")]
         let shared_sources = Self::make_shared_sources(cx);
+        #[cfg(feature = "silvestris-ui")]
+        let shared_commands = shared_commands::SharedCommands::new(window, cx);
         Self {
             #[cfg(feature = "silvestris-ui")]
             shared_plan: Cell::new(None),
@@ -333,6 +339,8 @@ impl LotusWindow {
             preference_save: None,
             #[cfg(feature = "silvestris-ui")]
             shared_sources,
+            #[cfg(feature = "silvestris-ui")]
+            shared_commands,
             #[cfg(feature = "silvestris-ui")]
             navigation: crate::navigation::Navigation::default(),
             #[cfg(feature = "silvestris-ui")]
@@ -4192,7 +4200,14 @@ impl Render for LotusWindow {
                 .into_any_element()
         };
         #[cfg(feature = "silvestris-ui")]
+        self.sync_shared_commands(_window, cx);
+        #[cfg(feature = "silvestris-ui")]
         let content = self.render_shared_window(_window, cx);
+        #[cfg(feature = "silvestris-ui")]
+        let menu_overlay =
+            Some(gpui::deferred(self.shared_commands.menu.clone()).with_priority(1));
+        #[cfg(not(feature = "silvestris-ui"))]
+        let menu_overlay: Option<gpui::Empty> = None;
         div()
             .id("lotus")
             .relative()
@@ -4262,6 +4277,8 @@ impl Render for LotusWindow {
                 view.button(&event.keystroke.key, false)
             }))
             .child(content)
+            // Silvestris menus.md: mount once as a priority-1 deferred overlay.
+            .children(menu_overlay)
     }
 }
 

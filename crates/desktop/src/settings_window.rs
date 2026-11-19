@@ -15,25 +15,33 @@
 
 use std::sync::Arc;
 
+#[cfg(not(feature = "silvestris-ui"))]
 use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, App, AppContext, Bounds, ClickEvent, Context, FocusHandle, FontWeight,
-    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, WeakEntity, Window, WindowHandle,
+    InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Styled,
+    WeakEntity, Window, WindowHandle,
 };
+#[cfg(not(feature = "silvestris-ui"))]
+use gpui::{Stateful, StatefulInteractiveElement};
 use lotus_session::supervisor::{SettingsTarget, Supervisor};
 use lotus_session::telemetry::Actor;
 use lotus_settings::{Availability, Descriptor, Group, Kind, Owner, Registry, Scope};
 use serde_json::Value;
 
+#[cfg(not(feature = "silvestris-ui"))]
 use crate::icons::{icon, Icon};
 use crate::lotus_window::{with_tooltip, LotusWindow};
 use crate::theme;
 #[cfg(not(feature = "silvestris-ui"))]
 use gpui::{TitlebarOptions, WindowBounds, WindowOptions};
 
+#[cfg(feature = "silvestris-ui")]
+mod shared;
+
 /// `desktop.json` key holding this window's last bounds; window state, not shown as a row.
 pub const BOUNDS_KEY: &str = "lotus.desktop.settings_bounds";
+#[cfg(not(feature = "silvestris-ui"))]
 const DEFAULT_SIZE: (f32, f32) = (860.0, 620.0);
 const MIN_SIZE: (f32, f32) = (640.0, 420.0);
 
@@ -60,6 +68,7 @@ impl Target {
         }
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn title(&self) -> String {
         match self {
             Target::Global => "Global".into(),
@@ -103,11 +112,20 @@ pub fn open(
     let saved = lotus
         .upgrade()
         .and_then(|view| bounds_from(&view.read(cx).preference(BOUNDS_KEY)));
+    #[cfg(not(feature = "silvestris-ui"))]
     let bounds = saved.unwrap_or_else(|| {
         Bounds::centered(None, gpui::size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx)
     });
+    // HIG p. 244: preferences windows are not resizable; only the saved
+    // origin is reused, and the pane sets the size (settings_window/shared.rs).
     #[cfg(feature = "silvestris-ui")]
-    let options = silvestris::chrome::window_options("LOTUS Settings", bounds, gpui::size(px(MIN_SIZE.0), px(MIN_SIZE.1)), cx);
+    let options = {
+        let size = gpui::size(px(silvestris::preferences::WINDOW_WIDTH), px(480.0));
+        let bounds = saved
+            .map(|b| Bounds::new(b.origin, size))
+            .unwrap_or_else(|| Bounds::centered(None, size, cx));
+        silvestris::chrome::fixed_window_options(shared::OVERVIEW_TITLE, bounds, cx)
+    };
     #[cfg(not(feature = "silvestris-ui"))]
     let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -191,97 +209,11 @@ pub struct SettingsWindow {
     /// Bumped per target switch, so a late report for the previous target is dropped.
     generation: u64,
     focus: FocusHandle,
+    #[cfg(feature = "silvestris-ui")]
+    prefs: shared::PreferencesState,
 }
 
 impl SettingsWindow {
-    #[cfg(feature = "silvestris-ui")]
-    fn render_appearance(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        use silvestris::controls::{Segment, SegmentedControl};
-        use silvestris::{Appearance, ThemeFamily, ThemeId};
-        let theme = theme::palette(cx);
-        let id = self
-            .lotus
-            .read_with(cx, |view, _| view.ui_theme())
-            .unwrap_or(ThemeId::GEIST_DARK);
-        let family_owner = self.lotus.clone();
-        let appearance_owner = self.lotus.clone();
-        div()
-            .id("appearance-settings")
-            .debug_selector(|| "appearance-settings".into())
-            .flex()
-            .flex_col()
-            .gap_2()
-            .py_3()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(heading(theme, "Appearance"))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child("Style")
-                    .child(
-                        SegmentedControl::new(
-                            "theme-family",
-                            "Style",
-                            vec![Segment::new("aqua", "Aqua"), Segment::new("geist", "Geist")],
-                        )
-                        .selected(if id.family == ThemeFamily::Aqua {
-                            "aqua"
-                        } else {
-                            "geist"
-                        })
-                        .on_select(move |id, _, cx| {
-                            let family = match id.as_ref() {
-                                "aqua" => ThemeFamily::Aqua,
-                                "geist" => ThemeFamily::Geist,
-                                _ => return,
-                            };
-                            let _ = family_owner.update(cx, |view, cx| {
-                                view.set_ui_theme(
-                                    ThemeId::new(family, view.ui_theme().appearance),
-                                    cx,
-                                )
-                            });
-                        }),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_2()
-                    .child("Appearance")
-                    .child(
-                        SegmentedControl::new(
-                            "theme-appearance",
-                            "Appearance",
-                            vec![Segment::new("light", "Light"), Segment::new("dark", "Dark")],
-                        )
-                        .selected(if id.appearance == Appearance::Light {
-                            "light"
-                        } else {
-                            "dark"
-                        })
-                        .on_select(move |id, _, cx| {
-                            let appearance = match id.as_ref() {
-                                "light" => Appearance::Light,
-                                "dark" => Appearance::Dark,
-                                _ => return,
-                            };
-                            let _ = appearance_owner.update(cx, |view, cx| {
-                                view.set_ui_theme(
-                                    ThemeId::new(view.ui_theme().family, appearance),
-                                    cx,
-                                )
-                            });
-                        }),
-                    ),
-            )
-    }
     fn new(
         lotus: WeakEntity<LotusWindow>,
         host: Option<Arc<Supervisor>>,
@@ -330,6 +262,8 @@ impl SettingsWindow {
             error: None,
             generation: 0,
             focus: cx.focus_handle(),
+            #[cfg(feature = "silvestris-ui")]
+            prefs: shared::PreferencesState::default(),
         };
         view.refresh(cx);
         view
@@ -477,6 +411,7 @@ impl SettingsWindow {
         }
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         let mut nav = div()
@@ -530,6 +465,7 @@ impl SettingsWindow {
         nav
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_row(
         &self,
         descriptor: &'static Descriptor,
@@ -708,6 +644,16 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(feature = "silvestris-ui")]
+        return self.render_preferences(_window, cx);
+        #[cfg(not(feature = "silvestris-ui"))]
+        self.render_legacy(cx)
+    }
+}
+
+impl SettingsWindow {
+    #[cfg(not(feature = "silvestris-ui"))]
+    fn render_legacy(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = theme::palette(cx);
         if self.rows(self.group).is_empty() {
             if let Some(group) = Group::ALL.into_iter().find(|g| !self.rows(*g).is_empty()) {
@@ -723,10 +669,6 @@ impl Render for SettingsWindow {
             .overflow_y_scroll()
             .px_4()
             .pb_4();
-        #[cfg(feature = "silvestris-ui")]
-        if self.target == Target::Global && self.group == Group::General {
-            list = list.child(self.render_appearance(cx));
-        }
         for descriptor in rows {
             list = list.child(self.render_row(descriptor, cx));
         }
@@ -806,10 +748,7 @@ impl Render for SettingsWindow {
                     )
                     .child(list),
             );
-        #[cfg(feature = "silvestris-ui")]
-        { silvestris::chrome::WindowFrame::new("LOTUS Settings").child(body).into_any_element() }
-        #[cfg(not(feature = "silvestris-ui"))]
-        { body.into_any_element() }
+        body.into_any_element()
     }
 }
 
@@ -904,6 +843,7 @@ fn reset_label(target: &Target, descriptor: &Descriptor) -> &'static str {
     }
 }
 
+#[cfg(not(feature = "silvestris-ui"))]
 fn heading(theme: theme::Palette, text: &'static str) -> impl IntoElement {
     div()
         .px_2()
@@ -915,6 +855,7 @@ fn heading(theme: theme::Palette, text: &'static str) -> impl IntoElement {
         .child(text)
 }
 
+#[cfg(not(feature = "silvestris-ui"))]
 fn nav_item(
     theme: theme::Palette,
     id: SharedString,
@@ -950,6 +891,7 @@ fn nav_item(
         })
 }
 
+#[cfg(not(feature = "silvestris-ui"))]
 fn small_button(
     theme: theme::Palette,
     id: impl Into<SharedString>,
@@ -1011,6 +953,7 @@ fn toggle(theme: theme::Palette, id: String, on: bool) -> Stateful<gpui::Div> {
         )
 }
 
+#[cfg(not(feature = "silvestris-ui"))]
 fn value_text(theme: theme::Palette, text: String) -> impl IntoElement {
     div()
         .min_w(px(56.0))
@@ -1026,6 +969,7 @@ fn value_text(theme: theme::Palette, text: String) -> impl IntoElement {
         .child(text)
 }
 
+#[cfg(not(feature = "silvestris-ui"))]
 fn source_badge(theme: theme::Palette, source: &str, overridden: bool) -> impl IntoElement {
     let label = match source {
         "default" => "default".to_string(),
@@ -1067,8 +1011,9 @@ mod tests {
             descriptor: &'static Descriptor,
         }
         impl Render for Row {
-            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                self.settings.update(cx, |settings, cx| settings.render_row(self.descriptor, cx))
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let row = self.settings.update(cx, |settings, cx| settings.form_row(self.descriptor, window, cx));
+                silvestris::preferences::Form::new(200.0).row(row)
             }
         }
         fn draw(cx: &mut VisualTestContext) {
@@ -1135,7 +1080,10 @@ mod tests {
         let (_, cx) = app.add_window_view(|window, cx| {
             SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx)
         });
-        cx.simulate_resize(size(px(860.), px(620.)));
+        draw(cx);
+        // Opens on the overview (HIG p. 244); its General icon shows the pane.
+        let general = cx.debug_bounds("preference-pane-general").expect("overview icon");
+        cx.simulate_click(general.center(), Modifiers::default());
         draw(cx);
         let mut main_cx = VisualTestContext::from_window(main_handle, &cx.cx);
         let workspace = main_cx.debug_bounds("shell-workspace").unwrap();
@@ -1167,7 +1115,7 @@ mod tests {
             assert_eq!((bounds.left(), bounds.size.width), (workspace.left(), workspace.size.width));
             assert_eq!(bounds.top(), px(metrics.titlebar_height + metrics.toolbar_height));
             assert_eq!(bounds.bottom(), px(880. - metrics.bottom_bar_height));
-            assert!(cx.debug_bounds("appearance-settings").is_some());
+            assert!(cx.debug_bounds("appearance-style").is_some());
         }
     }
 

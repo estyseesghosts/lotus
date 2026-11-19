@@ -1,7 +1,10 @@
 //! #131/#132/#138: one measured shell for single and split workspaces.
 //! Controller inspection remains explicit per tile, otherwise follows selection.
 use super::*;
+use super::shared_commands::{GlobalCommand, SessionCommand};
+use silvestris::command::CommandButton;
 use silvestris::controls::{Button, ButtonStyle, ControlSize};
+use silvestris::core::command::CommandId;
 use silvestris::core::layout::{self as shared, InspectorPreference, SidebarPreference};
 use silvestris::shell::{Shell, ShellContent};
 use silvestris::ActiveTheme;
@@ -46,16 +49,13 @@ impl LotusWindow {
     fn render_shared_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         let wide = f32::from(window.viewport_size().width) >= 1060.;
-        let loaded = self
-            .selected_summary()
-            .is_some_and(|s| s.info.asset.is_some() && s.telemetry.state.is_active());
-        let playing = self.selected_summary().is_some_and(|s| s.telemetry.playing);
-        let control = self.control && loaded;
-        let button = |id: &'static str, label: &str| {
-            Button::new(id, SharedString::from(label.to_owned()))
-                .style(ButtonStyle::Textured)
-                .size(ControlSize::Small)
+        // #129: toolbar, Actions menu and shortcuts share registry IDs, so
+        // labels and availability come from one published descriptor.
+        let registry = self.shared_commands.registry.clone();
+        let button = |id: &'static str, command: CommandId| {
+            CommandButton::new(id, command, registry.clone()).size(ControlSize::Small)
         };
+        let global = |command: GlobalCommand| CommandId::from(command.id());
         div()
             .id("lotus-unified-toolbar")
             .debug_selector(|| "lotus-unified-toolbar".into())
@@ -67,43 +67,11 @@ impl LotusWindow {
             // Child controls own focus. Do not send a toolbar click to the
             // root's screen-focus handler (guest input stays released).
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                button("shared-sidebar", "Sidebar")
-                    .selected(self.preferences.values.sessions_open)
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        view.release_input();
-                        view.toggle_pane(Pane::Sessions, window);
-                        cx.notify();
-                    })),
-            )
+            .child(button("shared-sidebar", global(GlobalCommand::Sidebar)))
             .child(div().w(px(1.)).h(px(18.)).bg(theme.border).mx(px(2.)))
-            .child(
-                button("shared-run", if playing { "Pause" } else { "Run" })
-                    .disabled(!control)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.toggle_run();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                button("shared-step", "Step")
-                    .disabled(!control || playing)
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.step();
-                        cx.notify();
-                    })),
-            )
-            .child(
-                button("shared-open", "Open…")
-                    .disabled(!self.control || self.controller.is_none())
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        let session = view
-                            .selected_summary()
-                            .filter(|s| s.telemetry.state.is_active())
-                            .map(|s| s.info.id.clone());
-                        view.open_file(session, cx);
-                    })),
-            )
+            .child(button("shared-run", self.session_command_id(SessionCommand::Run)))
+            .child(button("shared-step", self.session_command_id(SessionCommand::Step)))
+            .child(button("shared-open", global(GlobalCommand::Open)))
             .child(
                 div()
                     .flex_1()
@@ -119,49 +87,19 @@ impl LotusWindow {
                     ),
             )
             .when(wide, |bar| {
-                bar.child(
-                    button("shared-zoom", self.zoom.label()).on_click(cx.listener(
-                        |view, _, _, cx| {
-                            view.release_input();
-                            view.zoom = view.zoom.next();
-                            cx.notify();
-                        },
-                    )),
-                )
-                .child(
-                    button("shared-screens", self.layout.label()).on_click(cx.listener(
-                        |view, _, _, cx| {
-                            view.release_input();
-                            view.layout = view.layout.other();
-                            cx.notify();
-                        },
-                    )),
-                )
+                bar.child(button("shared-zoom", global(GlobalCommand::ZoomNext)))
+                    .child(button("shared-screens", global(GlobalCommand::ScreensNext)))
             })
             .child(
-                button("shared-actions", "Actions").on_click(cx.listener(|view, _, _, cx| {
-                    view.menu = if view.menu == Menu::Toolbar {
-                        Menu::Closed
-                    } else {
-                        Menu::Toolbar
-                    };
-                    cx.notify();
-                })),
-            )
-            .child(
-                button("shared-inspector", "Inspector")
-                    .selected(self.preferences.values.inspector_open)
-                    .on_click(cx.listener(|view, _, window, cx| {
-                        view.release_input();
-                        view.toggle_pane(Pane::Inspector, window);
-                        cx.notify();
+                Button::new("shared-actions", "Actions")
+                    .style(ButtonStyle::Textured)
+                    .size(ControlSize::Small)
+                    .on_click(cx.listener(|view, event, window, cx| {
+                        view.open_shared_actions(event, window, cx)
                     })),
             )
-            .child(
-                button("shared-settings", "Settings").on_click(cx.listener(|view, _, _, cx| {
-                    view.open_settings(crate::settings_window::Target::Global, cx)
-                })),
-            )
+            .child(button("shared-inspector", global(GlobalCommand::Inspector)))
+            .child(button("shared-settings", global(GlobalCommand::Settings)))
     }
 
     fn render_shared_status(&self, cx: &mut Context<Self>) -> impl IntoElement {

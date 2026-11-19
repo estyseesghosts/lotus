@@ -319,3 +319,23 @@ with the preview PID, allowing inspection even when the terminal or Settings
 occludes Main. The initial Aqua Light composition was inspected from its native
 1280×880 surface at 100% scale. Other scales/platforms, native window gestures,
 screen-reader delivery and live-worker preview/input acceptance remain open.
+
+## Shared command routing
+
+lotus_window/shared_commands.rs registers the staged window's commands in one
+silvestris CommandRegistry (#129). Toolbar buttons are CommandButtons and the
+Actions button opens a PopupMenu over the same IDs, so label, enabled and
+checked state come from a single published descriptor. Global commands
+(sidebar, inspector, settings, open, zoom, screens) have fixed IDs. Session
+commands (run/pause, step, load, reset, stop) embed the session ID, creation
+time and guest epoch; a reset or replaced session re-registers them under new
+IDs, the old IDs become Missing, and an open Actions menu is dismissed
+(silvestris menus.md requires the consumer to invalidate a replaced target).
+Descriptors are republished each render; CommandSet::upsert only bumps its
+version on a real change, so this converges without extra frames.
+
+Keyboard shortcuts are still handled by key_down and call the same methods;
+they are shown in menu rows but are not yet installed through
+CommandRegistry::bindings. Load still opens the legacy asset popover.
+The GPUI test actions_menu_shares_toolbar_commands_and_drops_a_replaced_target
+covers all four themes.

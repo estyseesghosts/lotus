@@ -82,7 +82,7 @@ fn descriptor(entry: &Entry) -> Descriptor {
         group,
         subgroup,
         label: label(&entry.name),
-        description: description(apply, &sources),
+        description: description(apply),
         kind: kind(entry),
         default: entry.default.clone(),
         scopes: if matches!(availability, Availability::Excluded { .. }) {
@@ -355,7 +355,8 @@ fn label(name: &str) -> String {
     text
 }
 
-fn description(apply: Apply, sources: &[String]) -> String {
+/// When the value takes effect. The consumer citations stay in `sources`.
+fn description(apply: Apply) -> String {
     let when = match apply {
         Apply::Live => "Applies to a running session",
         Apply::Renderer => "Takes effect when the session's renderer is created",
@@ -363,8 +364,5 @@ fn description(apply: Apply, sources: &[String]) -> String {
         Apply::CfgSavedata => "Written to the emulated console's CFG savedata before loading",
         _ => "Not read by the emulator",
     };
-    match sources.first() {
-        Some(source) => format!("{when}. Read by {source}."),
-        None => format!("{when}."),
-    }
+    format!("{when}.")
 }
