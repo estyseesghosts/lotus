@@ -292,6 +292,12 @@ impl LotusWindow {
             }
         })
         .detach();
+        cx.observe_window_visibility(window, |view, visibility, _, _| {
+            if let Some(controller) = &view.controller {
+                controller.set_preview_visible(visibility.is_visible());
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| loop {
             cx.background_executor()
                 .timer(Duration::from_millis(33))
@@ -324,6 +330,7 @@ impl LotusWindow {
             preferences.ui.appearance = active.appearance;
         }
         if let Some(controller) = &controller {
+            controller.set_preview_visible(window.is_visible());
             #[cfg(feature = "silvestris-ui")]
             {
                 *controller.inspection_selection.lock().unwrap() = (
@@ -705,11 +712,14 @@ impl LotusWindow {
             if update.error != self.error {
                 self.error = update.error.clone();
             }
-            (
-                std::mem::take(&mut update.previews),
-                update.selected.clone(),
-                update.debug_image.take(),
-            )
+            // Let any in-flight preview finish, but defer image creation until it can be
+            // shown. A paused worker may have sent its final frame just before hiding.
+            let previews = if controller.preview_visible() {
+                std::mem::take(&mut update.previews)
+            } else {
+                BTreeMap::new()
+            };
+            (previews, update.selected.clone(), update.debug_image.take())
         };
         if selected != self.selected {
             self.selected = selected;
@@ -752,10 +762,33 @@ impl LotusWindow {
         for session in &visible {
             self.tiles.entry(session.clone()).or_default();
         }
+        for summary in &self.sessions {
+            let Some(tile) = self.tiles.get_mut(&summary.info.id) else {
+                continue;
+            };
+            if summary.telemetry.state == SessionState::Crashed
+                || tile.epoch < summary.telemetry.epoch
+            {
+                drop_images(std::mem::take(&mut tile.images), cx);
+                tile.epoch = summary.telemetry.epoch;
+            }
+        }
         for (session, preview) in previews {
             let Some(tile) = self.tiles.get_mut(&session) else {
                 continue;
             };
+            let Some(frame) = preview.frames.first() else {
+                continue;
+            };
+            let epoch = frame.lease.epoch;
+            if epoch < tile.epoch
+                || self.sessions.iter().any(|summary| {
+                    summary.info.id == session && summary.telemetry.state == SessionState::Crashed
+                })
+            {
+                continue;
+            }
+            tile.epoch = epoch;
             ui.preview_installed(preview.sequence);
             let images = preview
                 .frames
@@ -766,13 +799,6 @@ impl LotusWindow {
                 .map(|image| Arc::new(RenderImage::new(vec![Frame::new(image)])))
                 .collect();
             drop_images(std::mem::replace(&mut tile.images, images), cx);
-        }
-        for summary in &self.sessions {
-            if summary.telemetry.state == SessionState::Crashed {
-                if let Some(tile) = self.tiles.get_mut(&summary.info.id) {
-                    drop_images(std::mem::take(&mut tile.images), cx);
-                }
-            }
         }
         #[cfg(feature = "silvestris-ui")]
         self.sync_shared_sources(cx);
@@ -4481,6 +4507,7 @@ impl Render for LotusWindow {
 #[derive(Default)]
 struct TileView {
     images: Vec<Arc<RenderImage>>,
+    epoch: u64,
     touch: Arc<Mutex<Option<TouchTransform>>>,
 }
 

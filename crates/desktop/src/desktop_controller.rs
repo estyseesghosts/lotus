@@ -189,6 +189,7 @@ pub struct DesktopController {
     pub presence: Arc<Presence>,
     /// Window-side counters, published as `frontend_metrics.ui` (lotus#74).
     pub ui: Arc<UiMetrics>,
+    preview_visible: Arc<AtomicBool>,
     routing: Arc<InputRouting>,
     host: Arc<Supervisor>,
     shutdown: Arc<AtomicBool>,
@@ -273,6 +274,7 @@ impl DesktopController {
         let shutdown = Arc::new(AtomicBool::new(false));
         let presence = Arc::new(Presence::start());
         let ui = Arc::new(UiMetrics::default());
+        let preview_visible = Arc::new(AtomicBool::new(true));
         let routing = InputRouting::new(host.clone());
         let controllers = Controllers::start(routing.clone(), shutdown.clone());
         let context = Loops {
@@ -292,6 +294,7 @@ impl DesktopController {
             generation: Arc::new(AtomicU64::new(0)),
             in_flight: Arc::default(),
             preview_sequence: Arc::default(),
+            preview_visible: preview_visible.clone(),
             metrics: Arc::default(),
         };
         let thread = std::thread::Builder::new()
@@ -308,6 +311,7 @@ impl DesktopController {
             inspection_selection,
             presence,
             ui,
+            preview_visible,
             host,
             shutdown,
             thread: Some(thread),
@@ -324,6 +328,14 @@ impl DesktopController {
     #[must_use]
     pub fn host(&self) -> &Arc<Supervisor> {
         &self.host
+    }
+
+    pub(crate) fn set_preview_visible(&self, visible: bool) {
+        self.preview_visible.store(visible, Ordering::Release);
+    }
+
+    pub(crate) fn preview_visible(&self) -> bool {
+        self.preview_visible.load(Ordering::Acquire)
     }
 }
 
@@ -362,6 +374,7 @@ struct Loops {
     in_flight: Arc<Mutex<BTreeMap<(&'static str, String), Instant>>>,
     /// Sequence of published previews.
     preview_sequence: Arc<AtomicU64>,
+    preview_visible: Arc<AtomicBool>,
     metrics: Arc<Mutex<LoopMetrics>>,
     ui: Arc<UiMetrics>,
 }
@@ -601,7 +614,7 @@ impl Loops {
     /// its own task, at most one per session (#45): a stalled worker keeps its own exchange,
     /// which is never cancelled (dropping it would leave its reply on the pipe), and never
     /// delays another tile's. Results for a session no longer shown, or for an older epoch,
-    /// are discarded. Hidden sessions get no requests.
+    /// are discarded. No new requests are issued while the window is hidden.
     async fn preview_loop(self) {
         let mut previewed: Vec<String> = Vec::new();
         let mut ticker = tick();
@@ -619,6 +632,9 @@ impl Loops {
                     .previews
                     .retain(|session, _| visible.contains(session));
                 previewed.clone_from(&visible);
+            }
+            if !self.preview_visible.load(Ordering::Acquire) {
+                continue;
             }
             for session in visible {
                 if !self.begin("preview", &session) {

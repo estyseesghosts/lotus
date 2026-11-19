@@ -12,9 +12,8 @@ and records the guest frame counter with the stages from `frontend_metrics` (lot
 
 Pass: in every phase where the window is not minimized, the guest, the published and the
 installed sequence and the render count all advance, the poll heartbeat is under 500 ms old,
-and the installed sequence trails the published one by at most 3. Minimized, renders may stop
-(GPUI throttling) but the poll heartbeat must not. A failure names the first stage that
-stopped, which is the measurement lotus#74 asks for.
+and the installed sequence trails the published one by at most 3. While minimized, the guest
+and poll heartbeat keep advancing, but preview requests and image updates stop (#25).
 
 Moves real focus on this desktop for about 30 s. Works with a native worker or the mock
 (`target/<profile>/lotus-mock-native.exe`, which writes advancing capture frames).
@@ -156,6 +155,7 @@ def run(client, output):
                 "minimized": bool(user32.IsIconic(hwnd)),
                 "guest": guest,
                 "published": metrics.get("published_preview_sequence", 0),
+                "preview_requests": metrics.get("preview", {}).get("count", 0),
                 "installed": ui.get("installed_preview_sequence", 0),
                 "renders": ui.get("renders", 0),
                 "polls": ui.get("polls_completed", 0),
@@ -207,13 +207,18 @@ def verdicts(samples):
         rows = [sample for sample in samples if sample["phase"] == phase][1:]
         first, last = rows[0], rows[-1]
         minimized = all(row["minimized"] for row in rows)
-        stopped = [stage for stage in STAGES
-                   if last[stage] <= first[stage] and not (minimized and stage == "renders")]
+        required = ("guest", "polls") if minimized else STAGES
+        stopped = [stage for stage in required if last[stage] <= first[stage]]
         lag = max(row["published"] - row["installed"] for row in rows)
         stale = max(row["poll_age_ms"] or 1e9 for row in rows)
         problems = []
         if stopped:
             problems.append(f"stopped: {', '.join(stopped)}")
+        if minimized:
+            continued = [stage for stage in ("preview_requests", "published", "installed")
+                         if last[stage] != first[stage]]
+            if continued:
+                problems.append(f"continued while minimized: {', '.join(continued)}")
         if stale >= 500:
             problems.append(f"poll heartbeat {stale:.0f} ms old")
         if lag > 3 and not minimized:
