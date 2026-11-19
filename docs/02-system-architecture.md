@@ -117,3 +117,7 @@ In the opt-in build, theme.rs resolves active Silvestris tokens into an explicit
 palette passed through app-owned render helpers. Global Settings selects family
 and appearance independently; all windows refresh without rebuilding session or
 inspector state. The legacy renderer uses its original fixed palette. See [38](38-silvestris-adoption.md).
+
+Staged Settings Boolean rows use the public Checkbox with descriptor-owned labels
+and the existing write callback. Read-only rows retain their explanatory tooltip
+and use the control's disabled state; no worker setting API changes.

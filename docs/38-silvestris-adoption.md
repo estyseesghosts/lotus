@@ -273,3 +273,18 @@ fields and unknown-field retention. Palette tests check body/secondary/primary
 text contrast in every combination. Native pixel, DPI and live-worker theme
 switch validation remain open, along with the legacy control/menu/chrome
 replacement. This does not change the first-run default to Aqua.
+
+## Settings checkbox adoption
+
+With silvestris-ui, Boolean rows use the public Checkbox rather than the old
+pill switch. The adjacent descriptor label supplies its accessible name;
+the check glyph supplies the visible state. Read-only Boolean rows show a
+disabled checkbox and retain their explanation tooltip. Activation still calls
+SettingsWindow::write, so registry validation, scope inheritance and persistence
+use the existing path. The feature-disabled renderer retains its original switch.
+
+Sources: issue #128/#138; hig-09/specs/checkbox.md (HIG pp. 283–286);
+Silvestris docs/checkbox.md records artwork measurements, estimates and keyboard
+choices. Mock-platform tests cover pointer/Space changes to a desktop preference,
+unrelated-setting retention and a read-only worker setting in all four themes.
+Native input, accessibility delivery and pixel/DPI checks remain unverified.

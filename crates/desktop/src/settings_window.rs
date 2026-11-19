@@ -541,11 +541,21 @@ impl SettingsWindow {
         match (&descriptor.kind, editable) {
             (Kind::Boolean, Ok(())) => {
                 let on = value.as_bool().unwrap_or(false);
-                controls = controls.child(toggle(theme, format!("toggle-{key}"), on).on_click(
+                #[cfg(feature = "silvestris-ui")]
+                let toggle = silvestris::controls::Checkbox::new(
+                    SharedString::from(format!("toggle-{key}")), descriptor.label.clone(),
+                ).checked(on).show_label(false).on_change(
+                    cx.listener(move |view, state: &silvestris::controls::CheckState, _, cx| {
+                        view.write(descriptor, Some(Value::Bool(*state == silvestris::controls::CheckState::On)), cx);
+                    }),
+                );
+                #[cfg(not(feature = "silvestris-ui"))]
+                let toggle = toggle(theme, format!("toggle-{key}"), on).on_click(
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.write(descriptor, Some(Value::Bool(!on)), cx);
                     }),
-                ));
+                );
+                controls = controls.child(toggle);
             }
             (kind, Ok(())) if choices(kind).is_some() => {
                 let options = choices(kind).unwrap_or_default();
@@ -607,11 +617,20 @@ impl SettingsWindow {
                 ));
             }
             (_, Err(reason)) => {
+                #[cfg(feature = "silvestris-ui")]
+                let value = if descriptor.kind == Kind::Boolean {
+                    silvestris::controls::Checkbox::new(
+                        SharedString::from(format!("toggle-{key}")), descriptor.label.clone(),
+                    ).checked(value.as_bool().unwrap_or(false)).show_label(false).disabled(true).into_any_element()
+                } else {
+                    div().opacity(0.6).child(value_text(theme, display(&value))).into_any_element()
+                };
+                #[cfg(not(feature = "silvestris-ui"))]
+                let value = div().opacity(0.6).child(value_text(theme, display(&value))).into_any_element();
                 controls = controls.child(with_tooltip(
                     div()
                         .id(SharedString::from(format!("locked-{key}")))
-                        .opacity(0.6)
-                        .child(value_text(theme, display(&value))),
+                        .child(value),
                     reason,
                 ));
             }
@@ -946,6 +965,7 @@ fn small_button(
 }
 
 /// A switch drawn as a shape with its state in text, so it is not colour alone.
+#[cfg(not(feature = "silvestris-ui"))]
 fn toggle(theme: theme::Palette, id: String, on: bool) -> Stateful<gpui::Div> {
     div()
         .id(SharedString::from(id))
@@ -1026,6 +1046,62 @@ fn source_badge(theme: theme::Palette, source: &str, overridden: bool) -> impl I
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "silvestris-ui")]
+    #[test]
+    fn shared_checkbox_writes_only_its_setting_and_read_only_boolean_cannot_activate() {
+        use gpui::{Modifiers, TestAppContext, VisualTestContext};
+        use silvestris::{ThemeId, ThemePreference};
+        struct Row {
+            settings: gpui::Entity<SettingsWindow>,
+            descriptor: &'static Descriptor,
+        }
+        impl Render for Row {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.settings.update(cx, |settings, cx| settings.render_row(self.descriptor, cx))
+            }
+        }
+        fn draw(cx: &mut VisualTestContext) {
+            cx.run_until_parked();
+            cx.update(|window, cx| { window.draw(cx).clear(cx); });
+        }
+        for theme in ThemeId::ALL {
+            let mut app = TestAppContext::single();
+            app.update(|cx| silvestris::test_support::initialize(ThemePreference::explicit(theme), cx));
+            let (main, _) = app.add_window_view(LotusWindow::test_preview);
+            let key = "lotus.desktop.sessions_open";
+            let descriptor = Registry::builtin().descriptors().iter().find(|d| d.key == key).unwrap();
+            let (row, cx) = app.add_window_view(|window, cx| Row {
+                settings: cx.new(|cx| SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx)),
+                descriptor,
+            });
+            draw(cx);
+            let checkbox = cx.debug_bounds("toggle-lotus.desktop.sessions_open").unwrap();
+            cx.simulate_click(checkbox.center(), Modifiers::default());
+            draw(cx);
+            cx.update(|_, cx| {
+                assert_eq!(main.read(cx).preference(key), Value::Bool(false));
+                assert_eq!(main.read(cx).preference("lotus.desktop.inspector_open"), Value::Bool(false));
+            });
+            cx.simulate_keystrokes("space");
+            cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("space").unwrap() });
+            draw(cx);
+            cx.update(|_, cx| assert_eq!(main.read(cx).preference(key), Value::Bool(true)));
+            let locked = Registry::builtin().descriptors().iter().find(|d| d.key == "use_hw_shader").unwrap();
+            cx.update(|_, cx| row.update(cx, |row, cx| { row.descriptor = locked; cx.notify(); }));
+            draw(cx);
+            let checkbox = cx.debug_bounds("toggle-use_hw_shader").unwrap();
+            cx.simulate_click(checkbox.center(), Modifiers::default());
+            cx.simulate_keystrokes("space");
+            cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("space").unwrap() });
+            draw(cx);
+            cx.update(|window, cx| {
+                assert!(window.focused(cx).is_none());
+                assert!(row.read(cx).settings.read(cx).error.is_none());
+                assert_eq!(main.read(cx).preference(key), Value::Bool(true));
+            });
+        }
+    }
 
     #[cfg(feature = "silvestris-ui")]
     #[test]
