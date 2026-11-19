@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# LOTUS AppImage entry point; the Linux counterpart of packaging/windows/launch.ps1.
+#
+# Data directory (host.json, sessions, desktop.json), first match wins (#105):
+#   --data-dir PATH; $LOTUS_DATA_DIR; $HOME/.local/lotus.
+# Nothing is written inside the AppImage. host.json is rewritten on every start, so
+# the worker path always points into the current mount, never a stale /tmp/.mount_*.
+#
+#   LOTUS.AppImage [--backend CITnLO|AZAHAR] [--mode Desktop|MCP|WindowedMCP]
+#                  [--data-dir PATH] [--configure-only] [--import-preferences FILE] [game.3dsx]
+#   LOTUS.AppImage cli ARGS...        run ctr-cli
+set -euo pipefail
+
+here=${APPDIR:-$(dirname "$(readlink -f "$0")")}
+
+if [ "${1:-}" = cli ]; then
+  shift
+  exec "$here/usr/bin/ctr-cli" "$@"
+fi
+
+die() { echo "LOTUS: $*" >&2; exit 2; }
+
+absolute() {
+  case $1 in
+    /*) printf '%s' "$1" ;;
+    *) printf '%s/%s' "$PWD" "$1" ;;
+  esac
+}
+
+# JSON string literal; paths with control characters are refused.
+json() {
+  local s=$1
+  case $s in *[$'\001'-$'\037']*) die "path contains a control character: $s" ;; esac
+  s=${s//\\/\\\\}
+  s=${s//\"/\\\"}
+  printf '"%s"' "$s"
+}
+
+backend=CITnLO mode=Desktop data_dir= fixture= configure_only= import=
+while [ $# -gt 0 ]; do
+  case $1 in
+    --backend) backend=${2:?--backend needs a value}; shift 2 ;;
+    --mode) mode=${2:?--mode needs a value}; shift 2 ;;
+    --data-dir) data_dir=${2:?--data-dir needs a value}; shift 2 ;;
+    --configure-only) configure_only=1; shift ;;
+    --import-preferences) import=${2:?--import-preferences needs a file}; shift 2 ;;
+    -h|--help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --) shift; break ;;
+    -*) die "unknown option $1" ;;
+    *) [ -z "$fixture" ] || die "only one .3dsx may be passed"; fixture=$1; shift ;;
+  esac
+done
+if [ $# -gt 0 ]; then
+  { [ -z "$fixture" ] && [ $# -eq 1 ]; } || die "unexpected arguments: $*"
+  fixture=$1
+fi
+
+case $backend in CITnLO|AZAHAR) ;; *) die "--backend must be CITnLO or AZAHAR" ;; esac
+case $mode in Desktop|MCP|WindowedMCP) ;; *) die "--mode must be Desktop, MCP or WindowedMCP" ;; esac
+
+if [ -n "$data_dir" ]; then
+  root=$(absolute "$data_dir")
+elif [ -n "${LOTUS_DATA_DIR:-}" ]; then
+  root=$(absolute "$LOTUS_DATA_DIR")
+else
+  [ -n "${HOME:-}" ] || die "HOME is not set; pass --data-dir or set LOTUS_DATA_DIR"
+  root=$HOME/.local/lotus
+fi
+case $root/ in "$here"/*) die "data directory $root is inside the AppImage" ;; esac
+
+assets='{}'
+if [ -n "$fixture" ]; then
+  [ -f "$fixture" ] || die "no such file: $fixture"
+  case ${fixture,,} in *.3dsx) ;; *) die "select a .3dsx homebrew file" ;; esac
+  assets="{\"homebrew\": $(json "$(readlink -f "$fixture")")}"
+fi
+
+lower=${backend,,}
+data=$root/$lower
+mkdir -p "$data" || die "cannot create $data"
+config=$data/host.json
+{
+  printf '{\n'
+  printf '  "worker": %s,\n' "$(json "$here/runtimes/$lower/ctr-worker")"
+  printf '  "storage_root": %s,\n' "$(json "$data/sessions")"
+  printf '  "assets": %s,\n' "$assets"
+  printf '  "allow_control": true\n'
+  printf '}\n'
+} > "$config.tmp"
+mv -f "$config.tmp" "$config"
+
+if [ -n "$import" ]; then
+  [ -f "$import" ] || die "no such file: $import"
+  if [ -e "$root/desktop.json" ]; then
+    die "$root/desktop.json exists; not overwriting it with $import"
+  fi
+  cp -- "$import" "$root/desktop.json"
+  echo "LOTUS: imported $import to $root/desktop.json" >&2
+fi
+
+# Desktop preferences stay with the data unless the caller chose a file.
+export LOTUS_DESKTOP_PREFERENCES=${LOTUS_DESKTOP_PREFERENCES:-$root/desktop.json}
+
+if [ -n "$configure_only" ]; then
+  echo "$config"
+  exit 0
+fi
+case $mode in
+  MCP) exec "$here/usr/bin/lotus-mcp" "$config" ;;
+  WindowedMCP) exec "$here/usr/bin/lotus-desktop" --mcp "$config" ;;
+  *) exec "$here/usr/bin/lotus-desktop" "$config" ;;
+esac

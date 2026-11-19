@@ -84,6 +84,28 @@ Windows user and outlives release folders, so `LOTUS.cmd -SetDataDir
 "D:\LOTUS data"` once makes every later release use that directory. Existing
 data is not moved; copy the old `data\` contents there yourself.
 
+### Linux AppImage
+
+`chmod +x LOTUS-v<version>-linux-x86_64.AppImage`, then run it. Its launcher
+(`packaging/linux/AppRun`) does what `launch.ps1` does, with these options:
+
+| Option | Values | Effect |
+| --- | --- | --- |
+| `--backend` | `CITnLO` (default), `AZAHAR` | which worker |
+| `--mode` | `Desktop` (default), `MCP`, `WindowedMCP` | as `-Mode` above |
+| last argument | path to a `.3dsx` | approves it as asset `homebrew` |
+| `--data-dir` | path | data directory for this start |
+| `--configure-only` | | write `host.json`, print its path and stop |
+| `--import-preferences` | file | copy an old `desktop.json` (e.g. `~/.config/lotus/desktop.json`) into the data directory; refused if one exists |
+| `cli ARGS...` | | run `ctr-cli` |
+
+The data directory is the first of `--data-dir`, `$LOTUS_DATA_DIR` and
+`~/.local/lotus`; relative paths resolve against the current directory.
+Nothing is written inside the AppImage. `host.json` is rewritten on every
+start so its worker path follows the AppImage's current mount; moving or
+replacing the AppImage keeps all data. `LOTUS_DESKTOP_PREFERENCES`, if set,
+still wins over `<data>/desktop.json`.
+
 ## 3. Using the window
 
 Start `LOTUS.cmd`. The window has three parts: the session sidebar on the

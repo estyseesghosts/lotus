@@ -79,7 +79,9 @@ jobs:
           cargo build --locked --release --bin lotus-desktop --bin lotus-mcp --bin ctr-cli
           cargo test --locked --release --workspace
       - name: Headless smoke
-        run: python3 tests/test_headless_smoke.py target/release
+        run: |
+          python3 tests/test_headless_smoke.py target/release
+          python3 tests/test_apprun.py
       - name: Provenance
         run: |
           mkdir -p build
