@@ -193,7 +193,7 @@ fn exclusion(name: &str, apply: Apply, sources: &[String]) -> Option<String> {
 fn group(name: &str) -> Option<(Group, &'static str)> {
     use Group::*;
     if name.starts_with("cfg.") {
-        return Some((Emulation, "System settings (CFG savedata)"));
+        return Some((Emulation, "System Settings"));
     }
     Some(match name {
         "use_cpu_jit" | "use_fastinterp" | "cpu_clock_percentage" => (Emulation, "CPU"),
@@ -218,7 +218,7 @@ fn group(name: &str) -> Option<(Group, &'static str)> {
         "use_virtual_sd"
         | "compress_cia_installs"
         | "async_fs_operations"
-        | "deterministic_async_operations" => (SessionsStorage, "Guest storage"),
+        | "deterministic_async_operations" => (SessionsStorage, "Guest Storage"),
         "graphics_api"
         | "physical_device"
         | "use_gles"
@@ -244,7 +244,7 @@ fn group(name: &str) -> Option<(Group, &'static str)> {
         | "delay_game_render_thread_us"
         | "pp_shader_name" => (GraphicsDisplay, "Renderer"),
         "dump_textures" | "custom_textures" | "preload_textures" | "async_custom_loading" => {
-            (GraphicsDisplay, "Custom textures")
+            (GraphicsDisplay, "Custom Textures")
         }
         "factor_3d"
         | "render_3d"
@@ -269,12 +269,12 @@ fn group(name: &str) -> Option<(Group, &'static str)> {
         | "bg_green"
         | "bg_blue"
         | "portrait_layout_option"
-        | "custom_second_layer_opacity" => (GraphicsDisplay, "Screen layout"),
+        | "custom_second_layer_opacity" => (GraphicsDisplay, "Screen Layout"),
         name if name.starts_with("custom_")
             || name.starts_with("screen_top_")
             || name.starts_with("screen_bottom_") =>
         {
-            (GraphicsDisplay, "Screen layout")
+            (GraphicsDisplay, "Screen Layout")
         }
         "audio_emulation"
         | "enable_audio_stretching"
@@ -288,12 +288,12 @@ fn group(name: &str) -> Option<(Group, &'static str)> {
         "input_type" | "input_device" => (AudioDevices, "Microphone"),
         "camera_name" | "camera_config" | "camera_flip" => (AudioDevices, "Camera"),
         "battery_state_source" | "battery_charging" | "battery_level" | "steps_per_hour" => {
-            (AudioDevices, "Battery and pedometer")
+            (AudioDevices, "Battery and Pedometer")
         }
         "current_input_profile"
         | "current_input_profile_index"
         | "input_profiles"
-        | "touch_from_button_maps" => (Controls, "Azahar input profiles"),
+        | "touch_from_button_maps" => (Controls, "Azahar Input Profiles"),
         "renderer_debug"
         | "pica_debugging"
         | "dump_command_buffers"
@@ -302,7 +302,7 @@ fn group(name: &str) -> Option<(Group, &'static str)> {
         | "log_filter"
         | "log_regex_filter"
         | "use_gdbstub"
-        | "gdbstub_port" => (DebuggingTracing, "Emulator diagnostics"),
+        | "gdbstub_port" => (DebuggingTracing, "Emulator Diagnostics"),
         "output_format"
         | "format_options"
         | "video_encoder"
@@ -310,9 +310,9 @@ fn group(name: &str) -> Option<(Group, &'static str)> {
         | "video_bitrate"
         | "audio_encoder"
         | "audio_encoder_options"
-        | "audio_bitrate" => (Advanced, "Video dumping"),
+        | "audio_bitrate" => (Advanced, "Video Dumping"),
         "enable_rpc_server" | "web_api_url" | "network_token" | "use_custom_storage"
-        | "enable_gamemode" => (Advanced, "Azahar host integration"),
+        | "enable_gamemode" => (Advanced, "Azahar Host Integration"),
         _ => return None,
     })
 }
