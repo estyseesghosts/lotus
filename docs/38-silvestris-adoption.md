@@ -411,3 +411,37 @@ still requires the validation in #138. Some workspace/rail controls and
 gauges still use the legacy renderer. Native worker/HID, mixed DPI,
 additional OS behavior, portable packaging and performance parity remain
 unverified.
+
+
+## Workspace, settings editors and menu projection
+
+The staged workspace now uses Silvestris notices, rail buttons, content
+commands and compact telemetry. Single-view FPS, speed and frame count
+sit in the bottom bar. Details discloses four more figures and reserves a
+fixed amount of workspace height. Split sessions retain their own labelled
+status and controller information in the existing measured edge allocation.
+The old toolbar, popovers and gauges compile only for the rollback build.
+
+Actions groups commands by purpose and feeds the same model to GPUI's
+native menu on macOS. The macOS Edit menu routes to the focused editor.
+Windows and Linux use the in-window menu and native GPUI file pickers.
+Source row accessories and right-click commands share target validation.
+Stop and Reset open the shared confirmation sheet with Cancel focused.
+The sheet traps Tab, suppresses guest input and revalidates the target
+before dispatch.
+
+String values and typed JSON or binding lists use the existing registry
+validator. Structured values are edited as single-line JSON. The current
+scope and editor identity are checked before a draft is committed. Boolean,
+choice and numeric rows keep their established validation and save paths.
+
+Inspector requests retain identity and epoch through the desktop command
+queue. Supervisor::debug_at checks the revision while holding the worker
+mutex before issuing ordinary debugger operations. Host orchestration
+operations with separate lock lifetimes perform a pre-dispatch check.
+The mock-worker regression rejects an Advance from the pre-reset epoch
+and then verifies inspection works against the new epoch.
+
+Release gates in #138 still apply. Windows exterior shadow remains
+unverified, along with macOS menu behavior, mixed DPI, live AZAHAR/CITnLO
+and portable builds.

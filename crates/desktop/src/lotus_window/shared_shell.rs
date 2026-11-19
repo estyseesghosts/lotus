@@ -1,6 +1,7 @@
 //! #131/#132/#138: one measured shell for single and split workspaces.
 //! Controller inspection remains explicit per tile, otherwise follows selection.
 use super::*;
+use gpui::App;
 use super::shared_commands::{GlobalCommand, SessionCommand};
 use silvestris::command::CommandButton;
 use silvestris::controls::{Button, ButtonStyle, ControlSize};
@@ -8,6 +9,8 @@ use silvestris::core::command::CommandId;
 use silvestris::core::layout::{self as shared, InspectorPreference, SidebarPreference};
 use silvestris::shell::{Shell, ShellContent};
 use silvestris::ActiveTheme;
+
+pub(super) const TELEMETRY_DETAILS_HEIGHT: f32 = 64.0;
 
 static LOTUS_ART: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock::new(|| {
     Arc::new(gpui::Image::from_bytes(
@@ -116,6 +119,8 @@ impl LotusWindow {
         } else {
             "Read-only host"
         };
+        let session = self.selected_summary().filter(|summary| !self.split() && summary.info.asset.is_some());
+        let figures = session.map(|summary| gauges::gauges(theme, &summary.telemetry));
         div()
             .id("lotus-status")
             .debug_selector(|| "lotus-status".into())
@@ -133,7 +138,50 @@ impl LotusWindow {
                 if self.sessions.len() == 1 { "" } else { "s" }
             ))
             .child(div().flex_1().min_w_0().truncate().child(host))
+            .children(figures.into_iter().flatten().take(3).enumerate().map(|(index, gauge)| status_value(index, gauge, cx)))
             .child(mcp)
+            .when(session.is_some(), |bar| bar.child(
+                Button::new("telemetry-details", "Details")
+                    .style(ButtonStyle::Textured)
+                    .size(ControlSize::Mini)
+                    .selected(self.gauges_expanded)
+                    .tooltip("Show or hide session telemetry")
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.gauges_expanded = !view.gauges_expanded;
+                        cx.notify();
+                    })),
+            ))
+    }
+
+    pub(super) fn render_telemetry_details(&self, summary: &SessionSummary, cx: &App) -> AnyElement {
+        let theme = theme::palette(cx);
+        div().id("telemetry-details-panel").debug_selector(|| "telemetry-details-panel".into())
+            .flex().flex_wrap().items_center().content_center().gap_x(px(8.0))
+            .px(px(8.0)).h(px(TELEMETRY_DETAILS_HEIGHT)).flex_none().min_w_0()
+            .overflow_hidden().border_t_1().border_color(theme.border)
+            .children(gauges::gauges(theme, &summary.telemetry).into_iter().skip(3).enumerate()
+                .map(|(index, gauge)| status_value(index, gauge, cx).w(px(120.0))))
+            .into_any_element()
+    }
+
+    pub(super) fn render_tile_status(
+        &self, items: Vec<gauges::Gauge>, vertical: bool, tile: TilePlan, cx: &App,
+    ) -> Div {
+        div().flex().items_center()
+            .when(vertical, |row| row.w(px(tile.width.max(0.0))).h(px(GAUGE_ROW)))
+            .when(!vertical, |row| row.flex_col().w(px(GAUGE_COLUMN)).h(px(tile.height.max(0.0))))
+            .children(items.into_iter().enumerate().map(|(index, gauge)| status_value(index, gauge, cx)
+                .when(vertical, |item| item.flex_1())
+                .when(!vertical, |item| item.w_full().flex_none())))
+    }
+
+    pub(super) fn render_empty_content_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let registry = self.shared_commands.registry.clone();
+        div().flex().items_center().gap(px(8.0))
+            .child(Button::new("idle-load", "Load Content…")
+                .disabled(!self.selected_summary().is_some_and(|summary| summary.telemetry.state.is_active()))
+                .on_click(cx.listener(|view, event, window, cx| view.open_inline_load(event, window, cx))))
+            .child(CommandButton::new("idle-open-file", GlobalCommand::Open.id(), registry))
     }
 
     pub(super) fn render_shared_disconnected(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -327,6 +375,12 @@ impl LotusWindow {
     }
 }
 
+fn status_value(index: usize, gauge: gauges::Gauge, cx: &App) -> Stateful<Div> {
+    silvestris::controls::status::value(
+        (gauge.label, index), gauge.label, gauge.value, gauge.detail, gauge.colour, cx,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -451,6 +505,32 @@ mod tests {
             })
         });
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn detail_expansion_reserves_only_its_measured_workspace_height() {
+        let mut app = TestAppContext::single();
+        app.update(|cx| silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx));
+        let (view, cx) = app.add_window_view(|window, cx| {
+            let mut view = LotusWindow::test_preview(window, cx);
+            let mut loaded = session("loaded");
+            loaded.info.asset = Some("fixture.3dsx".into());
+            view.selected = loaded.info.id.clone();
+            view.sessions = vec![loaded];
+            view
+        });
+        cx.simulate_resize(size(px(720.), px(560.)));
+        draw(cx);
+        let workspace = cx.debug_bounds("shell-workspace").unwrap();
+        assert!(cx.debug_bounds("telemetry-details-panel").is_none());
+        let disclosure = cx.debug_bounds("telemetry-details").unwrap();
+        assert!(disclosure.right() <= workspace.right());
+        cx.simulate_click(disclosure.center(), gpui::Modifiers::default());
+        draw(cx);
+        let details = cx.debug_bounds("telemetry-details-panel").unwrap();
+        assert_eq!(details.size.height, px(TELEMETRY_DETAILS_HEIGHT));
+        assert_eq!(details.bottom(), workspace.bottom());
+        cx.update(|_, cx| assert!(view.read(cx).gauges_expanded));
     }
 
     #[test]

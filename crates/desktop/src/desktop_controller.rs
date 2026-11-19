@@ -59,6 +59,10 @@ pub enum Command {
         session: String,
         command: DebugCommand,
     },
+    DebugAt {
+        target: SessionTarget,
+        command: DebugCommand,
+    },
     OpenTrace {
         path: PathBuf,
     },
@@ -934,10 +938,22 @@ impl Loops {
                 host.run(&session, actor).await?;
             }
             Command::Select(_) | Command::Inspect(_) => {}
-            Command::Debug { session, command } => {
-                let target = SessionTarget::from_summary(&host.summary(&session)?);
+            request @ (Command::Debug { .. } | Command::DebugAt { .. }) => {
                 let generation = self.generation.load(Ordering::Acquire);
-                let mut value = host.debug(&session, &command, actor).await?;
+                let (target, command, mut value) = match request {
+                    Command::Debug { session, command } => {
+                        let target = SessionTarget::from_summary(&host.summary(&session)?);
+                        let value = host.debug(&session, &command, actor).await?;
+                        (target, command, value)
+                    }
+                    Command::DebugAt { target, command } => {
+                        let value = host.debug_at(
+                            &target.id, target.created_unix_ms, target.epoch, &command, actor,
+                        ).await?;
+                        (target, command, value)
+                    }
+                    _ => unreachable!("matched debugger command"),
+                };
                 // The operation finishes even if its view has moved. Its result
                 // must not become evidence about a different worker/guest epoch.
                 if !self.current_reply(&target, generation, &value) {

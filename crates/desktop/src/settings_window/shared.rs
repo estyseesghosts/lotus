@@ -121,7 +121,7 @@ const BANDS: [(&str, &[Group]); 3] = [
 pub(super) struct PreferencesState {
     pub navigator: PreferencesNavigator,
     tabs: HashMap<Group, &'static str>,
-    fields: HashMap<String, Entity<TextField>>,
+    pub(super) fields: HashMap<String, Entity<TextField>>,
     search: Option<Entity<TextField>>,
     sized_for: Option<Option<SharedString>>,
     /// Set when the pane or tab changes; cleared once the window fits, so
@@ -543,7 +543,7 @@ impl SettingsWindow {
             kind if stepper(kind).is_some() => {
                 let (step, min, max, integer) = stepper(kind).unwrap_or((1.0, None, None, true));
                 let current = value.as_f64().unwrap_or(0.0);
-                let field = self.number_field(descriptor, &value, enabled, window, cx);
+                let field = self.value_field(descriptor, &value, enabled, window, cx);
                 let clamp = move |next: f64| {
                     let mut next = next;
                     if let Some(min) = min {
@@ -568,14 +568,12 @@ impl SettingsWindow {
                             })),
                     );
             }
+            Kind::String { .. } | Kind::Json { .. } | Kind::Bindings { .. } => {
+                let field = self.value_field(descriptor, &value, enabled, window, cx);
+                control = control.child(div().w(px(260.0)).child(field));
+            }
             _ => {
-                control = control.child(with_tooltip(
-                    div()
-                        .id(SharedString::from(format!("text-{key}")))
-                        .text_color(silvestris::convert::hsla(cx.theme().colors.text_secondary))
-                        .child(display(&value)),
-                    "Text and list values are edited with ctr-cli or MCP for now (#54).",
-                ));
+                control = control.child(div().child(display(&value)));
             }
         }
         if overridden && enabled {
@@ -615,8 +613,8 @@ impl SettingsWindow {
         row.id(SharedString::from(format!("row-{key}")))
     }
 
-    /// A text field for a numeric setting; commits on Return or leaving it.
-    fn number_field(
+    /// Text, numeric and structured values share the same editor lifecycle.
+    fn value_field(
         &mut self,
         descriptor: &'static Descriptor,
         value: &Value,
@@ -624,7 +622,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TextField> {
-        let shown = display(value);
+        let shown = field_text(&descriptor.kind, value);
         let field = match self.prefs.fields.get(&descriptor.key) {
             Some(field) => field.clone(),
             None => {
@@ -632,28 +630,41 @@ impl SettingsWindow {
                     let mut f = TextField::new(window, cx);
                     f.set_size(ControlSize::Small, cx);
                     f.set_label(descriptor.label.clone(), cx);
+                    if matches!(descriptor.kind, Kind::Json { .. } | Kind::Bindings { .. }) {
+                        f.set_placeholder("JSON value", cx);
+                    }
                     f.set_text(shown.clone(), cx);
                     f
                 });
+                let dirty = std::cell::Cell::new(false);
+                let target = self.target.clone();
                 cx.subscribe(&field, move |view, field, event: &TextFieldEvent, cx| {
-                    if !matches!(event, TextFieldEvent::Submitted | TextFieldEvent::EndedEditing) {
+                    if view.target != target
+                        || view.prefs.fields.get(&descriptor.key) != Some(&field)
+                    {
                         return;
                     }
-                    let text = field.read(cx).text().trim().to_string();
-                    let (current, _) = view.value(descriptor, cx);
-                    let Some((_, min, max, integer)) = stepper(&descriptor.kind) else { return };
-                    match text.parse::<f64>() {
-                        Ok(mut next) if next.is_finite() => {
-                            if let Some(min) = min { next = next.max(min); }
-                            if let Some(max) = max { next = next.min(max); }
-                            let next = if integer { Value::from(next.round() as i64) } else { Value::from(next) };
-                            if next != current {
-                                view.write(descriptor, Some(next), cx);
-                            }
-                            field.update(cx, |f, cx| f.set_text(display(&view.value(descriptor, cx).0), cx));
+                    if *event == TextFieldEvent::Changed {
+                        dirty.set(true);
+                        return;
+                    }
+                    if !dirty.replace(false) {
+                        return;
+                    }
+                    let (current, source) = view.value(descriptor, cx);
+                    if view.editable(descriptor, &source).is_err() {
+                        return;
+                    }
+                    let input = field.read(cx).text();
+                    match parse_field(descriptor, input) {
+                        Ok(next) if next != current => view.write(descriptor, Some(next), cx),
+                        Ok(_) => {}
+                        Err(error) => {
+                            view.error = Some(error);
+                            let saved = field_text(&descriptor.kind, &current);
+                            field.update(cx, |f, cx| f.set_text(saved, cx));
+                            cx.notify();
                         }
-                        // Invalid input reverts to the saved value.
-                        _ => field.update(cx, |f, cx| f.set_text(display(&current), cx)),
                     }
                 })
                 .detach();
@@ -670,6 +681,33 @@ impl SettingsWindow {
         });
         field
     }
+}
+
+fn field_text(kind: &Kind, value: &Value) -> String {
+    match kind {
+        Kind::String { .. } => value.as_str().unwrap_or_default().to_owned(),
+        Kind::Json { .. } | Kind::Bindings { .. } => value.to_string(),
+        _ => display(value),
+    }
+}
+
+fn parse_field(descriptor: &Descriptor, text: &str) -> Result<Value, String> {
+    let value = match &descriptor.kind {
+        Kind::String { .. } => Value::String(text.to_owned()),
+        Kind::Json { .. } | Kind::Bindings { .. } => {
+            serde_json::from_str(text).map_err(|error| format!("{}: {error}", descriptor.label))?
+        }
+        kind => {
+            let (_, min, max, integer) = stepper(kind).ok_or("Unsupported editor")?;
+            let mut number = text.trim().parse::<f64>().ok().filter(|number| number.is_finite())
+                .ok_or_else(|| format!("{} requires a number.", descriptor.label))?;
+            if let Some(min) = min { number = number.max(min); }
+            if let Some(max) = max { number = number.min(max); }
+            if integer { Value::from(number.round() as i64) } else { Value::from(number) }
+        }
+    };
+    descriptor.validate(&value).map_err(|error| error.to_string())?;
+    Ok(value)
 }
 
 fn subgroup_label(subgroup: &str) -> String {
@@ -693,6 +731,20 @@ fn subgroup_label(subgroup: &str) -> String {
 mod tests {
     use super::*;
     use gpui::{Focusable, TestAppContext};
+
+    #[test]
+    fn scalar_and_structured_editors_use_registry_validation() {
+        let string = Registry::builtin().descriptors().iter()
+            .find(|descriptor| matches!(descriptor.kind, Kind::String { choices: None, hex: false, exact_len: None, .. }))
+            .expect("string setting");
+        assert_eq!(parse_field(string, "test").unwrap(), Value::String("test".into()));
+        let bindings = Registry::builtin().descriptors().iter()
+            .find(|descriptor| matches!(descriptor.kind, Kind::Bindings { .. }))
+            .expect("input binding setting");
+        assert_eq!(parse_field(bindings, "[]").unwrap(), Value::Array(Vec::new()));
+        assert!(parse_field(bindings, "{}").is_err());
+        assert!(parse_field(bindings, "[").is_err());
+    }
 
     #[test]
     fn typing_and_escape_filter_settings_without_changing_the_pane() {

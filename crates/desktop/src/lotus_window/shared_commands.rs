@@ -6,6 +6,7 @@ use silvestris::command::CommandRegistry;
 use silvestris::core::command::{CommandDescriptor, CommandId, MenuEntry, MenuModel};
 use silvestris::menu::PopupMenu;
 use silvestris::ActiveTheme;
+use silvestris::controls::{ConfirmationFocus, ConfirmationSheet};
 
 /// Key context of the main window's command scope. Text fields keep their
 /// own editing keys (silvestris commands.md).
@@ -22,20 +23,30 @@ pub(super) struct SharedCommands {
     /// Where the Actions menu last opened; Load reopens the menu there.
     anchor: gpui::Point<gpui::Pixels>,
     bound: bool,
+    native_menu_state: Vec<CommandDescriptor>,
+    confirmation: Option<PendingConfirmation>,
+}
+
+struct PendingConfirmation {
+    command: SessionCommand,
+    target: SessionTarget,
+    focus: ConfirmationFocus,
+    previous_focus: Option<gpui::FocusHandle>,
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum GlobalCommand {
-    Sidebar, Inspector, Settings, Open, ZoomNext, ScreensNext,
+    Sidebar, Inspector, Settings, Open, OpenTrace, Minimize, ZoomWindow, Keyboard, ZoomNext, ScreensNext,
     Zoom(Zoom), Screens(ScreenLayout),
 }
 impl GlobalCommand {
-    const ALL: [Self; 11] = [Self::Sidebar, Self::Inspector, Self::Settings, Self::Open, Self::ZoomNext, Self::ScreensNext,
+    const ALL: [Self; 15] = [Self::Sidebar, Self::Inspector, Self::Settings, Self::Open, Self::OpenTrace, Self::Minimize, Self::ZoomWindow, Self::Keyboard, Self::ZoomNext, Self::ScreensNext,
         Self::Zoom(Zoom::Fit), Self::Zoom(Zoom::Native), Self::Zoom(Zoom::Double),
         Self::Screens(ScreenLayout::Stacked), Self::Screens(ScreenLayout::SideBySide)];
     pub fn id(self) -> &'static str {
         match self {
             Self::Sidebar => "view.sidebar", Self::Inspector => "view.inspector", Self::Settings => "app.settings", Self::Open => "file.open",
+            Self::OpenTrace => "debug.trace.open", Self::Minimize => "window.minimize", Self::ZoomWindow => "window.zoom", Self::Keyboard => "help.keyboard",
             Self::ZoomNext => "view.zoom.next", Self::ScreensNext => "view.screens.next",
             Self::Zoom(Zoom::Fit) => "view.zoom.fit", Self::Zoom(Zoom::Native) => "view.zoom.native", Self::Zoom(Zoom::Double) => "view.zoom.double",
             Self::Screens(ScreenLayout::Stacked) => "view.screens.stacked", Self::Screens(ScreenLayout::SideBySide) => "view.screens.side-by-side",
@@ -47,6 +58,10 @@ impl GlobalCommand {
             Self::Inspector => CommandDescriptor::toggle(self.id(), "Inspector", view.preferences.values.inspector_open).shortcut("secondary-i"),
             Self::Settings => CommandDescriptor::action(self.id(), "Settings").needs_input().shortcut("secondary-,"),
             Self::Open => CommandDescriptor::action(self.id(), "Open").needs_input().shortcut("secondary-o").enabled(view.controller.is_some() && view.control),
+            Self::OpenTrace => CommandDescriptor::action(self.id(), "Open JSONL Trace").needs_input().enabled(view.controller.is_some()),
+            Self::Minimize => CommandDescriptor::action(self.id(), "Minimize Window"),
+            Self::ZoomWindow => CommandDescriptor::action(self.id(), "Zoom Window"),
+            Self::Keyboard => CommandDescriptor::action(self.id(), "Keyboard Shortcuts"),
             Self::ZoomNext => CommandDescriptor::action(self.id(), view.zoom.label()),
             Self::ScreensNext => CommandDescriptor::action(self.id(), view.layout.label()),
             Self::Zoom(zoom) => CommandDescriptor::radio(self.id(), zoom.label(), "zoom", view.zoom == zoom),
@@ -99,7 +114,7 @@ impl SharedCommands {
         let menu = cx.new(|cx| PopupMenu::new(MenuModel { label: "Actions".into(), entries: Vec::new() }, registry.clone(), window, cx));
         // Menu state invalidation must repaint its mounted deferred overlay.
         cx.observe(&menu, |_, _, cx| cx.notify()).detach();
-        Self { registry, menu, target: None, session_ids: Vec::new(), popup_ids: Vec::new(), anchor: gpui::Point::default(), bound: false }
+        Self { registry, menu, target: None, session_ids: Vec::new(), popup_ids: Vec::new(), anchor: gpui::Point::default(), bound: false, native_menu_state: Vec::new(), confirmation: None }
     }
 }
 
@@ -152,6 +167,18 @@ impl LotusWindow {
                 Err(error) => tracing::warn!("command shortcuts not installed: {error}"),
             }
         }
+        if cfg!(target_os = "macos") {
+            let descriptors = registry.read(cx).descriptors();
+            let state: Vec<_> = descriptors.iter().filter(|descriptor| {
+                !self.shared_commands.popup_ids.contains(&descriptor.id)
+            }).cloned().collect();
+            if self.shared_commands.native_menu_state != state {
+                self.shared_commands.native_menu_state = state;
+                let mut menus = silvestris::menu::native_menus(&self.command_menus(), descriptors);
+                menus.insert(2, silvestris::menu::native_edit_menu());
+                cx.set_menus(menus);
+            }
+        }
     }
 
     fn invoke_global(&mut self, command: GlobalCommand, window: &mut Window, cx: &mut Context<Self>) {
@@ -166,6 +193,18 @@ impl LotusWindow {
                 let session = self.selected_summary().filter(|s| s.telemetry.state.is_active()).map(|s| s.info.id.clone());
                 self.open_file(session, cx);
             },
+            GlobalCommand::OpenTrace => self.open_trace(cx),
+            GlobalCommand::Minimize => window.minimize_window(),
+            GlobalCommand::ZoomWindow => silvestris::native::zoom_window(window),
+            GlobalCommand::Keyboard => {
+                self.clear_popup_commands(cx);
+                let model = MenuModel {
+                    label: "Keyboard Shortcuts".into(),
+                    entries: KEYS.iter().map(|(key, action)| MenuEntry::Heading(format!("{key}  {action}"))).collect(),
+                };
+                let y = cx.theme().metrics.titlebar_height + cx.theme().metrics.toolbar_height;
+                self.open_popup_at(model, gpui::point(px(10.0), px(y)), window, cx);
+            }
             GlobalCommand::ZoomNext => self.zoom = self.zoom.next(),
             GlobalCommand::ScreensNext => self.layout = self.layout.other(),
             GlobalCommand::Zoom(zoom) => self.zoom = zoom,
@@ -186,35 +225,87 @@ impl LotusWindow {
             SessionCommand::Run => self.send(if playing { Command::Pause(id) } else { Command::Play(id) }),
             SessionCommand::Step => self.send(Command::Step(id)),
             SessionCommand::Load => self.open_load_menu(target.clone(), window, cx),
-            SessionCommand::Reset => self.send(Command::Reset(id)),
-            SessionCommand::Stop => self.send(Command::Stop(id)),
+            SessionCommand::Reset | SessionCommand::Stop => self.confirm_session_action(command, target.clone(), window, cx),
         }
         cx.notify();
+    }
+
+    pub(super) fn confirm_session_action(
+        &mut self, command: SessionCommand, target: SessionTarget, window: &mut Window, cx: &mut Context<Self>,
+    ) {
+        if !self.control || target.resolve(&self.sessions).is_none() || self.shared_commands.confirmation.is_some() {
+            return;
+        }
+        self.release_input();
+        let focus = ConfirmationFocus::new(cx);
+        let previous_focus = window.focused(cx);
+        focus.focus_cancel(window, cx);
+        self.shared_commands.confirmation = Some(PendingConfirmation { command, target, focus, previous_focus });
+        self.shared_sources.update(cx, |_, cx| cx.notify());
+        cx.notify();
+    }
+
+    pub(super) fn has_confirmation(&self) -> bool {
+        self.shared_commands.confirmation.is_some()
+    }
+
+    pub(super) fn render_confirmation(&self, cx: &Context<Self>) -> Option<ConfirmationSheet> {
+        let pending = self.shared_commands.confirmation.as_ref()?;
+        let summary = pending.target.resolve(&self.sessions);
+        let name = summary.map(|summary| session_tree::session_label(&summary.info))
+            .unwrap_or_else(|| pending.target.id.clone());
+        let (title, message, action) = match pending.command {
+            SessionCommand::Reset => (format!("Reset {name}?"), "The current guest restarts.", "Reset"),
+            SessionCommand::Stop if summary.is_some_and(|summary| matches!(summary.info.kind, SessionKind::Primary { .. })) =>
+                (format!("Stop {name}?"), "The session closes and its card is kept.", "Stop"),
+            SessionCommand::Stop => (format!("Stop {name}?"), "The session closes and its temporary card is discarded.", "Stop"),
+            _ => return None,
+        };
+        let owner = cx.weak_entity();
+        Some(ConfirmationSheet::new(title, message, action, pending.focus.clone(), move |accepted, window, cx| {
+            let _ = owner.update(cx, |view, cx| {
+                let Some(pending) = view.shared_commands.confirmation.take() else { return; };
+                view.shared_sources.update(cx, |_, cx| cx.notify());
+                if let Some(focus) = pending.previous_focus {
+                    window.focus(&focus, cx);
+                } else {
+                    window.blur(cx);
+                }
+                if accepted && view.control && pending.target.resolve(&view.sessions).is_some() {
+                    match pending.command {
+                        SessionCommand::Stop => view.send(Command::Stop(pending.target.id)),
+                        SessionCommand::Reset => view.send(Command::Reset(pending.target.id)),
+                        _ => {}
+                    }
+                }
+                cx.notify();
+            });
+        }))
     }
 
     pub(super) fn session_command_id(&self, command: SessionCommand) -> CommandId {
         command.id(self.selected_summary().map(SessionTarget::from_summary).as_ref())
     }
 
-    fn clear_popup_commands(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn clear_popup_commands(&mut self, cx: &mut Context<Self>) {
         let registry = self.shared_commands.registry.clone();
         for id in self.shared_commands.popup_ids.drain(..) {
             registry.update(cx, |r, cx| r.remove(&id, cx));
         }
     }
 
-    fn popup_action(
+    pub(super) fn popup_action(
         &mut self,
         descriptor: CommandDescriptor,
-        invoke: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        invoke: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> MenuEntry {
         let id = descriptor.id.clone();
         let owner = cx.weak_entity();
         self.shared_commands.registry.update(cx, |registry, cx| {
-            registry.register(descriptor, move |_, _, cx| {
+            registry.register(descriptor, move |_, window, cx| {
                 let _ = owner.update(cx, |view, cx| {
-                    invoke(view, cx);
+                    invoke(view, window, cx);
                     cx.notify();
                 });
             }, cx).expect("unique popup command");
@@ -223,7 +314,7 @@ impl LotusWindow {
         MenuEntry::Command(id)
     }
 
-    fn open_popup_at(
+    pub(super) fn open_popup_at(
         &mut self,
         model: MenuModel,
         position: gpui::Point<gpui::Pixels>,
@@ -254,7 +345,7 @@ impl LotusWindow {
             let name = card.clone();
             entries.push(self.popup_action(
                 CommandDescriptor::action(&format!("new.open.{index}"), card),
-                move |view, _| {
+                move |view, _, _| {
                     if view.control && view.cards.contains(&name) && !view.card_is_mounted(&name) {
                         view.create(SessionKind::Primary { card: name.clone() }, None);
                     }
@@ -265,7 +356,7 @@ impl LotusWindow {
         let fresh = session_tree::next_card_name(&cards);
         entries.push(self.popup_action(
             CommandDescriptor::action("new.card", &format!("New Card ({fresh})")),
-            move |view, _| {
+            move |view, _, _| {
                 if view.control && !view.cards.contains(&fresh) && !view.card_is_mounted(&fresh) {
                     view.create(SessionKind::Primary { card: fresh.clone() }, None);
                 }
@@ -276,7 +367,7 @@ impl LotusWindow {
         entries.push(MenuEntry::Heading("Temporary Session".into()));
         entries.push(self.popup_action(
             CommandDescriptor::action("new.empty", "Blank Card"),
-            |view, _| {
+            |view, _, _| {
                 if view.control {
                     view.create(SessionKind::Secondary { parent: None }, None);
                 }
@@ -286,7 +377,7 @@ impl LotusWindow {
         for (index, card) in cards.into_iter().enumerate() {
             entries.push(self.popup_action(
                 CommandDescriptor::action(&format!("new.copy.{index}"), &format!("Copy of {card}")),
-                move |view, _| {
+                move |view, _, _| {
                     if view.control && view.cards.contains(&card) {
                         view.create(SessionKind::Secondary { parent: Some(card.clone()) }, None);
                     }
@@ -313,14 +404,10 @@ impl LotusWindow {
         let target = self.inspection_target();
         let can_debug = self.control && target.is_some();
         let mut entries = vec![
-            self.popup_action(
-                CommandDescriptor::action("inspector.trace", "Open JSONL Trace").needs_input(),
-                |view, cx| view.open_trace(cx),
-                cx,
-            ),
+            MenuEntry::Command(GlobalCommand::OpenTrace.id().into()),
             self.popup_action(
                 CommandDescriptor::action("inspector.clipboard", "Run Clipboard JSON").enabled(can_debug),
-                move |view, cx| view.run_clipboard_command(&target, cx),
+                move |view, _, cx| view.run_clipboard_command(&target, cx),
                 cx,
             ),
             MenuEntry::Separator,
@@ -330,20 +417,36 @@ impl LotusWindow {
         self.open_popup_at(MenuModel { label: "Inspector Utilities".into(), entries }, event.position(), window, cx);
     }
 
+    fn command_menus(&self) -> Vec<MenuModel> {
+        let session = |command| MenuEntry::Command(self.session_command_id(command));
+        let global = |command: GlobalCommand| MenuEntry::Command(command.id().into());
+        vec![
+            MenuModel { label: "Lotus".into(), entries: vec![global(GlobalCommand::Settings)] },
+            MenuModel { label: "File".into(), entries: vec![global(GlobalCommand::Open), session(SessionCommand::Load)] },
+            MenuModel { label: "View".into(), entries: vec![
+                global(GlobalCommand::Sidebar), global(GlobalCommand::Inspector),
+                MenuEntry::Submenu { label: "Zoom".into(), entries: [Zoom::Fit, Zoom::Native, Zoom::Double].map(|value| global(GlobalCommand::Zoom(value))).into() },
+                MenuEntry::Submenu { label: "Screens".into(), entries: [ScreenLayout::Stacked, ScreenLayout::SideBySide].map(|value| global(GlobalCommand::Screens(value))).into() },
+            ] },
+            MenuModel { label: "Session".into(), entries: vec![
+                session(SessionCommand::Run), session(SessionCommand::Step), MenuEntry::Separator,
+                session(SessionCommand::Reset), session(SessionCommand::Stop),
+            ] },
+            MenuModel { label: "Debug".into(), entries: vec![global(GlobalCommand::OpenTrace)] },
+            MenuModel { label: "Window".into(), entries: vec![global(GlobalCommand::Minimize), global(GlobalCommand::ZoomWindow)] },
+            MenuModel { label: "Help".into(), entries: vec![global(GlobalCommand::Keyboard)] },
+        ]
+    }
+
     pub(super) fn open_shared_actions(&mut self, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>) {
         self.release_input();
         self.menu = Menu::Closed;
         self.sync_shared_commands(window, cx);
         self.clear_popup_commands(cx);
-        let session = |command| MenuEntry::Command(self.session_command_id(command));
-        let global = |command: GlobalCommand| MenuEntry::Command(command.id().into());
-        let model = MenuModel { label: "Actions".into(), entries: vec![
-            MenuEntry::Heading("Session".into()), session(SessionCommand::Run), session(SessionCommand::Step), session(SessionCommand::Load),
-            global(GlobalCommand::Open), session(SessionCommand::Reset), session(SessionCommand::Stop), MenuEntry::Separator,
-            MenuEntry::Submenu { label: "Zoom".into(), entries: [Zoom::Fit, Zoom::Native, Zoom::Double].map(|z| global(GlobalCommand::Zoom(z))).into() },
-            MenuEntry::Submenu { label: "Screens".into(), entries: [ScreenLayout::Stacked, ScreenLayout::SideBySide].map(|l| global(GlobalCommand::Screens(l))).into() },
-            MenuEntry::Separator, global(GlobalCommand::Sidebar), global(GlobalCommand::Inspector), global(GlobalCommand::Settings),
-        ] };
+        let entries = self.command_menus().into_iter().map(|menu| MenuEntry::Submenu {
+            label: menu.label, entries: menu.entries,
+        }).collect();
+        let model = MenuModel { label: "Actions".into(), entries };
         let metrics = &cx.theme().metrics;
         let position = gpui::point(event.position().x, px(metrics.titlebar_height + metrics.toolbar_height));
         self.shared_commands.anchor = position;
@@ -355,6 +458,14 @@ impl LotusWindow {
     /// Load Content: the host's approved assets, then Open… (replaces the
     /// legacy load popover). Each asset is a command scoped to `target`, so a
     /// menu left open across a reset cannot load into the new guest.
+    pub(super) fn open_inline_load(
+        &mut self, event: &ClickEvent, window: &mut Window, cx: &mut Context<Self>,
+    ) {
+        self.shared_commands.anchor = event.position();
+        let target = self.selected_summary().map(SessionTarget::from_summary);
+        self.invoke_session(SessionCommand::Load, target.as_ref(), window, cx);
+    }
+
     fn open_load_menu(&mut self, target: SessionTarget, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_popup_commands(cx);
         let registry = self.shared_commands.registry.clone();
@@ -474,6 +585,44 @@ mod tests {
                 assert!(registry.read(cx).descriptors().get(&fresh).unwrap().enabled);
             });
         }
+    }
+
+    #[test]
+    fn destructive_commands_use_a_keyboard_modal_sheet() {
+        let mut app = TestAppContext::single();
+        app.update(|cx| silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx));
+        let (view, cx) = app.add_window_view(|window, cx| {
+            let mut view = LotusWindow::test_preview(window, cx);
+            view.sessions = vec![session("a", 1)];
+            view.selected = "a".into();
+            view.control = true;
+            view
+        });
+        draw(cx);
+        let before = cx.update(|window, cx| {
+            let before = window.focused(cx);
+            let state = view.read(cx);
+            let reset = state.session_command_id(SessionCommand::Reset);
+            let registry = state.shared_commands.registry.clone();
+            assert_eq!(CommandRegistry::invoke(&registry, &reset, window, cx), Invocation::Dispatched);
+            before
+        });
+        draw(cx);
+        assert!(cx.debug_bounds("sheet-cancel").is_some());
+        cx.simulate_keystrokes("tab z ctrl-i");
+        draw(cx);
+        cx.update(|_, cx| {
+            let state = view.read(cx);
+            assert!(state.shared_commands.confirmation.is_some());
+            assert!(state.keys.is_empty());
+            assert!(!state.preferences.values.inspector_open);
+        });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(view.read(cx).shared_commands.confirmation.is_none());
+            assert_eq!(window.focused(cx), before);
+        });
     }
 
     #[test]

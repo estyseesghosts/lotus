@@ -1287,6 +1287,22 @@ impl Supervisor {
         self.debug_as(id, command, actor_client(actor)).await
     }
 
+    /// Dispatch against the guest that supplied a desktop inspector action.
+    /// The revision is checked with the same lock that serializes worker
+    /// commands, including reset and load. CLI and MCP keep their existing
+    /// session-scoped dispatch through `debug_as`.
+    pub async fn debug_at(
+        &self,
+        id: &str,
+        created_unix_ms: u64,
+        epoch: u64,
+        command: &lotus_protocol::debug::DebugCommand,
+        actor: Actor,
+    ) -> io::Result<serde_json::Value> {
+        self.debug_as_checked(id, command, actor_client(actor), Some((created_unix_ms, epoch)))
+            .await
+    }
+
     pub async fn subscribe(
         &self,
         id: &str,
@@ -1300,6 +1316,16 @@ impl Supervisor {
         id: &str,
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
+    ) -> io::Result<serde_json::Value> {
+        self.debug_as_checked(id, command, client, None).await
+    }
+
+    async fn debug_as_checked(
+        &self,
+        id: &str,
+        command: &lotus_protocol::debug::DebugCommand,
+        client: &str,
+        expected: Option<(u64, u64)>,
     ) -> io::Result<serde_json::Value> {
         use crate::policy::Tool;
         use lotus_protocol::debug::{DebugCommand, GpuCapture};
@@ -1345,7 +1371,7 @@ impl Supervisor {
             }
             _ => None,
         };
-        let mut result = self.debug_inner(id, command, client).await?;
+        let mut result = self.debug_inner(id, command, client, expected).await?;
         drop(slot);
         if let Some((permit, active)) = permit {
             permit.commit(active);
@@ -1359,6 +1385,7 @@ impl Supervisor {
         id: &str,
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
+        expected: Option<(u64, u64)>,
     ) -> io::Result<serde_json::Value> {
         use lotus_protocol::debug::DebugCommand;
         command.validate().map_err(io::Error::other)?;
@@ -1371,6 +1398,15 @@ impl Supervisor {
             self.require_control()?;
         }
         let handle = self.handle(id)?;
+        // Host presentation and orchestration operations own their own
+        // lock lifetimes. Check their scoped target before routing them.
+        if expected.is_some() && matches!(
+            command,
+            DebugCommand::AudioFocus { .. } | DebugCommand::CaptureScaled { .. } | DebugCommand::Matrix { .. }
+        ) {
+            let native = handle.native.lock().await;
+            check_debug_target(expected, handle.info().created_unix_ms, native.epoch())?;
+        }
         if let DebugCommand::AudioFocus { enabled } = command {
             return self.focus_audio(id, *enabled).await;
         }
@@ -1392,6 +1428,7 @@ impl Supervisor {
         if matches!(command, DebugCommand::Stop) {
             let metadata = {
                 let native = handle.native.lock().await;
+                check_debug_target(expected, handle.info().created_unix_ms, native.epoch())?;
                 check_lease(&handle, client)?;
                 native.metadata()
             };
@@ -1399,6 +1436,7 @@ impl Supervisor {
             return Ok(serde_json::json!({"state":"stopped","metadata":metadata}));
         }
         let mut native = handle.native.lock().await;
+        check_debug_target(expected, handle.info().created_unix_ms, native.epoch())?;
         if let DebugCommand::StorageBrowse {
             area,
             path,
@@ -2293,6 +2331,13 @@ impl Drop for Reservation<'_> {
             registry.mounted.remove(card);
         }
     }
+}
+
+fn check_debug_target(expected: Option<(u64, u64)>, created: u64, epoch: u64) -> io::Result<()> {
+    if expected.is_some_and(|target| target != (created, epoch)) {
+        return Err(io::Error::other("debugger action expired because the session or guest changed"));
+    }
+    Ok(())
 }
 
 fn observe(handle: &SessionHandle, native: &NativeSession, status: &serde_json::Value) {

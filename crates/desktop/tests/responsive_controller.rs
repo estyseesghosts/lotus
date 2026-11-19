@@ -218,6 +218,13 @@ fn reset_invalidates_cached_inspection_without_waiting_for_a_replacement_panel()
             .as_ref()
             .is_none_or(|(target, _)| target.epoch != before.epoch));
     }
+    controller.commands.send(Command::DebugAt {
+        target: before.clone(),
+        command: lotus_protocol::debug::DebugCommand::Advance { frames: 1 },
+    }).unwrap();
+    wait(&controller, "stale mutation refused", |update| {
+        update.error.contains("debugger action expired")
+    });
     *controller.inspection_selection.lock().unwrap() = (Panel::Memory, 0);
     wait(&controller, "new memory snapshot", |u| {
         u.inspection.as_ref().is_some_and(|(target, _, _)| {

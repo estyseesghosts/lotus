@@ -39,4 +39,4 @@ host = "x86_64-pc-windows-gnu"
 [silvestris]
 # Local development checkout until independent publication/packaging is ready.
 path = "../../silvestris"
-rev = "0bb7e1c6e4bc9a3510a181020d9e65638ebceff3"
+rev = "7bed5de51f09d7d4e120ae60f7d80f854c340561"

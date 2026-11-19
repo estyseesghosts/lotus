@@ -272,6 +272,8 @@ impl SettingsWindow {
     fn set_target(&mut self, target: Target, cx: &mut Context<Self>) {
         if self.target != target {
             self.target = target;
+            #[cfg(feature = "silvestris-ui")]
+            self.prefs.fields.clear();
             self.report = None;
             self.error = None;
         }
@@ -314,6 +316,7 @@ impl SettingsWindow {
     /// Save (`Some`) or remove (`None`) one value at the current target.
     fn write(&mut self, descriptor: &Descriptor, value: Option<Value>, cx: &mut Context<Self>) {
         if descriptor.owner == Owner::Desktop {
+            self.error = None;
             if let Some(value) = value.or_else(|| Some(descriptor.default.clone())) {
                 let key = descriptor.key.clone();
                 let _ = self
@@ -326,7 +329,8 @@ impl SettingsWindow {
         let Some(host) = self.host.clone() else {
             return;
         };
-        let target = self.target.settings_target();
+        let ui_target = self.target.clone();
+        let target = ui_target.settings_target();
         let key = descriptor.key.clone();
         let saving = cx.background_spawn(async move {
             host.set_setting(&target, &key, value, Actor::Desktop).await
@@ -334,8 +338,10 @@ impl SettingsWindow {
         cx.spawn(async move |this, cx| {
             let result = saving.await;
             let _ = this.update(cx, |view, cx| {
-                view.error = result.err().map(|error| error.to_string());
-                view.refresh(cx);
+                if view.target == ui_target {
+                    view.error = result.err().map(|error| error.to_string());
+                    view.refresh(cx);
+                }
             });
         })
         .detach();

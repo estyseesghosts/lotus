@@ -2,8 +2,30 @@
 //! Lotus retains worker/card actions and the original SessionDrag payload.
 use super::*;
 use crate::navigation::{Navigation, SessionTarget, Target as NavigationTarget};
-use silvestris::controls::{SourceList, SourceListEvent};
+use silvestris::controls::{Button, ButtonStyle, ControlSize, SourceList, SourceListEvent};
 use silvestris::core::source_list::SourceRow;
+
+#[derive(Clone)]
+enum SourceAction {
+    Settings(String),
+    Start(String),
+    Fork { expected: SessionTarget, card: String, asset: Option<String> },
+    Tile { expected: SessionTarget, revision: u64, operation: Operation },
+    Stop(SessionTarget),
+}
+
+struct RowAction {
+    key: &'static str,
+    label: &'static str,
+    icon: Icon,
+    action: SourceAction,
+}
+
+impl RowAction {
+    fn new(key: &'static str, label: &'static str, icon: Icon, action: SourceAction) -> Self {
+        Self { key, label, icon, action }
+    }
+}
 
 impl LotusWindow {
     pub(super) fn make_shared_sources(cx: &mut Context<Self>) -> gpui::Entity<SourceList> {
@@ -35,8 +57,8 @@ impl LotusWindow {
                     // Move the element only after upgrading the owner.
                     let mut element = Some(element);
                     decoration
-                        .update(cx, |view, _| {
-                            view.shared_source_drag(row, element.take().unwrap())
+                        .update(cx, |view, cx| {
+                            view.decorate_source_row(row, element.take().unwrap(), cx)
                         })
                         .unwrap_or_else(|_| element.unwrap())
                 },
@@ -137,167 +159,136 @@ impl LotusWindow {
             .into_any_element()
     }
 
-    fn shared_source_drag(&self, row: &SourceRow, element: AnyElement) -> AnyElement {
-        let summary = self
-            .source_session(&row.id)
-            .and_then(|t| t.resolve(&self.sessions));
-        let Some(summary) =
-            summary.filter(|s| s.info.asset.is_some() && s.telemetry.state.is_active())
-        else {
-            return element;
-        };
-        let drag = self.session_drag(&summary.info.id, Source::Row);
+    fn decorate_source_row(
+        &self, row: &SourceRow, element: AnyElement, cx: &Context<Self>,
+    ) -> AnyElement {
+        let id = row.id.clone();
+        let actions = self.source_actions(row);
+        let drag = self.source_session(&row.id)
+            .and_then(|target| target.resolve(&self.sessions))
+            .filter(|summary| summary.info.asset.is_some() && summary.telemetry.state.is_active())
+            .map(|summary| self.session_drag(&summary.info.id, Source::Row));
         div()
-            .id(SharedString::from(format!("source-drag-{}", row.id)))
+            .id(SharedString::from(format!("source-drag-{id}")))
             .child(element)
-            .on_drag(drag, |drag: &SessionDrag, _, _, cx| {
+            .when(!actions.is_empty(), |el| el.on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.clear_popup_commands(cx);
+                    let mut entries = Vec::new();
+                    for action in &actions {
+                        let invoke = action.action.clone();
+                        let mut descriptor = silvestris::core::command::CommandDescriptor::action(
+                            &format!("source.{}.{}", id, action.key), action.label,
+                        );
+                        if matches!(invoke, SourceAction::Stop(_)) {
+                            descriptor = descriptor.destructive();
+                        }
+                        entries.push(view.popup_action(descriptor, move |view, window, cx| {
+                            view.apply_source_action(&invoke, window, cx);
+                        }, cx));
+                    }
+                    view.open_popup_at(
+                        silvestris::core::command::MenuModel { label: "Session".into(), entries },
+                        event.position, window, cx,
+                    );
+                }),
+            ))
+            .when_some(drag, |el, drag| el.on_drag(drag, |drag: &SessionDrag, _, _, cx| {
                 cx.new(|_| DragGhost(drag.label.clone().into()))
-            })
+            }))
             .into_any_element()
     }
 
-    fn shared_source_actions(&self, row: &SourceRow, cx: &mut Context<Self>) -> AnyElement {
-        let theme = theme::palette(cx);
+    fn source_actions(&self, row: &SourceRow) -> Vec<RowAction> {
         let Some(target) = self.navigation.targets.get(&row.id) else {
-            return div().into_any_element();
+            return Vec::new();
         };
-        let mut actions = div()
-            .debug_selector(|| format!("source-actions-{}", row.id))
-            .flex()
-            .flex_none()
-            .gap(px(2.));
-        if let NavigationTarget::Card {
-            card,
-            primary: None,
-        } = target
-        {
-            let card = card.clone();
-            let settings = card.clone();
-            actions = actions.child(
-                icon_button(
-                    theme,
-                    SharedString::from(format!("source-settings-{}", row.id)),
-                    Icon::Gear,
-                    "Card settings",
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    cx.stop_propagation();
-                    view.open_settings(crate::settings_window::Target::Card(settings.clone()), cx);
-                })),
-            );
+        let mut actions = Vec::new();
+        if let NavigationTarget::Card { card, primary: None } = target {
+            actions.push(RowAction::new("settings", "Card Settings", Icon::Gear, SourceAction::Settings(card.clone())));
             if self.control {
-                actions = actions.child(
-                    icon_button(
-                        theme,
-                        SharedString::from(format!("source-start-{}", row.id)),
-                        Icon::Play,
-                        "Start primary session",
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        if view.control
-                            && matches!(
-                                view.navigation
-                                    .targets
-                                    .get(&crate::navigation::card_row(&card)),
-                                Some(NavigationTarget::Card { primary: None, .. })
-                            )
-                        {
-                            view.create(SessionKind::Primary { card: card.clone() }, None);
-                        }
-                    })),
-                );
+                actions.push(RowAction::new("start", "Start Primary Session", Icon::Play, SourceAction::Start(card.clone())));
             }
-            return actions.into_any_element();
+            return actions;
         }
         let Some(expected) = self.source_session(&row.id).cloned() else {
-            return actions.into_any_element();
+            return actions;
         };
         let Some(summary) = expected.resolve(&self.sessions) else {
-            return actions.into_any_element();
+            return actions;
         };
         if let SessionKind::Primary { card } = &summary.info.kind {
-            let settings = card.clone();
-            actions = actions.child(
-                icon_button(
-                    theme,
-                    SharedString::from(format!("source-settings-{}", row.id)),
-                    Icon::Gear,
-                    "Card settings",
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    cx.stop_propagation();
-                    view.open_settings(crate::settings_window::Target::Card(settings.clone()), cx);
-                })),
-            );
+            actions.push(RowAction::new("settings", "Card Settings", Icon::Gear, SourceAction::Settings(card.clone())));
             if self.control {
-                let expected = expected.clone();
-                let card = card.clone();
-                let asset = summary.info.asset.clone();
-                actions = actions.child(
-                    icon_button(
-                        theme,
-                        SharedString::from(format!("source-fork-{}", row.id)),
-                        Icon::Plus,
-                        "Secondary from this card",
-                    )
-                    .on_click(cx.listener(move |view, _, _, cx| {
-                        cx.stop_propagation();
-                        if view.source_action_current(&expected) {
-                            view.create(
-                                SessionKind::Secondary {
-                                    parent: Some(card.clone()),
-                                },
-                                asset.clone(),
-                            );
-                        }
-                    })),
-                );
+                actions.push(RowAction::new("fork", "Create Secondary from Card", Icon::Plus, SourceAction::Fork {
+                    expected: expected.clone(), card: card.clone(), asset: summary.info.asset.clone(),
+                }));
             }
         }
         if let Some(operation) = self.tile_with(summary) {
-            let expected = expected.clone();
-            let revision = self.workspace.revision;
-            actions = actions.child(
-                icon_button(
-                    theme,
-                    SharedString::from(format!("source-tile-{}", row.id)),
-                    Icon::SideBySide,
-                    "Show beside the current view",
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    cx.stop_propagation();
-                    if expected.resolve(&view.sessions).is_some()
-                        && view.workspace.revision == revision
-                    {
-                        view.send(Command::WorkspaceAt(operation.clone(), revision));
-                    }
-                })),
-            );
+            actions.push(RowAction::new("tile", "Show Beside the Current View", Icon::SideBySide, SourceAction::Tile {
+                expected: expected.clone(), revision: self.workspace.revision, operation,
+            }));
         }
         if self.control {
-            let primary = matches!(summary.info.kind, SessionKind::Primary { .. });
-            actions = actions.child(
-                icon_button(
-                    theme,
-                    SharedString::from(format!("source-stop-{}", row.id)),
-                    Icon::Close,
-                    if primary {
-                        "Stop (card data is kept)"
-                    } else {
-                        "Stop and discard"
-                    },
-                )
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    cx.stop_propagation();
-                    if view.source_action_current(&expected) {
-                        view.send(Command::Stop(expected.id.clone()));
-                    }
-                })),
+            let label = if matches!(summary.info.kind, SessionKind::Primary { .. }) {
+                "Stop (Card Data Is Kept)"
+            } else {
+                "Stop and Discard"
+            };
+            actions.push(RowAction::new("stop", label, Icon::Close, SourceAction::Stop(expected)));
+        }
+        actions
+    }
+
+    fn apply_source_action(&mut self, action: &SourceAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            SourceAction::Settings(card) if self.navigation.targets.contains_key(&crate::navigation::card_row(card)) => {
+                self.open_settings(crate::settings_window::Target::Card(card.clone()), cx);
+            }
+            SourceAction::Start(card) if self.control && matches!(
+                self.navigation.targets.get(&crate::navigation::card_row(card)),
+                Some(NavigationTarget::Card { primary: None, .. }),
+            ) => self.create(SessionKind::Primary { card: card.clone() }, None),
+            SourceAction::Fork { expected, card, asset } if self.source_action_current(expected) => {
+                self.create(SessionKind::Secondary { parent: Some(card.clone()) }, asset.clone());
+            }
+            SourceAction::Tile { expected, revision, operation }
+                if expected.resolve(&self.sessions).is_some() && self.workspace.revision == *revision =>
+            {
+                self.send(Command::WorkspaceAt(operation.clone(), *revision));
+            }
+            SourceAction::Stop(expected) if self.source_action_current(expected) => {
+                self.confirm_session_action(super::shared_commands::SessionCommand::Stop, expected.clone(), window, cx);
+            }
+            _ => {}
+        }
+    }
+
+    fn shared_source_actions(&self, row: &SourceRow, cx: &mut Context<Self>) -> AnyElement {
+        let mut container = div()
+            .debug_selector(|| format!("source-actions-{}", row.id))
+            .flex().flex_none().gap(px(2.0));
+        for action in self.source_actions(row) {
+            let id = SharedString::from(format!("source-{}-{}", action.key, row.id));
+            container = container.child(
+                Button::new(id, action.label)
+                    .style(ButtonStyle::Gradient)
+                    .size(ControlSize::Small)
+                    .icon(move |ink| icon(action.icon, 12.0, ink))
+                    .when(!self.has_confirmation(), |button| button.tooltip(action.label))
+                    .on_click(cx.listener(move |view, _: &ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        view.apply_source_action(&action.action, window, cx);
+                        cx.notify();
+                    })),
             );
         }
-        actions.into_any_element()
+        container.into_any_element()
     }
+
 }
 
 #[cfg(test)]
@@ -382,6 +373,21 @@ mod tests {
                 "navigation focus cannot press guest buttons"
             )
         });
+        // Stop from the row opens a sheet. Escape restores the row responder.
+        if cx.debug_bounds("sheet-cancel").is_some() {
+            cx.simulate_keystrokes("escape");
+            draw(cx);
+            assert!(cx.debug_bounds("sheet-cancel").is_none());
+        }
+        cx.simulate_mouse_down(copy.center(), MouseButton::Right, Modifiers::default());
+        cx.simulate_mouse_up(copy.center(), MouseButton::Right, Modifiers::default());
+        draw(cx);
+        cx.update(|_, cx| {
+            assert!(view.read(cx).shared_commands.menu.read(cx).is_open());
+            assert_eq!(view.read(cx).selected, "copy");
+        });
+        cx.simulate_keystrokes("escape");
+        draw(cx);
         let start = point(copy.left() + px(70.), copy.center().y);
         cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         cx.simulate_mouse_move(
