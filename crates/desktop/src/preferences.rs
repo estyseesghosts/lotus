@@ -7,7 +7,9 @@
 //! folder. Nothing here affects emulation profiles or guest state.
 //!
 //! A file that exists but does not parse is left untouched: the window uses
-//! defaults and does not save over it.
+//! defaults and does not save over it. Read failures other than a missing file
+//! also disable saving. Unknown fields survive saves during staged UI adoption
+//! (handbook 19, "Preference migration strategy").
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +64,9 @@ impl Default for Preferences {
 pub struct Store {
     pub path: Option<PathBuf>,
     pub values: Preferences,
+    // Keep outside Preferences: these are not editable registry descriptors.
+    // Known fields always come from the current typed values when saving.
+    original: serde_json::Map<String, serde_json::Value>,
 }
 
 #[must_use]
@@ -85,27 +90,47 @@ impl Store {
             return Self {
                 path: None,
                 values: Preferences::default(),
+                original: Default::default(),
             };
         };
         match std::fs::read(&path) {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(values) => Self {
+            Ok(bytes) => match Self::decode(&bytes) {
+                Ok((values, original)) => Self {
                     path: Some(path),
                     values,
+                    original,
                 },
                 Err(error) => {
                     tracing::warn!(path = %path.display(), %error, "ignoring unreadable desktop preferences");
                     Self {
                         path: None,
                         values: Preferences::default(),
+                        original: Default::default(),
                     }
                 }
             },
-            Err(_) => Self {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Self {
                 path: Some(path),
                 values: Preferences::default(),
+                original: Default::default(),
             },
+            Err(error) => {
+                tracing::warn!(path = %path.display(), %error, "cannot read desktop preferences; saving disabled");
+                Self {
+                    path: None,
+                    values: Preferences::default(),
+                    original: Default::default(),
+                }
+            }
         }
+    }
+
+    fn decode(
+        bytes: &[u8],
+    ) -> serde_json::Result<(Preferences, serde_json::Map<String, serde_json::Value>)> {
+        let original = serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(bytes)?;
+        let values = serde_json::from_value(serde_json::Value::Object(original.clone()))?;
+        Ok((values, original))
     }
 
     /// Write through a temporary file and rename, so a crash never leaves a
@@ -115,11 +140,15 @@ impl Store {
             return;
         };
         let result = (|| {
+            let mut document = self.original.clone();
+            if let serde_json::Value::Object(known) = serde_json::to_value(&self.values)? {
+                document.extend(known);
+            }
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
             }
             let temporary = path.with_extension("json.tmp");
-            std::fs::write(&temporary, serde_json::to_vec_pretty(&self.values)?)?;
+            std::fs::write(&temporary, serde_json::to_vec_pretty(&document)?)?;
             std::fs::rename(&temporary, path)
         })();
         if let Err(error) = result {
@@ -131,6 +160,90 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_directory(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("lotus-prefs-{}-{name}-{nonce}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn saves_known_edits_without_losing_future_ui_fields() {
+        let dir = test_directory("forward");
+        let path = dir.join("desktop.json");
+        let original = serde_json::json!({
+            "sessions_open": false,
+            "sessions_width": 333.0,
+            "inspector_width": 512.0,
+            "settings_bounds": [40.0, 60.0, 900.0, 700.0],
+            "schema_version": 7,
+            "appearance": {"family": "future", "extra": [1, null, {"a": true}]},
+            "future_null": null
+        });
+        std::fs::write(&path, serde_json::to_vec(&original).unwrap()).unwrap();
+        let mut store = Store::load(Some(path.clone()));
+        assert!(store.path.is_some());
+        assert_eq!(store.values.sessions_width, 333.0);
+        // Settings edits reconstruct the typed object; extras must survive that path.
+        let mut edited = serde_json::to_value(&store.values).unwrap();
+        edited["sessions_open"] = true.into();
+        store.values = serde_json::from_value(edited).unwrap();
+        store.save();
+        let first = std::fs::read(&path).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(saved["sessions_open"], true);
+        for key in [
+            "sessions_width",
+            "inspector_width",
+            "settings_bounds",
+            "schema_version",
+            "appearance",
+            "future_null",
+        ] {
+            assert_eq!(saved.get(key), original.get(key), "{key}");
+        }
+        Store::load(Some(path.clone())).save();
+        assert_eq!(std::fs::read(&path).unwrap(), first, "idempotent save");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn invalid_known_values_and_non_objects_are_never_overwritten() {
+        let dir = test_directory("invalid");
+        let path = dir.join("desktop.json");
+        for bytes in [
+            b"null".as_slice(),
+            b"[]".as_slice(),
+            br#"{"sessions_width":"bad","future":true}"#.as_slice(),
+        ] {
+            std::fs::write(&path, bytes).unwrap();
+            let store = Store::load(Some(path.clone()));
+            assert!(store.path.is_none());
+            store.save();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn io_read_failures_disable_saving() {
+        let dir = test_directory("io-error");
+        // Reading a directory as a file fails on Windows and Unix. It must not
+        // be treated as a new preferences file, even if the path later changes.
+        let store = Store::load(Some(dir.clone()));
+        assert!(store.path.is_none());
+        std::fs::remove_dir(&dir).unwrap();
+        store.save();
+        assert!(!dir.exists());
+        assert!(!dir.with_extension("json.tmp").exists());
+    }
 
     /// lotus#50: `lotus.desktop.*` descriptors carry these defaults and the layout bounds.
     #[test]

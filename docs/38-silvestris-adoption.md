@@ -133,3 +133,18 @@ production initialization still registers the bundled fonts.
 Native worker drag/drop, row-action execution against live sessions, long
 label/DPI visual review, expansion persistence, source-list context menus and
 the full shell/inspector cutover remain open. No Aqua default change occurs.
+
+## Preference compatibility safeguard
+
+Before adding the shell schema, the desktop store now retains unknown JSON
+fields across typed Settings edits and saves. Known values take precedence;
+nested future objects and explicit nulls survive unchanged. This implements
+the forward-compatibility policy in handbook 19, "Preference migration
+strategy", and prepares #138 without changing existing layout keys or defaults.
+Any read failure except NotFound disables saving, as malformed JSON already
+does. The registry still describes only editable known preferences.
+
+Tests cover future fields, saved widths/bounds, edits through the Settings
+serialization path, repeated-save idempotence, invalid known types, non-object
+JSON and an I/O read failure. The opt-in desktop suite passes 54 tests and
+all-target Clippy passes. Theme/pin/panel schema migration remains open.
