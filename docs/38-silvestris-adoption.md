@@ -340,7 +340,12 @@ the LotusCommands && !SilvestrisTextField context; the root is wrapped in a
 CommandScope, so a bound key dispatches the registry command before the
 root's key_down. Session commands are left out: their IDs change with each
 target, and Space/period are reserved keys key_down handles only while the
-window itself is focused. Load still opens the legacy asset popover.
+window itself is focused.
+
+Load Content reopens the shared PopupMenu with the host's approved assets
+(heading "Approved Content") and Open…. Each asset row is a command scoped to
+the target's id, creation time and epoch, removed when the target changes,
+and its handler rechecks control and the session before sending Load.
 The GPUI test actions_menu_shares_toolbar_commands_and_drops_a_replaced_target
 covers all four themes.
 

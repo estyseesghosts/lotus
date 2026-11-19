@@ -17,6 +17,10 @@ pub(super) struct SharedCommands {
     pub menu: Entity<PopupMenu>,
     target: Option<SessionTarget>,
     session_ids: Vec<CommandId>,
+    /// Per-open "load this asset" commands; replaced on each Load.
+    asset_ids: Vec<CommandId>,
+    /// Where the Actions menu last opened; Load reopens the menu there.
+    anchor: gpui::Point<gpui::Pixels>,
     bound: bool,
 }
 
@@ -95,7 +99,7 @@ impl SharedCommands {
         let menu = cx.new(|cx| PopupMenu::new(MenuModel { label: "Actions".into(), entries: Vec::new() }, registry.clone(), window, cx));
         // Menu state invalidation must repaint its mounted deferred overlay.
         cx.observe(&menu, |_, _, cx| cx.notify()).detach();
-        Self { registry, menu, target: None, session_ids: Vec::new(), bound: false }
+        Self { registry, menu, target: None, session_ids: Vec::new(), asset_ids: Vec::new(), anchor: gpui::Point::default(), bound: false }
     }
 }
 
@@ -110,14 +114,16 @@ impl LotusWindow {
             if menu.read(cx).is_open() {
                 menu.update(cx, |menu, cx| menu.dismiss(window, cx, true));
             }
-            for id in self.shared_commands.session_ids.drain(..) { registry.update(cx, |r, cx| r.remove(&id, cx)); }
+            for id in self.shared_commands.session_ids.drain(..).chain(self.shared_commands.asset_ids.drain(..)) {
+                registry.update(cx, |r, cx| r.remove(&id, cx));
+            }
             for command in SessionCommand::ALL {
                 let snapshot = target.clone();
                 let owner = cx.weak_entity();
                 let descriptor = command.descriptor(self, snapshot.as_ref());
                 self.shared_commands.session_ids.push(descriptor.id.clone());
-                registry.update(cx, |r, cx| r.register(descriptor, move |_, _, cx| {
-                    let _ = owner.update(cx, |view, cx| view.invoke_session(command, snapshot.as_ref(), cx));
+                registry.update(cx, |r, cx| r.register(descriptor, move |_, window, cx| {
+                    let _ = owner.update(cx, |view, cx| view.invoke_session(command, snapshot.as_ref(), window, cx));
                 }, cx).expect("unique scoped session command"));
             }
             self.shared_commands.target = target.clone();
@@ -168,7 +174,7 @@ impl LotusWindow {
         cx.notify();
     }
 
-    fn invoke_session(&mut self, command: SessionCommand, target: Option<&SessionTarget>, cx: &mut Context<Self>) {
+    fn invoke_session(&mut self, command: SessionCommand, target: Option<&SessionTarget>, window: &mut Window, cx: &mut Context<Self>) {
         if !command.descriptor(self, target).enabled { return; }
         let Some(target) = target else { return; };
         let Some(summary) = target.resolve(&self.sessions) else { return; };
@@ -179,7 +185,7 @@ impl LotusWindow {
         match command {
             SessionCommand::Run => self.send(if playing { Command::Pause(id) } else { Command::Play(id) }),
             SessionCommand::Step => self.send(Command::Step(id)),
-            SessionCommand::Load => self.menu = Menu::Load,
+            SessionCommand::Load => self.open_load_menu(target.clone(), window, cx),
             SessionCommand::Reset => self.send(Command::Reset(id)),
             SessionCommand::Stop => self.send(Command::Stop(id)),
         }
@@ -205,7 +211,62 @@ impl LotusWindow {
         ] };
         let metrics = &cx.theme().metrics;
         let position = gpui::point(event.position().x, px(metrics.titlebar_height + metrics.toolbar_height));
+        self.shared_commands.anchor = position;
         self.shared_commands.menu.update(cx, |menu, cx| { menu.set_model(model, window, cx); menu.open(position, window, cx); });
+    }
+}
+
+impl LotusWindow {
+    /// Load Content: the host's approved assets, then Open… (replaces the
+    /// legacy load popover). Each asset is a command scoped to `target`, so a
+    /// menu left open across a reset cannot load into the new guest.
+    fn open_load_menu(&mut self, target: SessionTarget, window: &mut Window, cx: &mut Context<Self>) {
+        let registry = self.shared_commands.registry.clone();
+        for id in self.shared_commands.asset_ids.drain(..) {
+            registry.update(cx, |r, cx| r.remove(&id, cx));
+        }
+        let mut entries = vec![MenuEntry::Heading("Approved Content".into())];
+        let scope = format!("{}:{}:{}:{}", target.id.len(), target.id, target.created_unix_ms, target.epoch);
+        if self.assets.is_empty() {
+            let id = CommandId::new(format!("session.load-none.{scope}"));
+            registry.update(cx, |r, cx| {
+                r.register(CommandDescriptor::action(id.as_str(), "None Configured for This Host").enabled(false), |_, _, _| {}, cx)
+                    .expect("unique asset placeholder")
+            });
+            self.shared_commands.asset_ids.push(id.clone());
+            entries.push(MenuEntry::Command(id));
+        }
+        for (index, asset) in self.assets.iter().enumerate() {
+            let id = CommandId::new(format!("session.load-asset.{index}.{scope}"));
+            let label = session_tree::asset_label(asset);
+            let (owner, target, asset) = (cx.weak_entity(), target.clone(), asset.clone());
+            registry.update(cx, |r, cx| {
+                r.register(
+                    CommandDescriptor::action(id.as_str(), &label).tooltip(&asset).enabled(self.control),
+                    move |_, _, cx| {
+                        let _ = owner.update(cx, |view, cx| {
+                            // Revalidate: the session must still be this target.
+                            if view.control && target.resolve(&view.sessions).is_some() {
+                                view.send(Command::Load { session: target.id.clone(), asset: asset.clone() });
+                            }
+                            cx.notify();
+                        });
+                    },
+                    cx,
+                )
+                .expect("unique asset command")
+            });
+            self.shared_commands.asset_ids.push(id.clone());
+            entries.push(MenuEntry::Command(id));
+        }
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::Command(GlobalCommand::Open.id().into()));
+        let model = MenuModel { label: "Load Content".into(), entries };
+        let position = self.shared_commands.anchor;
+        self.shared_commands.menu.update(cx, |menu, cx| {
+            menu.set_model(model, window, cx);
+            menu.open(position, window, cx);
+        });
     }
 }
 
@@ -280,5 +341,55 @@ mod tests {
                 assert!(registry.read(cx).descriptors().get(&fresh).unwrap().enabled);
             });
         }
+    }
+
+    #[test]
+    fn load_opens_the_shared_menu_with_target_scoped_assets() {
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(
+                silvestris::ThemePreference::explicit(silvestris::ThemeId::AQUA_LIGHT),
+                cx,
+            )
+        });
+        let (view, cx) = app.add_window_view(|window, cx| {
+            let mut view = LotusWindow::test_preview(window, cx);
+            view.sessions = vec![session("a", 1)];
+            view.selected = "a".into();
+            view.control = true;
+            view.assets = vec!["one.3ds".into(), "two.3ds".into()];
+            view
+        });
+        cx.simulate_resize(gpui::size(px(1280.), px(880.)));
+        draw(cx);
+        let (registry, menu, load) = cx.update(|_, cx| {
+            let view = view.read(cx);
+            (view.shared_commands.registry.clone(), view.shared_commands.menu.clone(),
+                view.session_command_id(SessionCommand::Load))
+        });
+        cx.update(|window, cx| {
+            assert_eq!(CommandRegistry::invoke(&registry, &load, window, cx), Invocation::Dispatched);
+        });
+        draw(cx);
+        let assets = cx.update(|_, cx| {
+            assert!(menu.read(cx).is_open());
+            assert_eq!(view.read(cx).menu, Menu::Closed, "no legacy popover");
+            view.read(cx).shared_commands.asset_ids.clone()
+        });
+        assert_eq!(assets.len(), 2);
+        cx.update(|_, cx| {
+            let d = registry.read(cx).descriptors().get(&assets[0]).cloned().unwrap();
+            assert!(d.enabled);
+        });
+        // A reset replaces the target; its asset commands disappear with it.
+        cx.update(|_, cx| view.update(cx, |view, cx| {
+            view.sessions = vec![session("a", 2)];
+            cx.notify();
+        }));
+        draw(cx);
+        cx.update(|window, cx| {
+            assert!(!menu.read(cx).is_open());
+            assert_eq!(CommandRegistry::invoke(&registry, &assets[0], window, cx), Invocation::Missing);
+        });
     }
 }
