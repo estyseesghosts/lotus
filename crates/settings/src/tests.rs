@@ -317,6 +317,11 @@ fn input_bindings_are_validated_by_the_layout_parser() {
         json!([{"device": "wheel"}]),
         json!([{"device": "button", "button": "paddle"}]),
         json!(vec![json!({"device": "keyboard", "key": "z"}); 9]),
+        json!([{"device": "keyboard", "key": "space"}]),
+        json!([{"device": "keyboard", "key": "z"}, {"device": "keyboard", "key": "."}]),
+        json!([{"device": "keyboard", "key": "tab"}]),
+        json!([{"device": "keyboard", "key": "escape"}]),
+        json!([{"device": "keyboard", "key": "control"}]),
     ] {
         assert!(
             r.validate("lotus.input.bind.a", &bad, Scope::Global, None)

@@ -164,6 +164,12 @@ pub enum Problem {
     MissingPreset(String),
     /// A stored binding value that is not a list; ignored, so the layer below applies.
     NotAList { action: Action, value: Value },
+    /// A keyboard key the desktop never delivers to a session ([`reserved_key`]); ignored.
+    ReservedKey {
+        action: Action,
+        key: String,
+        reason: &'static str,
+    },
 }
 
 impl std::fmt::Display for Problem {
@@ -184,8 +190,45 @@ impl std::fmt::Display for Problem {
                     action.id()
                 )
             }
+            Problem::ReservedKey {
+                action,
+                key,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "{}: key '{key}' is reserved ({reason}), ignored",
+                    action.id()
+                )
+            }
         }
     }
+}
+
+/// Keyboard keys the desktop window consumes before the session's layout sees them, with
+/// what they do instead. `LotusWindow::key_down` handles the first four itself. GPUI reports
+/// the modifiers as `ModifiersChanged`, never as a key down (`gpui_windows` `events.rs`
+/// `handle_key_event`; names from `keystroke.rs` `is_modifier_key`). Any key pressed with
+/// Ctrl held is a desktop shortcut and never reaches a session either.
+pub const RESERVED_KEYS: &[(&str, &str)] = &[
+    ("space", "run/pause"),
+    (".", "step one frame"),
+    ("tab", "moves focus"),
+    ("escape", "closes menus and refocuses the screen"),
+    ("shift", "modifier"),
+    ("control", "modifier"),
+    ("alt", "modifier"),
+    ("platform", "modifier"),
+    ("function", "modifier"),
+];
+
+/// What a reserved key does instead of reaching a session, or `None` for a game key.
+#[must_use]
+pub fn reserved_key(key: &str) -> Option<&'static str> {
+    RESERVED_KEYS
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, reason)| *reason)
 }
 
 /// Why a preset file cannot be loaded at all.
@@ -394,6 +437,13 @@ pub fn parse_list(action: Action, value: &Value) -> Result<(Vec<Binding>, Vec<Pr
     let mut parsed = Vec::new();
     for binding in list {
         match serde_json::from_value::<Binding>(binding.clone()) {
+            Ok(Binding::Keyboard { key }) if reserved_key(&key).is_some() => {
+                problems.push(Problem::ReservedKey {
+                    action,
+                    reason: reserved_key(&key).unwrap_or_default(),
+                    key,
+                });
+            }
             Ok(b) if !parsed.contains(&b) => parsed.push(b),
             Ok(_) => {}
             Err(_) => problems.push(Problem::InvalidBinding {
@@ -1021,6 +1071,43 @@ mod tests {
                 ..
             }]
         ));
+    }
+
+    #[test]
+    fn reserved_keys_are_refused_and_game_keys_kept() {
+        for (name, _) in RESERVED_KEYS {
+            let value = serde_json::json!([{"device":"keyboard","key":name}, {"device":"keyboard","key":"z"}]);
+            let (list, problems) = parse_list(Action::A, &value).unwrap();
+            assert_eq!(list, vec![key("z")], "{name}");
+            assert!(
+                matches!(problems.as_slice(), [Problem::ReservedKey { action: Action::A, key, .. }] if key == name),
+                "{name}"
+            );
+        }
+        let json =
+            r#"{"version":1,"name":"n","bindings":{"a":[{"device":"keyboard","key":"space"}]}}"#;
+        let (preset, problems) = Preset::import(json).unwrap();
+        assert_eq!(preset.bindings[&Action::A], vec![]);
+        assert!(problems.iter().any(|p| matches!(
+            p,
+            Problem::ReservedKey {
+                action: Action::A,
+                ..
+            }
+        )));
+    }
+
+    #[test]
+    fn builtins_bind_no_reserved_key() {
+        for preset in builtins() {
+            for list in preset.bindings.values() {
+                for b in list {
+                    if let Binding::Keyboard { key } = b {
+                        assert_eq!(reserved_key(key), None, "{}: {key}", preset.name);
+                    }
+                }
+            }
+        }
     }
 
     /// A pad's state for [`Mapping::controller`].

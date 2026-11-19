@@ -19,6 +19,9 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
   builtin preset reproduces the shipped keys (#57).
 - Preset import refuses binding values of the wrong JSON type instead of
   unbinding the action, and returns what it dropped as `warnings` (#114).
+- Space, `.`, Tab, Esc and modifier keys can no longer be bound to 3DS
+  actions: settings reject them and import drops them with a warning. Holding
+  Space or `.` no longer leaks the key to the session as a game key (#113).
 - Settings window (#53): one non-modal window (gear, Ctrl+, or a card's gear)
   editing global and per-card settings from the registry with their sources,
   and the desktop preferences it replaces the popover with. Text, list and

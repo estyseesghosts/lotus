@@ -770,6 +770,13 @@ and the desktop applies it to running sessions. The editor is #64.
   a known action whose value is not a list (`null`, `{}`, a string…) refuses
   the file (#114): only `[]` unbinds. A stored `lotus.input.bind.*` value that
   is not a list is reported and skipped, so the layer below applies.
+- **Reserved keys** (#113). Desktop shortcuts are fixed. The keys the window
+  consumes (`space`, `.`, `tab`, `escape`) and the modifiers (`shift`,
+  `control`, `alt`, `platform`, `function`, which GPUI never reports as a key
+  press) cannot be bound: `layout::RESERVED_KEYS` drives both `key_down` and
+  `parse_list`, so a settings value using one is rejected and import drops it
+  with a warning. Keys pressed while Ctrl is held are shortcuts and never reach
+  a session; releases always do, so a held key cannot stick.
 - **Builtin presets** (read-only). `default` reproduces the shipped controls:
   the keyboard table under Window, and for controllers `default_button`, both
   sticks, and the trigger axes `left_z`/`right_z` as ZL/ZR past the threshold.

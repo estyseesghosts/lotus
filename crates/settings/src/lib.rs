@@ -378,6 +378,16 @@ impl Descriptor {
                 let problems =
                     lotus_input::layout::parse_list(lotus_input::layout::Action::A, value)
                         .map_or_else(|p| vec![p], |(_, problems)| problems);
+                if let Some((key, reason)) = problems.iter().find_map(|p| match p {
+                    lotus_input::layout::Problem::ReservedKey { key, reason, .. } => {
+                        Some((key, reason))
+                    }
+                    _ => None,
+                }) {
+                    return Err(invalid(format!(
+                        "key '{key}' is reserved by the desktop ({reason})"
+                    )));
+                }
                 if !problems.is_empty() {
                     return Err(invalid(format!(
                         "{} binding(s) this build cannot read",

@@ -827,9 +827,12 @@ impl LotusWindow {
         if !self.focus.is_focused(window) {
             return;
         }
+        // Keys handled here are `lotus_input::layout::RESERVED_KEYS`, which bindings may
+        // not use; a held repeat of one must not reach the session either.
         match key {
             "space" if !event.is_held => self.toggle_run(),
             "." if !event.is_held => self.step(),
+            key if lotus_input::layout::reserved_key(key).is_some() => {}
             key => self.button(key, true),
         }
     }

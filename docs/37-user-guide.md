@@ -304,7 +304,9 @@ names the window reports (`z`, `enter`, `up`); controller buttons and axes use
 positions (`south`, `east`, `left_x` with `direction` `positive` or
 `negative`). Saved presets are managed with `lotus_input_presets` (MCP). An import whose
 binding values are not lists is refused; entries this build cannot read are
-dropped and listed in the reply's `warnings`.
+dropped and listed in the reply's `warnings`. Space, `.`, Tab, Esc and the
+modifier keys belong to the window and cannot be bound, and game keys do not
+register while Ctrl is held.
 Details: [30](30-sessions-and-interface.md#input-layouts-57-63).
 
 ### Window preferences (`desktop.json`)
