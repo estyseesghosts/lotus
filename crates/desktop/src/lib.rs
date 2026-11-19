@@ -19,3 +19,5 @@ pub mod settings_window;
 pub mod theme;
 pub mod tiling;
 pub mod ui_metrics;
+#[cfg(feature = "silvestris-ui")]
+pub mod ui_framework;

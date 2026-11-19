@@ -524,16 +524,27 @@ impl SettingsWindow {
             }
         }
         if overridden && editable.is_ok() {
-            controls = controls.child(
-                small_button(
-                    format!("reset-{key}"),
-                    Icon::Reset,
-                    reset_label(&self.target, descriptor),
-                )
-                .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-                    view.write(descriptor, None, cx);
-                })),
-            );
+            #[cfg(feature = "silvestris-ui")]
+            let reset = silvestris::controls::Button::new(
+                SharedString::from(format!("reset-{key}")),
+                reset_label(&self.target, descriptor),
+            )
+            .size(silvestris::controls::ControlSize::Small)
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.write(descriptor, None, cx);
+            }))
+            .into_any_element();
+            #[cfg(not(feature = "silvestris-ui"))]
+            let reset = small_button(
+                format!("reset-{key}"),
+                Icon::Reset,
+                reset_label(&self.target, descriptor),
+            )
+            .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                view.write(descriptor, None, cx);
+            }))
+            .into_any_element();
+            controls = controls.child(reset);
         }
         div()
             .id(SharedString::from(format!("row-{key}")))
@@ -619,6 +630,7 @@ impl Render for SettingsWindow {
             .bg(theme::background())
             .text_color(theme::text())
             .text_sm()
+            .when(cfg!(feature = "silvestris-ui"), |root| root.font_family(theme::FONT))
             .child(self.render_nav(cx))
             .child(
                 div()
@@ -878,7 +890,11 @@ fn value_text(text: String) -> impl IntoElement {
         .max_w(px(220.0))
         .truncate()
         .text_xs()
-        .font_family("monospace")
+        .font_family(if cfg!(feature = "silvestris-ui") {
+            theme::MONO
+        } else {
+            "monospace"
+        })
         .text_color(theme::text_secondary())
         .child(text)
 }

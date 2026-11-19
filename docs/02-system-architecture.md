@@ -89,3 +89,8 @@ ROMs, saves, NAND and firmware are untrusted binaries/data, sometimes personal. 
 ## Dependency policy
 
 The Rust workspace and native Azahar build are independently locked. One script resolves pinned `integration` commit, compiler, CMake generator, CMake flags, GPUI Git SHA and Rust version; a manifest reports them all. The worker protocol version is independent of the C++ commit and must be tested for compatibility at handshake.
+
+The desktop-only, opt-in Silvestris adapter is mapped in
+[38](38-silvestris-adoption.md): ui_framework.rs initializes the shared theme
+and fonts, theme.rs selects bundled font roles, and settings_window.rs mounts
+the first shared control. The controller/worker boundary above is unchanged.

@@ -47,6 +47,12 @@ pub fn error() -> Rgba {
 }
 
 /// UI text face; Geist is not assumed to be installed.
+#[cfg(not(feature = "silvestris-ui"))]
 pub const FONT: &str = "Segoe UI";
+#[cfg(feature = "silvestris-ui")]
+pub const FONT: &str = silvestris::core::fonts::INTER;
 /// Figures, addresses and identifiers.
+#[cfg(not(feature = "silvestris-ui"))]
 pub const MONO: &str = "Consolas";
+#[cfg(feature = "silvestris-ui")]
+pub const MONO: &str = silvestris::core::fonts::GEIST_MONO;

@@ -35,3 +35,8 @@ crate_version = "0.2.2"
 channel = "1.98.1"
 # Host triple the toolchain was installed for.
 host = "x86_64-pc-windows-gnu"
+
+[silvestris]
+# Local development checkout until independent publication/packaging is ready.
+path = "../../silvestris"
+rev = "4c0d6570b2223d54993fb128751f154b3585af90"

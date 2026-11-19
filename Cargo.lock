@@ -3013,6 +3013,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "silvestris",
  "tokio",
  "tracing",
  "windows 0.62.2",
@@ -4990,6 +4991,36 @@ dependencies = [
  "errno",
  "libc",
 ]
+
+[[package]]
+name = "silvestris"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "image",
+ "log",
+ "raw-window-handle",
+ "serde",
+ "serde_json",
+ "silvestris-core",
+ "silvestris-fonts",
+ "smallvec",
+ "unicode-segmentation",
+ "windows 0.62.2",
+]
+
+[[package]]
+name = "silvestris-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "silvestris-fonts"
+version = "0.1.0"
 
 [[package]]
 name = "simd-adler32"
