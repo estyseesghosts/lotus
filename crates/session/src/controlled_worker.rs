@@ -77,7 +77,7 @@ impl ControlledWorker {
             .read(true)
             .write(true)
             .open(spec.storage_root.join("worker.lock"))?;
-        root_lock.try_lock().map_err(io::Error::other)?;
+        crate::root_lock::try_lock(&root_lock).map_err(io::Error::other)?;
         let stderr = File::create(spec.storage_root.join("worker.stderr.log"))?;
         let mut command = Command::new(&spec.executable);
         command

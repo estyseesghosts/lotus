@@ -180,7 +180,7 @@ fn is_locked(root: &Path) -> io::Result<bool> {
         return Ok(false);
     }
     let file = File::options().read(true).write(true).open(path)?;
-    match file.try_lock() {
+    match crate::root_lock::try_lock(&file) {
         Ok(()) => Ok(false),
         Err(fs::TryLockError::WouldBlock) => Ok(true),
         Err(fs::TryLockError::Error(error)) => Err(error),

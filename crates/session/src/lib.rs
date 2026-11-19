@@ -15,6 +15,7 @@ pub mod preview_ring;
 #[cfg(windows)]
 mod process_job;
 mod process_memory;
+mod root_lock;
 pub mod settings_store;
 mod shader_seed;
 pub mod storage;
