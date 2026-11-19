@@ -14,9 +14,8 @@ if ($LASTEXITCODE -ne 0 -or !$branch -or $branch -in @('main', 'master')) {
 }
 Import-Module (Join-Path $PSScriptRoot 'Pins.psm1') -Force
 $pins = Read-Pins -Path (Join-Path $lotusRoot 'config/pins.toml')
-$sourceRoot = (Resolve-Path -LiteralPath (Join-Path $lotusRoot $pins.silvestris.path)).Path
 & (Join-Path $PSScriptRoot 'verify-silvestris.ps1')
-$buildRoot = Join-Path $sourceRoot 'target'
+$buildRoot = Join-Path $lotusRoot 'target'
 $previewRoot = Join-Path $buildRoot 'lotus-preview'
 $previewExe = Join-Path $previewRoot 'lotus-desktop-preview.exe'
 $statePath = Join-Path $previewRoot 'process.json'
@@ -47,7 +46,7 @@ if (Test-Path -LiteralPath $statePath) {
 if (!$NoBuild) {
     Push-Location $lotusRoot
     try {
-        & cargo '+1.98.1-x86_64-pc-windows-gnu' build -p lotus-desktop --bin lotus-desktop --features silvestris-ui --offline --locked --target-dir $buildRoot
+        & cargo "+$($pins.rust.channel)-$($pins.rust.host)" build -p lotus-desktop --bin lotus-desktop --offline --locked --target-dir $buildRoot
         if ($LASTEXITCODE -ne 0) { throw 'Lotus preview build failed' }
     } finally { Pop-Location }
 }

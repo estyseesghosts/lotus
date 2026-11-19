@@ -128,25 +128,25 @@ pub fn open(
     };
     #[cfg(not(feature = "silvestris-ui"))]
     let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            titlebar: Some(TitlebarOptions {
-                title: Some("LOTUS Settings".into()),
-                ..Default::default()
-            }),
-            window_min_size: Some(gpui::size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
+        window_bounds: Some(WindowBounds::Windowed(bounds)),
+        titlebar: Some(TitlebarOptions {
+            title: Some("LOTUS Settings".into()),
             ..Default::default()
-        };
+        }),
+        window_min_size: Some(gpui::size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
+        ..Default::default()
+    };
     let build = |window: &mut Window, cx: &mut App| {
-            cx.new(|cx| {
-                let view = SettingsWindow::new(lotus.clone(), host, control, target, window, cx);
-                let remember = lotus.clone();
-                window.on_window_should_close(cx, move |window, cx| {
-                    closing(&remember, window, cx);
-                    true
-                });
-                view
-            })
-        };
+        cx.new(|cx| {
+            let view = SettingsWindow::new(lotus.clone(), host, control, target, window, cx);
+            let remember = lotus.clone();
+            window.on_window_should_close(cx, move |window, cx| {
+                closing(&remember, window, cx);
+                true
+            });
+            view
+        })
+    };
     #[cfg(feature = "silvestris-ui")]
     let opened = silvestris::chrome::open_window(options, cx, build);
     #[cfg(not(feature = "silvestris-ui"))]
@@ -491,18 +491,26 @@ impl SettingsWindow {
                 let on = value.as_bool().unwrap_or(false);
                 #[cfg(feature = "silvestris-ui")]
                 let toggle = silvestris::controls::Checkbox::new(
-                    SharedString::from(format!("toggle-{key}")), descriptor.label.clone(),
-                ).checked(on).show_label(false).on_change(
-                    cx.listener(move |view, state: &silvestris::controls::CheckState, _, cx| {
-                        view.write(descriptor, Some(Value::Bool(*state == silvestris::controls::CheckState::On)), cx);
-                    }),
-                );
+                    SharedString::from(format!("toggle-{key}")),
+                    descriptor.label.clone(),
+                )
+                .checked(on)
+                .show_label(false)
+                .on_change(cx.listener(
+                    move |view, state: &silvestris::controls::CheckState, _, cx| {
+                        view.write(
+                            descriptor,
+                            Some(Value::Bool(*state == silvestris::controls::CheckState::On)),
+                            cx,
+                        );
+                    },
+                ));
                 #[cfg(not(feature = "silvestris-ui"))]
-                let toggle = toggle(theme, format!("toggle-{key}"), on).on_click(
-                    cx.listener(move |view, _: &ClickEvent, _, cx| {
+                let toggle = toggle(theme, format!("toggle-{key}"), on).on_click(cx.listener(
+                    move |view, _: &ClickEvent, _, cx| {
                         view.write(descriptor, Some(Value::Bool(!on)), cx);
-                    }),
-                );
+                    },
+                ));
                 controls = controls.child(toggle);
             }
             (kind, Ok(())) if choices(kind).is_some() => {
@@ -568,13 +576,24 @@ impl SettingsWindow {
                 #[cfg(feature = "silvestris-ui")]
                 let value = if descriptor.kind == Kind::Boolean {
                     silvestris::controls::Checkbox::new(
-                        SharedString::from(format!("toggle-{key}")), descriptor.label.clone(),
-                    ).checked(value.as_bool().unwrap_or(false)).show_label(false).disabled(true).into_any_element()
+                        SharedString::from(format!("toggle-{key}")),
+                        descriptor.label.clone(),
+                    )
+                    .checked(value.as_bool().unwrap_or(false))
+                    .show_label(false)
+                    .disabled(true)
+                    .into_any_element()
                 } else {
-                    div().opacity(0.6).child(value_text(theme, display(&value))).into_any_element()
+                    div()
+                        .opacity(0.6)
+                        .child(value_text(theme, display(&value)))
+                        .into_any_element()
                 };
                 #[cfg(not(feature = "silvestris-ui"))]
-                let value = div().opacity(0.6).child(value_text(theme, display(&value))).into_any_element();
+                let value = div()
+                    .opacity(0.6)
+                    .child(value_text(theme, display(&value)))
+                    .into_any_element();
                 controls = controls.child(with_tooltip(
                     div()
                         .id(SharedString::from(format!("locked-{key}")))
@@ -1018,43 +1037,73 @@ mod tests {
         }
         impl Render for Row {
             fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                let row = self.settings.update(cx, |settings, cx| settings.form_row(self.descriptor, window, cx));
+                let row = self.settings.update(cx, |settings, cx| {
+                    settings.form_row(self.descriptor, window, cx)
+                });
                 silvestris::preferences::Form::new(200.0).row(row)
             }
         }
         fn draw(cx: &mut VisualTestContext) {
             cx.run_until_parked();
-            cx.update(|window, cx| { window.draw(cx).clear(cx); });
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
         }
         for theme in ThemeId::ALL {
             let mut app = TestAppContext::single();
-            app.update(|cx| silvestris::test_support::initialize(ThemePreference::explicit(theme), cx));
+            app.update(|cx| {
+                silvestris::test_support::initialize(ThemePreference::explicit(theme), cx)
+            });
             let (main, _) = app.add_window_view(LotusWindow::test_preview);
             let key = "lotus.desktop.sessions_open";
-            let descriptor = Registry::builtin().descriptors().iter().find(|d| d.key == key).unwrap();
+            let descriptor = Registry::builtin()
+                .descriptors()
+                .iter()
+                .find(|d| d.key == key)
+                .unwrap();
             let (row, cx) = app.add_window_view(|window, cx| Row {
-                settings: cx.new(|cx| SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx)),
+                settings: cx.new(|cx| {
+                    SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx)
+                }),
                 descriptor,
             });
             draw(cx);
-            let checkbox = cx.debug_bounds("toggle-lotus.desktop.sessions_open").unwrap();
+            let checkbox = cx
+                .debug_bounds("toggle-lotus.desktop.sessions_open")
+                .unwrap();
             cx.simulate_click(checkbox.center(), Modifiers::default());
             draw(cx);
             cx.update(|_, cx| {
                 assert_eq!(main.read(cx).preference(key), Value::Bool(false));
-                assert_eq!(main.read(cx).preference("lotus.desktop.inspector_open"), Value::Bool(false));
+                assert_eq!(
+                    main.read(cx).preference("lotus.desktop.inspector_open"),
+                    Value::Bool(false)
+                );
             });
             cx.simulate_keystrokes("space");
-            cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("space").unwrap() });
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("space").unwrap(),
+            });
             draw(cx);
             cx.update(|_, cx| assert_eq!(main.read(cx).preference(key), Value::Bool(true)));
-            let locked = Registry::builtin().descriptors().iter().find(|d| d.key == "use_hw_shader").unwrap();
-            cx.update(|_, cx| row.update(cx, |row, cx| { row.descriptor = locked; cx.notify(); }));
+            let locked = Registry::builtin()
+                .descriptors()
+                .iter()
+                .find(|d| d.key == "use_hw_shader")
+                .unwrap();
+            cx.update(|_, cx| {
+                row.update(cx, |row, cx| {
+                    row.descriptor = locked;
+                    cx.notify();
+                })
+            });
             draw(cx);
             let checkbox = cx.debug_bounds("toggle-use_hw_shader").unwrap();
             cx.simulate_click(checkbox.center(), Modifiers::default());
             cx.simulate_keystrokes("space");
-            cx.simulate_event(gpui::KeyUpEvent { keystroke: gpui::Keystroke::parse("space").unwrap() });
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("space").unwrap(),
+            });
             draw(cx);
             cx.update(|window, cx| {
                 assert!(window.focused(cx).is_none());
@@ -1088,7 +1137,9 @@ mod tests {
         });
         draw(cx);
         // Opens on the overview (HIG p. 244); its General icon shows the pane.
-        let general = cx.debug_bounds("preference-pane-general").expect("overview icon");
+        let general = cx
+            .debug_bounds("preference-pane-general")
+            .expect("overview icon");
         cx.simulate_click(general.center(), Modifiers::default());
         draw(cx);
         let mut main_cx = VisualTestContext::from_window(main_handle, &cx.cx);
@@ -1118,8 +1169,14 @@ mod tests {
             });
             let bounds = main_cx.debug_bounds("shell-workspace").unwrap();
             let metrics = silvestris::core::theme(expected).metrics;
-            assert_eq!((bounds.left(), bounds.size.width), (workspace.left(), workspace.size.width));
-            assert_eq!(bounds.top(), px(metrics.titlebar_height + metrics.toolbar_height));
+            assert_eq!(
+                (bounds.left(), bounds.size.width),
+                (workspace.left(), workspace.size.width)
+            );
+            assert_eq!(
+                bounds.top(),
+                px(metrics.titlebar_height + metrics.toolbar_height)
+            );
             assert_eq!(bounds.bottom(), px(880. - metrics.bottom_bar_height));
             assert!(cx.debug_bounds("appearance-style").is_some());
         }

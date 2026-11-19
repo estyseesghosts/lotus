@@ -7,7 +7,7 @@ use std::sync::{Arc, LazyLock};
 
 use gpui::{AnyElement, Entity, Focusable, ImageFormat, Pixels, StatefulInteractiveElement};
 use silvestris::controls::{
-    Button, Checkbox, CheckState, ControlSize, PopUpButton, Segment, SegmentedControl, Stepper,
+    Button, CheckState, Checkbox, ControlSize, PopUpButton, Segment, SegmentedControl, Stepper,
     TextField, TextFieldEvent,
 };
 use silvestris::preferences::{
@@ -55,19 +55,30 @@ fn fit_size(delta: gpui::Size<Pixels>, window: &mut Window, cx: &mut App) -> boo
         let outer = window.bounds();
         let visible = display.visible_bounds().size;
         let chrome = outer.size - viewport;
-        width = width.min(visible.width * MAX_SCREEN_FRACTION - chrome.width).max(px(prefs::WINDOW_WIDTH));
+        width = width
+            .min(visible.width * MAX_SCREEN_FRACTION - chrome.width)
+            .max(px(prefs::WINDOW_WIDTH));
         height = height.min(visible.height * MAX_SCREEN_FRACTION - chrome.height);
     }
     if (width - viewport.width).abs() < px(1.0) && (height - viewport.height).abs() < px(1.0) {
         return true;
     }
-    window.defer(cx, move |window, _| window.resize(gpui::size(width, height)));
+    window.defer(cx, move |window, _| {
+        window.resize(gpui::size(width, height))
+    });
     false
 }
 
 /// Apply `fit_size` only while a navigation or tab switch is pending.
-fn fit_pending(this: &gpui::WeakEntity<SettingsWindow>, delta: gpui::Size<Pixels>, window: &mut Window, cx: &mut App) {
-    let Ok(true) = this.read_with(cx, |view, _| view.prefs.fit_pending) else { return };
+fn fit_pending(
+    this: &gpui::WeakEntity<SettingsWindow>,
+    delta: gpui::Size<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Ok(true) = this.read_with(cx, |view, _| view.prefs.fit_pending) else {
+        return;
+    };
     if fit_size(delta, window, cx) {
         let _ = this.update(cx, |view, _| view.prefs.fit_pending = false);
     }
@@ -109,12 +120,27 @@ fn group_icon(group: Group) -> Arc<gpui::Image> {
 
 /// Overview bands, like System Preferences' Personal/Hardware/… rows.
 const BANDS: [(&str, &[Group]); 3] = [
-    ("Lotus", &[Group::General, Group::SessionsStorage, Group::Discord]),
+    (
+        "Lotus",
+        &[Group::General, Group::SessionsStorage, Group::Discord],
+    ),
     (
         "Emulation",
-        &[Group::Emulation, Group::GraphicsDisplay, Group::AudioDevices, Group::Controls],
+        &[
+            Group::Emulation,
+            Group::GraphicsDisplay,
+            Group::AudioDevices,
+            Group::Controls,
+        ],
     ),
-    ("Development", &[Group::DebuggingTracing, Group::McpAutomation, Group::Advanced]),
+    (
+        "Development",
+        &[
+            Group::DebuggingTracing,
+            Group::McpAutomation,
+            Group::Advanced,
+        ],
+    ),
 ];
 
 #[derive(Default)]
@@ -219,31 +245,48 @@ impl SettingsWindow {
     }
 
     fn search_field(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<TextField> {
-        self.prefs.search.get_or_insert_with(|| {
-            let field = cx.new(|cx| {
-                let mut field = TextField::new(window, cx);
-                field.set_label("Search Settings", cx);
-                field.set_placeholder("Search Settings", cx);
-                field.set_size(ControlSize::Small, cx);
-                field.set_search(true, cx);
+        self.prefs
+            .search
+            .get_or_insert_with(|| {
+                let field = cx.new(|cx| {
+                    let mut field = TextField::new(window, cx);
+                    field.set_label("Search Settings", cx);
+                    field.set_placeholder("Search Settings", cx);
+                    field.set_size(ControlSize::Small, cx);
+                    field.set_search(true, cx);
+                    field
+                });
+                cx.subscribe(&field, |_, _, event, cx| {
+                    if matches!(event, TextFieldEvent::Changed) {
+                        cx.notify();
+                    }
+                })
+                .detach();
                 field
-            });
-            cx.subscribe(&field, |_, _, event, cx| {
-                if matches!(event, TextFieldEvent::Changed) {
-                    cx.notify();
-                }
-            }).detach();
-            field
-        }).clone()
+            })
+            .clone()
     }
 
-    fn render_search(&mut self, query: &str, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_search(
+        &mut self,
+        query: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let words: Vec<_> = query.split_whitespace().collect();
-        let rows: Vec<_> = BANDS.iter()
+        let rows: Vec<_> = BANDS
+            .iter()
             .flat_map(|(_, groups)| groups.iter().copied())
             .flat_map(|group| self.rows(group))
             .filter(|setting| {
-                let haystack = format!("{} {} {} {}", setting.key, setting.label, setting.subgroup, setting.group.label()).to_lowercase();
+                let haystack = format!(
+                    "{} {} {} {}",
+                    setting.key,
+                    setting.label,
+                    setting.subgroup,
+                    setting.group.label()
+                )
+                .to_lowercase();
                 words.iter().all(|word| haystack.contains(word))
             })
             .collect();
@@ -251,10 +294,15 @@ impl SettingsWindow {
         let mut results = div()
             .id("settings-search-results")
             .debug_selector(|| "settings-search-results".into())
-            .flex_1().min_h_0().overflow_y_scroll().p(px(16.0));
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .p(px(16.0));
         if rows.is_empty() {
             results = results.child(
-                div().text_color(silvestris::convert::hsla(theme.colors.text_secondary)).child("No settings match your search."),
+                div()
+                    .text_color(silvestris::convert::hsla(theme.colors.text_secondary))
+                    .child("No settings match your search."),
             );
         } else {
             let mut form = Form::new(LABEL_WIDTH);
@@ -266,10 +314,16 @@ impl SettingsWindow {
         results.into_any_element()
     }
 
-    pub(super) fn render_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_preferences(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         // A scope with fewer groups may remove the shown pane.
         let categories = self.categories();
-        self.prefs.navigator.retain(|id| prefs::find(&categories, id).is_some());
+        self.prefs
+            .navigator
+            .retain(|id| prefs::find(&categories, id).is_some());
         self.fit_window(window);
         let this = cx.entity().downgrade();
         let search = self.search_field(window, cx);
@@ -279,32 +333,45 @@ impl SettingsWindow {
                 let _ = this.update(cx, |view, cx| view.navigate(to, window, cx));
             })
             .search(
-                div().flex().items_center().gap(px(12.0))
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(12.0))
                     .child(self.scope_popup(cx))
                     .child(div().w(px(166.0)).child(search)),
             );
         let content = if !query.is_empty() {
             self.render_search(&query, window, cx)
-        } else { match self.prefs.navigator.current().and_then(|id| group_from(id)) {
-            None => {
-                let this = cx.entity().downgrade();
-                let overview = PreferencesOverview::new(categories).on_select(move |id, window, cx| {
-                    if let Some(group) = group_from(id) {
-                        let _ = this.update(cx, |view, cx| view.show_group(group, window, cx));
-                    }
-                });
-                let this = cx.entity().downgrade();
-                prefs::fit_content(overview, move |needed, window, cx| {
-                    let viewport = window.viewport_size();
-                    let delta = gpui::size(px(prefs::WINDOW_WIDTH) - viewport.width, needed - viewport.height);
-                    fit_pending(&this, delta, window, cx);
-                })
-                .into_any_element()
+        } else {
+            match self.prefs.navigator.current().and_then(|id| group_from(id)) {
+                None => {
+                    let this = cx.entity().downgrade();
+                    let overview =
+                        PreferencesOverview::new(categories).on_select(move |id, window, cx| {
+                            if let Some(group) = group_from(id) {
+                                let _ =
+                                    this.update(cx, |view, cx| view.show_group(group, window, cx));
+                            }
+                        });
+                    let this = cx.entity().downgrade();
+                    prefs::fit_content(overview, move |needed, window, cx| {
+                        let viewport = window.viewport_size();
+                        let delta = gpui::size(
+                            px(prefs::WINDOW_WIDTH) - viewport.width,
+                            needed - viewport.height,
+                        );
+                        fit_pending(&this, delta, window, cx);
+                    })
+                    .into_any_element()
+                }
+                Some(group) => self.render_pane(group, window, cx).into_any_element(),
             }
-            Some(group) => self.render_pane(group, window, cx).into_any_element(),
-        }};
+        };
 
-        let title = self.prefs.navigator.title(&self.categories(), OVERVIEW_TITLE);
+        let title = self
+            .prefs
+            .navigator
+            .title(&self.categories(), OVERVIEW_TITLE);
         let height = cx.theme().metrics.toolbar_height;
         silvestris::chrome::WindowFrame::new(title)
             .fixed_size()
@@ -339,7 +406,12 @@ impl SettingsWindow {
         out
     }
 
-    fn render_pane(&mut self, group: Group, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_pane(
+        &mut self,
+        group: Group,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
         let subgroups = self.subgroups(group);
         let tabbed = (2..=MAX_TABS).contains(&subgroups.len());
         let tab = self
@@ -356,7 +428,11 @@ impl SettingsWindow {
             .filter(|d| !tabbed || d.subgroup == tab)
             .collect();
         let theme = cx.theme().clone();
-        let mut body = div().flex().flex_col().gap(px(12.0)).children(self.status_notes(group, cx));
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .children(self.status_notes(group, cx));
         if group == Group::General && self.target == Target::Global {
             body = body.child(Form::new(LABEL_WIDTH).rows(self.appearance_rows(cx)));
         }
@@ -384,11 +460,18 @@ impl SettingsWindow {
         let mut view = TabView::new(SharedString::from(format!("pane-{}", group_id(group))));
         if tabbed {
             let this = cx.entity().downgrade();
-            let tabs = subgroups.iter().map(|s| Segment::new(*s, subgroup_label(s))).collect();
+            let tabs = subgroups
+                .iter()
+                .map(|s| Segment::new(*s, subgroup_label(s)))
+                .collect();
             view = view.tabs(tabs, tab).on_select(move |id, _, cx| {
                 let id = id.clone();
                 let _ = this.update(cx, |view, cx| {
-                    if let Some(s) = view.subgroups(group).into_iter().find(|s| *s == id.as_ref()) {
+                    if let Some(s) = view
+                        .subgroups(group)
+                        .into_iter()
+                        .find(|s| *s == id.as_ref())
+                    {
                         view.prefs.tabs.insert(group, s);
                         view.prefs.fit_pending = true;
                         cx.notify();
@@ -413,9 +496,11 @@ impl SettingsWindow {
         let c = &theme.colors;
         let mut out = vec![note(
             match &self.target {
-                Target::Global => "Defaults for every card and new secondary session. Worker settings \
+                Target::Global => {
+                    "Defaults for every card and new secondary session. Worker settings \
                     apply to sessions started afterwards; input layouts apply at once."
-                    .into(),
+                        .into()
+                }
                 Target::Card(card) => format!(
                     "Saved overrides of card {card}; unset values use the global defaults. Worker \
                      settings apply when its primary next starts; input layouts apply at once."
@@ -427,14 +512,21 @@ impl SettingsWindow {
             out.push(note(error, c.error));
         }
         if self.host.is_none() {
-            out.push(note("No host configuration: only desktop preferences can be changed.".into(), c.warning));
+            out.push(note(
+                "No host configuration: only desktop preferences can be changed.".into(),
+                c.warning,
+            ));
         } else if !self.control {
             out.push(note(
                 "This host is read-only (allow_control is off): only desktop preferences can be changed.".into(),
                 c.warning,
             ));
         }
-        if !self.lotus.read_with(cx, |l, _| l.preferences_saved()).unwrap_or(true) {
+        if !self
+            .lotus
+            .read_with(cx, |l, _| l.preferences_saved())
+            .unwrap_or(true)
+        {
             out.push(note(
                 "desktop.json has no location or could not be read: preference changes last until Lotus closes."
                     .into(),
@@ -443,7 +535,12 @@ impl SettingsWindow {
         }
         if group == Group::Discord {
             let palette = theme::palette(cx);
-            if let Some((_, text)) = self.lotus.read_with(cx, |l, _| l.presence_line(palette)).ok().flatten() {
+            if let Some((_, text)) = self
+                .lotus
+                .read_with(cx, |l, _| l.presence_line(palette))
+                .ok()
+                .flatten()
+            {
                 out.push(note(text.to_string(), c.text_secondary));
             }
         }
@@ -452,7 +549,10 @@ impl SettingsWindow {
 
     fn appearance_rows(&self, cx: &mut Context<Self>) -> Vec<FormRow> {
         use silvestris::{Appearance, ThemeFamily, ThemeId};
-        let id = self.lotus.read_with(cx, |view, _| view.ui_theme()).unwrap_or(ThemeId::GEIST_DARK);
+        let id = self
+            .lotus
+            .read_with(cx, |view, _| view.ui_theme())
+            .unwrap_or(ThemeId::GEIST_DARK);
         let family_owner = self.lotus.clone();
         let appearance_owner = self.lotus.clone();
         vec![
@@ -463,7 +563,11 @@ impl SettingsWindow {
                     "Style",
                     vec![Segment::new("aqua", "Aqua"), Segment::new("geist", "Geist")],
                 )
-                .selected(if id.family == ThemeFamily::Aqua { "aqua" } else { "geist" })
+                .selected(if id.family == ThemeFamily::Aqua {
+                    "aqua"
+                } else {
+                    "geist"
+                })
                 .on_select(move |id, _, cx| {
                     let family = match id.as_ref() {
                         "aqua" => ThemeFamily::Aqua,
@@ -483,7 +587,11 @@ impl SettingsWindow {
                     "Appearance",
                     vec![Segment::new("light", "Light"), Segment::new("dark", "Dark")],
                 )
-                .selected(if id.appearance == Appearance::Light { "light" } else { "dark" })
+                .selected(if id.appearance == Appearance::Light {
+                    "light"
+                } else {
+                    "dark"
+                })
                 .on_select(move |id, _, cx| {
                     let appearance = match id.as_ref() {
                         "light" => Appearance::Light,
@@ -501,7 +609,12 @@ impl SettingsWindow {
 
     /// One registry setting as a form row. Checkboxes carry their own label
     /// (HIG p. 348: checkboxes left-aligned in the control column).
-    pub(super) fn form_row(&mut self, descriptor: &'static Descriptor, window: &mut Window, cx: &mut Context<Self>) -> FormRow {
+    pub(super) fn form_row(
+        &mut self,
+        descriptor: &'static Descriptor,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> FormRow {
         let (value, source) = self.value(descriptor, cx);
         let editable = self.editable(descriptor, &source);
         let overridden = match descriptor.owner {
@@ -516,28 +629,42 @@ impl SettingsWindow {
             Kind::Boolean => {
                 labelled = false;
                 control = control.child(
-                    Checkbox::new(SharedString::from(format!("toggle-{key}")), descriptor.label.clone())
-                        .checked(value.as_bool().unwrap_or(false))
-                        .disabled(!enabled)
-                        .on_change(cx.listener(move |view, state: &CheckState, _, cx| {
+                    Checkbox::new(
+                        SharedString::from(format!("toggle-{key}")),
+                        descriptor.label.clone(),
+                    )
+                    .checked(value.as_bool().unwrap_or(false))
+                    .disabled(!enabled)
+                    .on_change(cx.listener(
+                        move |view, state: &CheckState, _, cx| {
                             view.write(descriptor, Some(Value::Bool(*state == CheckState::On)), cx);
-                        })),
+                        },
+                    )),
                 );
             }
             kind if choices(kind).is_some() => {
                 let options = choices(kind).unwrap_or_default();
-                let items = options.iter().map(|o| SharedString::from(display(o))).collect();
+                let items = options
+                    .iter()
+                    .map(|o| SharedString::from(display(o)))
+                    .collect();
                 let selected = options.iter().position(|o| *o == value);
                 control = control.child(
-                    PopUpButton::new(SharedString::from(format!("choice-{key}")), descriptor.label.clone(), items)
-                        .selected(selected)
-                        .disabled(!enabled)
-                        .min_width(140.0)
-                        .on_choose(cx.listener(move |view, index: &usize, _, cx| {
+                    PopUpButton::new(
+                        SharedString::from(format!("choice-{key}")),
+                        descriptor.label.clone(),
+                        items,
+                    )
+                    .selected(selected)
+                    .disabled(!enabled)
+                    .min_width(140.0)
+                    .on_choose(cx.listener(
+                        move |view, index: &usize, _, cx| {
                             if let Some(choice) = options.get(*index) {
                                 view.write(descriptor, Some(choice.clone()), cx);
                             }
-                        })),
+                        },
+                    )),
                 );
             }
             kind if stepper(kind).is_some() => {
@@ -552,21 +679,26 @@ impl SettingsWindow {
                     if let Some(max) = max {
                         next = next.min(max);
                     }
-                    if integer { Value::from(next.round() as i64) } else { Value::from((next * 1e4).round() / 1e4) }
+                    if integer {
+                        Value::from(next.round() as i64)
+                    } else {
+                        Value::from((next * 1e4).round() / 1e4)
+                    }
                 };
-                control = control
-                    .child(div().w(px(80.0)).child(field))
-                    .child(
-                        Stepper::new(SharedString::from(format!("stepper-{key}")), descriptor.label.clone())
-                            .limits(
-                                enabled && min.is_none_or(|m| current > m),
-                                enabled && max.is_none_or(|m| current < m),
-                            )
-                            .on_step(cx.listener(move |view, dir: &i32, _, cx| {
-                                let next = ((current + *dir as f64 * step) / step).round() * step;
-                                view.write(descriptor, Some(clamp(next)), cx);
-                            })),
-                    );
+                control = control.child(div().w(px(80.0)).child(field)).child(
+                    Stepper::new(
+                        SharedString::from(format!("stepper-{key}")),
+                        descriptor.label.clone(),
+                    )
+                    .limits(
+                        enabled && min.is_none_or(|m| current > m),
+                        enabled && max.is_none_or(|m| current < m),
+                    )
+                    .on_step(cx.listener(move |view, dir: &i32, _, cx| {
+                        let next = ((current + *dir as f64 * step) / step).round() * step;
+                        view.write(descriptor, Some(clamp(next)), cx);
+                    })),
+                );
             }
             Kind::String { .. } | Kind::Json { .. } | Kind::Bindings { .. } => {
                 let field = self.value_field(descriptor, &value, enabled, window, cx);
@@ -577,11 +709,17 @@ impl SettingsWindow {
             }
         }
         if overridden && enabled {
-            control = control.child(
-                Button::new(SharedString::from(format!("reset-{key}")), reset_label(&self.target, descriptor))
+            control =
+                control.child(
+                    Button::new(
+                        SharedString::from(format!("reset-{key}")),
+                        reset_label(&self.target, descriptor),
+                    )
                     .size(ControlSize::Mini)
-                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| view.write(descriptor, None, cx))),
-            );
+                    .on_click(cx.listener(
+                        move |view, _: &ClickEvent, _, cx| view.write(descriptor, None, cx),
+                    )),
+                );
         }
         // The consumer citation is a help tag, not body text (HIG p. 82 help tags).
         let control: AnyElement = if descriptor.sources.is_empty() {
@@ -602,7 +740,9 @@ impl SettingsWindow {
         // status_notes; rows add only their own.
         let window_wide = self.host.is_none() || !self.control;
         let note = match editable {
-            Err(reason) if !(window_wide && matches!(descriptor.owner, Owner::Azahar | Owner::Input)) => {
+            Err(reason)
+                if !(window_wide && matches!(descriptor.owner, Owner::Azahar | Owner::Input)) =>
+            {
                 format!("{} {reason}", descriptor.description)
             }
             _ => descriptor.description.clone(),
@@ -668,7 +808,9 @@ impl SettingsWindow {
                     }
                 })
                 .detach();
-                self.prefs.fields.insert(descriptor.key.clone(), field.clone());
+                self.prefs
+                    .fields
+                    .insert(descriptor.key.clone(), field.clone());
                 field
             }
         };
@@ -699,14 +841,28 @@ fn parse_field(descriptor: &Descriptor, text: &str) -> Result<Value, String> {
         }
         kind => {
             let (_, min, max, integer) = stepper(kind).ok_or("Unsupported editor")?;
-            let mut number = text.trim().parse::<f64>().ok().filter(|number| number.is_finite())
+            let mut number = text
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .filter(|number| number.is_finite())
                 .ok_or_else(|| format!("{} requires a number.", descriptor.label))?;
-            if let Some(min) = min { number = number.max(min); }
-            if let Some(max) = max { number = number.min(max); }
-            if integer { Value::from(number.round() as i64) } else { Value::from(number) }
+            if let Some(min) = min {
+                number = number.max(min);
+            }
+            if let Some(max) = max {
+                number = number.min(max);
+            }
+            if integer {
+                Value::from(number.round() as i64)
+            } else {
+                Value::from(number)
+            }
         }
     };
-    descriptor.validate(&value).map_err(|error| error.to_string())?;
+    descriptor
+        .validate(&value)
+        .map_err(|error| error.to_string())?;
     Ok(value)
 }
 
@@ -734,14 +890,34 @@ mod tests {
 
     #[test]
     fn scalar_and_structured_editors_use_registry_validation() {
-        let string = Registry::builtin().descriptors().iter()
-            .find(|descriptor| matches!(descriptor.kind, Kind::String { choices: None, hex: false, exact_len: None, .. }))
+        let string = Registry::builtin()
+            .descriptors()
+            .iter()
+            .find(|descriptor| {
+                matches!(
+                    descriptor.kind,
+                    Kind::String {
+                        choices: None,
+                        hex: false,
+                        exact_len: None,
+                        ..
+                    }
+                )
+            })
             .expect("string setting");
-        assert_eq!(parse_field(string, "test").unwrap(), Value::String("test".into()));
-        let bindings = Registry::builtin().descriptors().iter()
+        assert_eq!(
+            parse_field(string, "test").unwrap(),
+            Value::String("test".into())
+        );
+        let bindings = Registry::builtin()
+            .descriptors()
+            .iter()
             .find(|descriptor| matches!(descriptor.kind, Kind::Bindings { .. }))
             .expect("input binding setting");
-        assert_eq!(parse_field(bindings, "[]").unwrap(), Value::Array(Vec::new()));
+        assert_eq!(
+            parse_field(bindings, "[]").unwrap(),
+            Value::Array(Vec::new())
+        );
         assert!(parse_field(bindings, "{}").is_err());
         assert!(parse_field(bindings, "[").is_err());
     }
@@ -749,7 +925,9 @@ mod tests {
     #[test]
     fn typing_and_escape_filter_settings_without_changing_the_pane() {
         let mut app = TestAppContext::single();
-        app.update(|cx| silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx));
+        app.update(|cx| {
+            silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx)
+        });
         let (main, _) = app.add_window_view(LotusWindow::test_preview);
         let (settings, cx) = app.add_window_view(|window, cx| {
             SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx)
@@ -763,7 +941,10 @@ mod tests {
         cx.update(|window, cx| {
             window.draw(cx).clear(cx);
             let view = settings.read(cx);
-            assert_eq!(view.prefs.search.as_ref().unwrap().read(cx).text(), "discord");
+            assert_eq!(
+                view.prefs.search.as_ref().unwrap().read(cx).text(),
+                "discord"
+            );
             assert!(view.prefs.navigator.current().is_none());
         });
         assert!(cx.debug_bounds("settings-search-results").is_some());

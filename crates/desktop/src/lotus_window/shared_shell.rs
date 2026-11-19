@@ -1,8 +1,8 @@
 //! #131/#132/#138: one measured shell for single and split workspaces.
 //! Controller inspection remains explicit per tile, otherwise follows selection.
+use super::shared_commands::{GlobalCommand, SessionCommand};
 use super::*;
 use gpui::App;
-use super::shared_commands::{GlobalCommand, SessionCommand};
 use silvestris::command::CommandButton;
 use silvestris::controls::{Button, ButtonStyle, ControlSize};
 use silvestris::core::command::CommandId;
@@ -78,8 +78,14 @@ impl LotusWindow {
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(button("shared-sidebar", global(GlobalCommand::Sidebar)))
             .child(div().w(px(1.)).h(px(18.)).bg(theme.border).mx(px(2.)))
-            .child(button("shared-run", self.session_command_id(SessionCommand::Run)))
-            .child(button("shared-step", self.session_command_id(SessionCommand::Step)))
+            .child(button(
+                "shared-run",
+                self.session_command_id(SessionCommand::Run),
+            ))
+            .child(button(
+                "shared-step",
+                self.session_command_id(SessionCommand::Step),
+            ))
             .child(button("shared-open", global(GlobalCommand::Open)))
             .child(
                 div()
@@ -125,7 +131,9 @@ impl LotusWindow {
         } else {
             "Read-only host"
         };
-        let session = self.selected_summary().filter(|summary| !self.split() && summary.info.asset.is_some());
+        let session = self
+            .selected_summary()
+            .filter(|summary| !self.split() && summary.info.asset.is_some());
         let figures = session.map(|summary| gauges::gauges(theme, &summary.telemetry));
         div()
             .id("lotus-status")
@@ -144,50 +152,108 @@ impl LotusWindow {
                 if self.sessions.len() == 1 { "" } else { "s" }
             ))
             .child(div().flex_1().min_w_0().truncate().child(host))
-            .children(figures.into_iter().flatten().take(3).enumerate().map(|(index, gauge)| status_value(index, gauge, cx)))
+            .children(
+                figures
+                    .into_iter()
+                    .flatten()
+                    .take(3)
+                    .enumerate()
+                    .map(|(index, gauge)| status_value(index, gauge, cx)),
+            )
             .child(mcp)
-            .when(session.is_some(), |bar| bar.child(
-                Button::new("telemetry-details", "Details")
-                    .style(ButtonStyle::Textured)
-                    .size(ControlSize::Mini)
-                    .selected(self.gauges_expanded)
-                    .tooltip("Show or hide session telemetry")
-                    .on_click(cx.listener(|view, _, _, cx| {
-                        view.gauges_expanded = !view.gauges_expanded;
-                        cx.notify();
-                    })),
-            ))
+            .when(session.is_some(), |bar| {
+                bar.child(
+                    Button::new("telemetry-details", "Details")
+                        .style(ButtonStyle::Textured)
+                        .size(ControlSize::Mini)
+                        .selected(self.gauges_expanded)
+                        .tooltip("Show or hide session telemetry")
+                        .on_click(cx.listener(|view, _, _, cx| {
+                            view.gauges_expanded = !view.gauges_expanded;
+                            cx.notify();
+                        })),
+                )
+            })
     }
 
-    pub(super) fn render_telemetry_details(&self, summary: &SessionSummary, cx: &App) -> AnyElement {
+    pub(super) fn render_telemetry_details(
+        &self,
+        summary: &SessionSummary,
+        cx: &App,
+    ) -> AnyElement {
         let theme = theme::palette(cx);
-        div().id("telemetry-details-panel").debug_selector(|| "telemetry-details-panel".into())
-            .flex().flex_wrap().items_center().content_center().gap_x(px(8.0))
-            .px(px(8.0)).h(px(TELEMETRY_DETAILS_HEIGHT)).flex_none().min_w_0()
-            .overflow_hidden().border_t_1().border_color(theme.border)
-            .children(gauges::gauges(theme, &summary.telemetry).into_iter().skip(3).enumerate()
-                .map(|(index, gauge)| status_value(index, gauge, cx).w(px(120.0))))
+        div()
+            .id("telemetry-details-panel")
+            .debug_selector(|| "telemetry-details-panel".into())
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .content_center()
+            .gap_x(px(8.0))
+            .px(px(8.0))
+            .h(px(TELEMETRY_DETAILS_HEIGHT))
+            .flex_none()
+            .min_w_0()
+            .overflow_hidden()
+            .border_t_1()
+            .border_color(theme.border)
+            .children(
+                gauges::gauges(theme, &summary.telemetry)
+                    .into_iter()
+                    .skip(3)
+                    .enumerate()
+                    .map(|(index, gauge)| status_value(index, gauge, cx).w(px(120.0))),
+            )
             .into_any_element()
     }
 
     pub(super) fn render_tile_status(
-        &self, items: Vec<gauges::Gauge>, vertical: bool, tile: TilePlan, cx: &App,
+        &self,
+        items: Vec<gauges::Gauge>,
+        vertical: bool,
+        tile: TilePlan,
+        cx: &App,
     ) -> Div {
-        div().flex().items_center()
-            .when(vertical, |row| row.w(px(tile.width.max(0.0))).h(px(GAUGE_ROW)))
-            .when(!vertical, |row| row.flex_col().w(px(GAUGE_COLUMN)).h(px(tile.height.max(0.0))))
-            .children(items.into_iter().enumerate().map(|(index, gauge)| status_value(index, gauge, cx)
-                .when(vertical, |item| item.flex_1())
-                .when(!vertical, |item| item.w_full().flex_none())))
+        div()
+            .flex()
+            .items_center()
+            .when(vertical, |row| {
+                row.w(px(tile.width.max(0.0))).h(px(GAUGE_ROW))
+            })
+            .when(!vertical, |row| {
+                row.flex_col()
+                    .w(px(GAUGE_COLUMN))
+                    .h(px(tile.height.max(0.0)))
+            })
+            .children(items.into_iter().enumerate().map(|(index, gauge)| {
+                status_value(index, gauge, cx)
+                    .when(vertical, |item| item.flex_1())
+                    .when(!vertical, |item| item.w_full().flex_none())
+            }))
     }
 
     pub(super) fn render_empty_content_actions(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let registry = self.shared_commands.registry.clone();
-        div().flex().items_center().gap(px(8.0))
-            .child(Button::new("idle-load", "Load Content…")
-                .disabled(!self.selected_summary().is_some_and(|summary| summary.telemetry.state.is_active()))
-                .on_click(cx.listener(|view, event, window, cx| view.open_inline_load(event, window, cx))))
-            .child(CommandButton::new("idle-open-file", GlobalCommand::Open.id(), registry))
+        div()
+            .flex()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                Button::new("idle-load", "Load Content…")
+                    .disabled(
+                        !self
+                            .selected_summary()
+                            .is_some_and(|summary| summary.telemetry.state.is_active()),
+                    )
+                    .on_click(cx.listener(|view, event, window, cx| {
+                        view.open_inline_load(event, window, cx)
+                    })),
+            )
+            .child(CommandButton::new(
+                "idle-open-file",
+                GlobalCommand::Open.id(),
+                registry,
+            ))
     }
 
     pub(super) fn render_shared_disconnected(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -294,7 +360,11 @@ impl LotusWindow {
                     let title = if target.is_empty() {
                         "Inspector".to_string()
                     } else {
-                        format!("{} {}", view.session_name(target), session_tree::short_id(target))
+                        format!(
+                            "{} {}",
+                            view.session_name(target),
+                            session_tree::short_id(target)
+                        )
                     };
                     let inspector = plan.dock.or(plan.overlay).map(|span| {
                         let ready = !target.is_empty() && target == view.inspected;
@@ -387,7 +457,12 @@ impl LotusWindow {
 
 fn status_value(index: usize, gauge: gauges::Gauge, cx: &App) -> Stateful<Div> {
     silvestris::controls::status::value(
-        (gauge.label, index), gauge.label, gauge.value, gauge.detail, gauge.colour, cx,
+        (gauge.label, index),
+        gauge.label,
+        gauge.value,
+        gauge.detail,
+        gauge.colour,
+        cx,
     )
 }
 
@@ -548,7 +623,9 @@ mod tests {
     #[test]
     fn detail_expansion_reserves_only_its_measured_workspace_height() {
         let mut app = TestAppContext::single();
-        app.update(|cx| silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx));
+        app.update(|cx| {
+            silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx)
+        });
         let (view, cx) = app.add_window_view(|window, cx| {
             let mut view = LotusWindow::test_preview(window, cx);
             let mut loaded = session("loaded");
@@ -605,10 +682,15 @@ mod tests {
         draw(cx);
         assert_eq!(cx.debug_bounds("shell-workspace").unwrap(), closed);
         assert!(cx.debug_bounds("lotus-inspector-ready-a").is_some());
-        assert!(cx.debug_bounds("inspector-view").is_some(), "view pop-up replaces the rail");
+        assert!(
+            cx.debug_bounds("inspector-view").is_some(),
+            "view pop-up replaces the rail"
+        );
         cx.simulate_keystrokes("z");
         cx.update(|_, cx| assert!(view.read(cx).keys.is_empty()));
-        let utility = cx.debug_bounds("inspector-utility").expect("inspector utility button");
+        let utility = cx
+            .debug_bounds("inspector-utility")
+            .expect("inspector utility button");
         cx.simulate_click(utility.center(), gpui::Modifiers::default());
         draw(cx);
         cx.update(|_, cx| assert!(view.read(cx).shared_commands.menu.read(cx).is_open()));

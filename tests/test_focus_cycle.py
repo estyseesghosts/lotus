@@ -19,12 +19,13 @@ stopped, which is the measurement lotus#74 asks for.
 Moves real focus on this desktop for about 30 s. Works with a native worker or the mock
 (`target/<profile>/lotus-mock-native.exe`, which writes advancing capture frames).
 
-Usage: test_focus_cycle.py <lotus-desktop.exe> <worker.exe> <content> <output dir>
+Usage: test_focus_cycle.py <lotus-desktop.exe> <worker.exe> <content> <output dir> [theme]
 Output: <output dir>/samples.json and a one-line verdict per phase.
 """
 import ctypes
 import ctypes.wintypes as wt
 import json
+import os
 import subprocess
 import sys
 import time
@@ -35,19 +36,22 @@ import mcp_client  # noqa: E402
 
 STAGES = ("guest", "published", "installed", "renders")
 user32 = ctypes.windll.user32
+user32.GetForegroundWindow.restype = wt.HWND
 
 
 def main():
     desktop, worker, content, output = sys.argv[1:5]
+    theme = ["--theme", sys.argv[5]] if len(sys.argv) > 5 else []
     output = Path(output)
     output.mkdir(parents=True)
+    os.environ["LOTUS_DESKTOP_PREFERENCES"] = str(output / "desktop.json")
     config = output / "host.json"
     config.write_text(json.dumps({"worker": worker, "storage_root": str(output / "storage"),
                                   "allow_control": True, "max_sessions": 2,
                                   "assets": {"content": content}}))
     # mcp_client.Client launches `<executable> <config>`; the desktop needs --mcp first.
     popen = subprocess.Popen
-    subprocess.Popen = lambda args, **kw: popen([args[0], "--mcp", *args[1:]], **kw)
+    subprocess.Popen = lambda args, **kw: popen([args[0], "--mcp", *theme, *args[1:]], **kw)
     try:
         client = mcp_client.Client(desktop, config, output / "transcript.jsonl")
     finally:
@@ -88,8 +92,25 @@ def alt_tab():
 
 
 def foreground(hwnd):
-    # A tapped Alt lets this process move the foreground (SetForegroundWindow rules).
-    key(0x12); user32.SetForegroundWindow(hwnd); key(0x12, True)
+    previous = user32.GetForegroundWindow()
+    other = user32.GetWindowThreadProcessId(previous, None)
+    current = ctypes.windll.kernel32.GetCurrentThreadId()
+    attached = other and other != current and user32.AttachThreadInput(current, other, True)
+    try:
+        user32.BringWindowToTop(hwnd)
+        user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(current, other, False)
+
+
+def wait_state(description, check):
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        if check():
+            return
+        time.sleep(0.05)
+    raise AssertionError(description)
 
 
 def click_title(hwnd):
@@ -120,6 +141,8 @@ def run(client, output):
         time.sleep(0.1)
     assert hwnd, "no LOTUS window"
     foreground(hwnd)
+    active = lambda: user32.GetForegroundWindow() == hwnd
+    wait_state("LOTUS did not take foreground", active)
     samples = []
 
     def sample(phase, seconds):
@@ -147,20 +170,30 @@ def run(client, output):
             time.sleep(0.5)
 
     sample("focused", 3)
-    alt_tab(); sample("alt-tab away", 3)
-    alt_tab(); sample("alt-tab back", 3)
+    alt_tab()
+    wait_state("Alt+Tab did not leave LOTUS", lambda: not active())
+    sample("alt-tab away", 3)
+    alt_tab()
+    wait_state("Alt+Tab did not return to LOTUS", active)
+    sample("alt-tab back", 3)
     # Deactivate without covering the window (the desktop shell takes focus), then click
     # back in; skipped if another window still covers the whole title bar.
     user32.GetShellWindow.restype = wt.HWND
     foreground(user32.GetShellWindow()); time.sleep(0.5)
     sample("shell focused", 2)
     if click_title(hwnd):
+        wait_state("title click did not activate LOTUS", active)
         sample("click activation", 3)
     else:
         print("click activation: title bar covered, skipped")
         foreground(hwnd)
-    user32.ShowWindow(hwnd, 6); sample("minimized", 3)
-    user32.ShowWindow(hwnd, 9); foreground(hwnd); sample("restored", 3)
+    user32.ShowWindow(hwnd, 6)
+    wait_state("LOTUS did not minimize", lambda: user32.IsIconic(hwnd))
+    sample("minimized", 3)
+    user32.ShowWindow(hwnd, 9)
+    foreground(hwnd)
+    wait_state("LOTUS did not restore to foreground", active)
+    sample("restored", 3)
     for _ in range(5):
         alt_tab(); time.sleep(0.4); alt_tab(); time.sleep(0.4)
     foreground(hwnd); sample("after 5 cycles", 4)

@@ -10,6 +10,7 @@ import struct
 import subprocess
 import tomllib
 import zipfile
+import package_silvestris
 
 ROOT = Path(__file__).resolve().parents[1]
 LICENSE = re.compile(r"^(licen[cs]e|copying|notice|copyright|authors|patents)", re.I)
@@ -125,6 +126,7 @@ def stage_rust(args):
     binaries = [args.binary_dir / f"{name}.exe" for name in ("lotus-desktop", "ctr-cli", "lotus-mcp")]
     dependencies = copy_binaries(binaries, args.output / "bin", args.dll_dir)
     metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
+    silvestris = package_silvestris.stage(binaries[0], metadata, args.output / "licenses")
     notices = []
     for package in metadata["packages"]:
         if package["source"] is None:
@@ -160,6 +162,7 @@ def stage_rust(args):
         "cargo": subprocess.check_output(["cargo", "-V"], text=True).strip(),
         "profile": "release", "target": "x86_64-pc-windows-gnu",
         "lto": "thin", "codegen_units": 1, "panic": "abort", "imports": dependencies,
+        "silvestris": silvestris,
     })
 
 
@@ -183,6 +186,10 @@ def assemble(args):
     destination.mkdir(parents=True, exist_ok=False)
     shutil.copytree(ROOT / "packaging/windows", destination, dirs_exist_ok=True)
     shutil.copytree(args.rust, destination, dirs_exist_ok=True)
+    silvestris = json.loads((destination / "rust-build.json").read_text(encoding="utf-8"))["silvestris"]
+    if any(silvestris[key] != pins["silvestris"][pin] for key, pin in
+           (("revision", "rev"), ("tree", "tree"))):
+        raise ValueError("Staged desktop has a different Silvestris pin")
     for backend, source, branch in (("azahar", args.azahar, "integration"), ("citnlo", args.citnlo, "experimental")):
         manifest = json.loads((source / "build-manifest.json").read_text(encoding="utf-8"))
         if manifest["source"] != pins["azahar"][f"{branch}_commit"] or manifest["branch"] != branch:
@@ -204,6 +211,7 @@ def assemble(args):
         f"# Corresponding source\n\nLOTUS {version}: https://github.com/estyseesghosts/lotus/tree/{source_sha}\n\n"
         f"AZAHAR / CITnLO: https://github.com/estyseesghosts/azahar/tree/{pins['azahar']['integration_commit']}\n\n"
         f"GPUI: https://github.com/zed-industries/zed/tree/{pins['gpui']['rev']}\n\n"
+        f"Silvestris {silvestris['revision']}: vendor/silvestris in the LOTUS source archive.\n\n"
         "The release also includes a recursive LOTUS/native source ZIP. For a Git build, clone\n"
         "the LOTUS release tag with --recurse-submodules; see docs/26-portable-release.md.\n"
         "Rust dependency versions/sources are fixed by Cargo.lock; licenses/rust-packages.json\n"
@@ -216,6 +224,7 @@ def assemble(args):
     write_json(destination / "release-manifest.json", {
         "application": "LOTUS", "version": version, "source": source_sha,
         "target": "windows-x64", "native_pins": pins["azahar"], "gpui": pins["gpui"],
+        "silvestris": silvestris,
         "files_sha256": files,
     })
     output = args.output / f"{name}.zip"

@@ -1,5 +1,5 @@
-//! Opt-in Silvestris adapter (#138), staged on silvestris-adoption.
-//! Geist Dark remains the default while the opt-in shell passes the gates in
+//! Silvestris adapter (#138).
+//! Geist Dark remains the first-run theme until the Aqua cutover in
 //! docs/38-silvestris-adoption.md. Workers/MCP never depend on this module.
 use gpui::App;
 

@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import mcp_client  # noqa: E402
 
 user32 = ctypes.windll.user32
-SETTINGS = "LOTUS Settings"
+SETTINGS = "lotus settings"
 
 
 def main():
@@ -59,7 +59,7 @@ def windows(pid):
         if owner.value == pid and user32.IsWindowVisible(hwnd):
             title = ctypes.create_unicode_buffer(256)
             user32.GetWindowTextW(hwnd, title, 256)
-            found.append((hwnd, title.value))
+            found.append((hwnd, title.value.casefold()))
         return True
     user32.EnumWindows(each, 0)
     return found

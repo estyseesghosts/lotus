@@ -11,6 +11,7 @@ import threading
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("package_windows", ROOT / "scripts/package-windows.py")
 packaging = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(packaging)
@@ -76,6 +77,13 @@ def main():
 
         version = run(str(root / "bin/ctr-cli.exe"), "version").stdout
         assert f"lotus {manifest['version']}" in version
+        assert manifest["silvestris"]["embedded_art_sha256"]
+        fonts = root / "licenses/silvestris"
+        inventory = json.loads((fonts / "fonts.json").read_text(encoding="utf-8"))
+        assert len(inventory["families"]) == 4
+        for family in inventory["families"]:
+            assert "SIL OPEN FONT LICENSE" in (fonts / family["license"]).read_text(encoding="utf-8")
+        run(sys.executable, str(ROOT / "tests/test_window_visible.py"), str(root / "bin/lotus-desktop.exe"))
         # The file is only a launcher path fixture; it is never emulated.
         fixture = Path(temporary) / "homebrew path with spaces.3dsx"
         fixture.write_bytes(b"")

@@ -1299,8 +1299,13 @@ impl Supervisor {
         command: &lotus_protocol::debug::DebugCommand,
         actor: Actor,
     ) -> io::Result<serde_json::Value> {
-        self.debug_as_checked(id, command, actor_client(actor), Some((created_unix_ms, epoch)))
-            .await
+        self.debug_as_checked(
+            id,
+            command,
+            actor_client(actor),
+            Some((created_unix_ms, epoch)),
+        )
+        .await
     }
 
     pub async fn subscribe(
@@ -1400,10 +1405,14 @@ impl Supervisor {
         let handle = self.handle(id)?;
         // Host presentation and orchestration operations own their own
         // lock lifetimes. Check their scoped target before routing them.
-        if expected.is_some() && matches!(
-            command,
-            DebugCommand::AudioFocus { .. } | DebugCommand::CaptureScaled { .. } | DebugCommand::Matrix { .. }
-        ) {
+        if expected.is_some()
+            && matches!(
+                command,
+                DebugCommand::AudioFocus { .. }
+                    | DebugCommand::CaptureScaled { .. }
+                    | DebugCommand::Matrix { .. }
+            )
+        {
             let native = handle.native.lock().await;
             check_debug_target(expected, handle.info().created_unix_ms, native.epoch())?;
         }
@@ -2335,7 +2344,9 @@ impl Drop for Reservation<'_> {
 
 fn check_debug_target(expected: Option<(u64, u64)>, created: u64, epoch: u64) -> io::Result<()> {
     if expected.is_some_and(|target| target != (created, epoch)) {
-        return Err(io::Error::other("debugger action expired because the session or guest changed"));
+        return Err(io::Error::other(
+            "debugger action expired because the session or guest changed",
+        ));
     }
     Ok(())
 }

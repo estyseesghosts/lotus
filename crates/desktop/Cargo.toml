@@ -35,8 +35,8 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 discord-rich-presence = "=1.1.0"
-# Staging source checkout; see config/pins.toml [silvestris] and docs/38.
-silvestris = { path = "../../../../silvestris/crates/silvestris", optional = true }
+# Pinned source snapshot. See config/pins.toml [silvestris] and docs/38.
+silvestris = { path = "../../vendor/silvestris/crates/silvestris", optional = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # Without a backend gpui_linux runs headless and `run` returns at once (gpui_platform
@@ -53,13 +53,14 @@ name = "lotus-screen-spike"
 path = "src/screen_spike.rs"
 
 [features]
-# gilrs backend, passed through to lotus-input; the two are mutually exclusive.
-default = ["wgi"]
+# The portable desktop uses Silvestris. Disable default features and select
+# wgi (or xinput) to build the legacy renderer.
+default = ["wgi", "silvestris-ui"]
+# gilrs backends, passed through to lotus-input. The two are mutually exclusive.
 wgi = ["lotus-input/wgi"]
 xinput = ["lotus-input/xinput"]
-# Incremental adoption only; the legacy shell remains the default.
 silvestris-ui = ["dep:silvestris"]
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-silvestris = { path = "../../../../silvestris/crates/silvestris", features = ["test-support"] }
+silvestris = { path = "../../vendor/silvestris/crates/silvestris", features = ["test-support"] }

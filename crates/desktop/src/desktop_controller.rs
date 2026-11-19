@@ -947,9 +947,15 @@ impl Loops {
                         (target, command, value)
                     }
                     Command::DebugAt { target, command } => {
-                        let value = host.debug_at(
-                            &target.id, target.created_unix_ms, target.epoch, &command, actor,
-                        ).await?;
+                        let value = host
+                            .debug_at(
+                                &target.id,
+                                target.created_unix_ms,
+                                target.epoch,
+                                &command,
+                                actor,
+                            )
+                            .await?;
                         (target, command, value)
                     }
                     _ => unreachable!("matched debugger command"),

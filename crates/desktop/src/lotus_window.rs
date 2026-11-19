@@ -17,11 +17,11 @@ use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::{
-    div, px, relative, AnyElement, AppContext, ClickEvent, Context, Div,
-    DragMoveEvent, FocusHandle, FontWeight, InteractiveElement, IntoElement, KeyDownEvent,
-    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    PathPromptOptions, Render, RenderImage, Rgba, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, StyledImage, Window,
+    div, px, relative, AnyElement, AppContext, ClickEvent, Context, Div, DragMoveEvent,
+    FocusHandle, FontWeight, InteractiveElement, IntoElement, KeyDownEvent, KeyUpEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathPromptOptions,
+    Render, RenderImage, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    StyledImage, Window,
 };
 use image::{Frame, RgbaImage};
 use lotus_session::supervisor::{HostConfig, SessionKind, SessionSummary};
@@ -55,7 +55,11 @@ mod shared_shell;
 const TOOLBAR_HEIGHT: f32 = 52.0;
 // Silvestris measures its content below the frame's unified toolbar.
 fn workspace_toolbar_height() -> f32 {
-    if cfg!(feature = "silvestris-ui") { 0.0 } else { TOOLBAR_HEIGHT }
+    if cfg!(feature = "silvestris-ui") {
+        0.0
+    } else {
+        TOOLBAR_HEIGHT
+    }
 }
 const SCREEN_GAP: f32 = 12.0;
 const CONTENT_PADDING: f32 = 24.0;
@@ -1077,42 +1081,44 @@ impl LotusWindow {
             .w(px(width))
             .h_full()
             .bg(theme.panel)
-            .when(!cfg!(feature = "silvestris-ui"), |sidebar| sidebar.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .h(px(TOOLBAR_HEIGHT))
-                    .px_4()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(div().size(px(10.0)).rounded(px(2.0)).bg(theme.text))
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("LOTUS"),
-                            ),
-                    )
-                    .child(
-                        icon_button(
-                            theme,
-                            "collapse",
-                            Icon::ChevronLeft,
-                            "Collapse sidebar (Ctrl+B)",
+            .when(!cfg!(feature = "silvestris-ui"), |sidebar| {
+                sidebar.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .h(px(TOOLBAR_HEIGHT))
+                        .px_4()
+                        .border_b_1()
+                        .border_color(theme.border)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(div().size(px(10.0)).rounded(px(2.0)).bg(theme.text))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child("LOTUS"),
+                                ),
                         )
-                        .on_click(cx.listener(
-                            |view, _: &ClickEvent, _, _| {
-                                view.close_pane(Pane::Sessions);
-                            },
-                        )),
-                    ),
-            ))
+                        .child(
+                            icon_button(
+                                theme,
+                                "collapse",
+                                Icon::ChevronLeft,
+                                "Collapse sidebar (Ctrl+B)",
+                            )
+                            .on_click(cx.listener(
+                                |view, _: &ClickEvent, _, _| {
+                                    view.close_pane(Pane::Sessions);
+                                },
+                            )),
+                        ),
+                )
+            })
             .child(
                 div()
                     .flex()
@@ -1144,7 +1150,9 @@ impl LotusWindow {
             )
             .child(list)
             .child(self.render_controllers(cx))
-            .when(!cfg!(feature = "silvestris-ui"), |sidebar| sidebar.child(self.render_sidebar_footer(cx)))
+            .when(!cfg!(feature = "silvestris-ui"), |sidebar| {
+                sidebar.child(self.render_sidebar_footer(cx))
+            })
             .when(!cfg!(feature = "silvestris-ui"), |sidebar| {
                 sidebar.child(self.divider(Pane::Sessions, cx))
             })
@@ -1181,7 +1189,8 @@ impl LotusWindow {
                     .border_b_1()
                     .border_color(theme.border)
                     .child(
-                        icon_button(theme,
+                        icon_button(
+                            theme,
                             "expand",
                             Icon::ChevronRight,
                             if squeezed {
@@ -1190,9 +1199,11 @@ impl LotusWindow {
                                 "Expand sidebar (Ctrl+B)"
                             },
                         )
-                        .on_click(cx.listener(|view, _: &ClickEvent, _, _| {
-                            view.open_pane(Pane::Sessions);
-                        })),
+                        .on_click(cx.listener(
+                            |view, _: &ClickEvent, _, _| {
+                                view.open_pane(Pane::Sessions);
+                            },
+                        )),
                     ),
             );
         let mut chips = div()
@@ -2606,21 +2617,37 @@ impl LotusWindow {
                         .gap_2()
                         .mt_2()
                         .child(
-                            workspace_button(theme, "empty-primary", "New primary", Tone::Primary, true)
-                                .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                            workspace_button(
+                                theme,
+                                "empty-primary",
+                                "New primary",
+                                Tone::Primary,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                move |view, _: &ClickEvent, _, _| {
                                     view.create(
                                         SessionKind::Primary {
                                             card: primary.clone(),
                                         },
                                         None,
                                     );
-                                })),
+                                },
+                            )),
                         )
                         .child(
-                            workspace_button(theme, "empty-secondary", "New secondary", Tone::Plain, true)
-                                .on_click(cx.listener(|view, _: &ClickEvent, _, _| {
+                            workspace_button(
+                                theme,
+                                "empty-secondary",
+                                "New secondary",
+                                Tone::Plain,
+                                true,
+                            )
+                            .on_click(cx.listener(
+                                |view, _: &ClickEvent, _, _| {
                                     view.create(SessionKind::Secondary { parent: None }, None);
-                                })),
+                                },
+                            )),
                         ),
                 );
             }
@@ -2737,7 +2764,8 @@ impl LotusWindow {
             return div().into_any_element();
         };
         let width = plan.main - 2.0 * CONTENT_PADDING;
-        let height = viewport_height - workspace_toolbar_height() - gauge_height - 2.0 * CONTENT_PADDING;
+        let height =
+            viewport_height - workspace_toolbar_height() - gauge_height - 2.0 * CONTENT_PADDING;
         let ratio = self.ratio_drag.unwrap_or(*ratio);
         let split = split_plan(width, height, *axis, ratio, *screens, self.split_held.get());
         self.split_held.set(Some(split));
@@ -3239,18 +3267,36 @@ impl LotusWindow {
         let target = session.to_string();
         let description = format!(
             "{} {label} (Ctrl+I on the focused tile)",
-            if inspecting { "Close inspector for" } else { "Inspect" },
+            if inspecting {
+                "Close inspector for"
+            } else {
+                "Inspect"
+            },
         );
         #[cfg(feature = "silvestris-ui")]
-        let inspect = icon_button(theme, SharedString::from(format!("inspect-{index}")), Icon::Cpu, description)
-            .selected(inspecting);
+        let inspect = icon_button(
+            theme,
+            SharedString::from(format!("inspect-{index}")),
+            Icon::Cpu,
+            description,
+        )
+        .selected(inspecting);
         #[cfg(not(feature = "silvestris-ui"))]
-        let inspect = rail_button(theme, SharedString::from(format!("inspect-{index}")), Icon::Cpu, inspecting, true, description)
-            .size(px(24.0));
-        header = header.child(inspect.on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
-            cx.stop_propagation();
-            view.toggle_tile_inspector(target.clone());
-        })));
+        let inspect = rail_button(
+            theme,
+            SharedString::from(format!("inspect-{index}")),
+            Icon::Cpu,
+            inspecting,
+            true,
+            description,
+        )
+        .size(px(24.0));
+        header = header.child(
+            inspect.on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                cx.stop_propagation();
+                view.toggle_tile_inspector(target.clone());
+            })),
+        );
         header = header.child(
             icon_button(
                 theme,
@@ -3389,8 +3435,10 @@ impl LotusWindow {
             Zoom::Double => 2.0,
             Zoom::Fit => {
                 let width = plan.main - 2.0 * CONTENT_PADDING;
-                let height =
-                    viewport_height - workspace_toolbar_height() - gauge_height - 2.0 * CONTENT_PADDING;
+                let height = viewport_height
+                    - workspace_toolbar_height()
+                    - gauge_height
+                    - 2.0 * CONTENT_PADDING;
                 fit_scale(self.layout, width, height)
             }
         }
@@ -3777,22 +3825,29 @@ impl LotusWindow {
     fn render_inspector_heading(&self, current: Panel, cx: &mut Context<Self>) -> AnyElement {
         #[cfg(feature = "silvestris-ui")]
         {
-            let items = Panel::MENU.iter().map(|p| SharedString::from(p.label())).collect();
+            let items = Panel::MENU
+                .iter()
+                .map(|p| SharedString::from(p.label()))
+                .collect();
             let selected = Panel::MENU.iter().position(|p| *p == current);
             div()
                 .flex_1()
                 .min_w_0()
                 .child(
-                    silvestris::controls::PopUpButton::new("inspector-view", "Inspector view", items)
-                        .selected(selected)
-                        .size(silvestris::controls::ControlSize::Small)
-                        .min_width(140.0)
-                        .on_choose(cx.listener(|view, index: &usize, _, cx| {
-                            if let Some(panel) = Panel::MENU.get(*index) {
-                                view.show_panel(*panel);
-                                cx.notify();
-                            }
-                        })),
+                    silvestris::controls::PopUpButton::new(
+                        "inspector-view",
+                        "Inspector view",
+                        items,
+                    )
+                    .selected(selected)
+                    .size(silvestris::controls::ControlSize::Small)
+                    .min_width(140.0)
+                    .on_choose(cx.listener(|view, index: &usize, _, cx| {
+                        if let Some(panel) = Panel::MENU.get(*index) {
+                            view.show_panel(*panel);
+                            cx.notify();
+                        }
+                    })),
                 )
                 .into_any_element()
         }
@@ -3972,10 +4027,10 @@ impl LotusWindow {
         let key_width = (width * 0.36).clamp(90.0, 220.0);
         let rows = view.rows.clone();
         let weak = cx.entity().downgrade();
-        #[cfg(feature = "silvestris-ui")]
-        use silvestris::controls::table::virtual_table as inspection_list;
         #[cfg(not(feature = "silvestris-ui"))]
         use gpui::uniform_list as inspection_list;
+        #[cfg(feature = "silvestris-ui")]
+        use silvestris::controls::table::virtual_table as inspection_list;
         panel
             .child(
                 inspection_list("inspection-rows", rows.len(), move |range, _, cx| {
@@ -3987,7 +4042,11 @@ impl LotusWindow {
                             let action = row.action.clone();
                             let tooltip = format!("{}\n{}", row.key, row.value);
                             #[cfg(feature = "silvestris-ui")]
-                            let line = silvestris::controls::table::code_row(("inspection-row", index), 28.0, cx);
+                            let line = silvestris::controls::table::code_row(
+                                ("inspection-row", index),
+                                28.0,
+                                cx,
+                            );
                             #[cfg(not(feature = "silvestris-ui"))]
                             let line = {
                                 let _ = cx;
@@ -4003,30 +4062,25 @@ impl LotusWindow {
                                     .text_xs()
                             };
                             with_tooltip(
-                                line
-                                    .when(show_lane, |line| {
-                                        line.child(
-                                            div()
-                                                .w(px(48.0))
-                                                .flex_none()
-                                                .text_color(theme.text_muted)
-                                                .child(row.lane),
-                                        )
-                                    })
-                                    .child(
+                                line.when(show_lane, |line| {
+                                    line.child(
                                         div()
-                                            .w(px(key_width))
+                                            .w(px(48.0))
                                             .flex_none()
-                                            .truncate()
-                                            .child(row.key.clone()),
+                                            .text_color(theme.text_muted)
+                                            .child(row.lane),
                                     )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(row.value.clone()),
-                                    ),
+                                })
+                                .child(
+                                    div()
+                                        .w(px(key_width))
+                                        .flex_none()
+                                        .truncate()
+                                        .child(row.key.clone()),
+                                )
+                                .child(
+                                    div().flex_1().min_w_0().truncate().child(row.value.clone()),
+                                ),
                                 tooltip,
                             )
                             .when_some(action, |element, command| {
@@ -4125,7 +4179,10 @@ impl LotusWindow {
             }),
         );
         #[cfg(feature = "silvestris-ui")]
-        return Some(silvestris::controls::notice::error_banner(self.error.clone(), dismiss, cx).into_any_element());
+        return Some(
+            silvestris::controls::notice::error_banner(self.error.clone(), dismiss, cx)
+                .into_any_element(),
+        );
         #[cfg(not(feature = "silvestris-ui"))]
         Some(
             div()
@@ -4251,7 +4308,8 @@ impl LotusWindow {
         #[cfg(not(feature = "silvestris-ui"))]
         let gauges = loaded.map(|summary| self.render_gauges(mode, plan.main, &summary, cx));
         #[cfg(feature = "silvestris-ui")]
-        let gauges = loaded.filter(|_| self.gauges_expanded)
+        let gauges = loaded
+            .filter(|_| self.gauges_expanded)
             .map(|summary| self.render_telemetry_details(&summary, cx));
         #[cfg(not(feature = "silvestris-ui"))]
         let (legacy_toolbar, legacy_load, legacy_actions) = (
@@ -4260,7 +4318,8 @@ impl LotusWindow {
             (self.menu == Menu::Toolbar).then(|| self.render_toolbar_menu(cx)),
         );
         #[cfg(feature = "silvestris-ui")]
-        let (legacy_toolbar, legacy_load, legacy_actions): (Option<gpui::Empty>, _, _) = (None, None::<gpui::Empty>, None::<gpui::Empty>);
+        let (legacy_toolbar, legacy_load, legacy_actions): (Option<gpui::Empty>, _, _) =
+            (None, None::<gpui::Empty>, None::<gpui::Empty>);
         div()
             .relative()
             .flex()
@@ -4320,12 +4379,13 @@ impl Render for LotusWindow {
         #[cfg(feature = "silvestris-ui")]
         let content = self.render_shared_window(_window, cx);
         #[cfg(feature = "silvestris-ui")]
-        let menu_overlay =
-            Some(gpui::deferred(self.shared_commands.menu.clone()).with_priority(1));
+        let menu_overlay = Some(gpui::deferred(self.shared_commands.menu.clone()).with_priority(1));
         #[cfg(not(feature = "silvestris-ui"))]
         let menu_overlay: Option<gpui::Empty> = None;
         #[cfg(feature = "silvestris-ui")]
-        let confirmation = self.render_confirmation(cx).map(|sheet| gpui::deferred(sheet).with_priority(2));
+        let confirmation = self
+            .render_confirmation(cx)
+            .map(|sheet| gpui::deferred(sheet).with_priority(2));
         #[cfg(not(feature = "silvestris-ui"))]
         let confirmation: Option<gpui::Empty> = None;
         let root = div()
@@ -5104,7 +5164,11 @@ fn checkbox_item(
 }
 
 #[cfg(feature = "silvestris-ui")]
-fn empty_state(_: theme::Palette, title: &'static str, body: String) -> silvestris::controls::Notice {
+fn empty_state(
+    _: theme::Palette,
+    title: &'static str,
+    body: String,
+) -> silvestris::controls::Notice {
     silvestris::controls::Notice::new(title, body)
 }
 

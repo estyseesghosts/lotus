@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 spec = importlib.util.spec_from_file_location("package_linux", ROOT / "scripts/package-linux.py")
 package_linux = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(package_linux)

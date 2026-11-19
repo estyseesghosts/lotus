@@ -23,3 +23,5 @@ CMakeLists.txt text
 *.cci binary
 *.cxi binary
 *.elf binary
+# The Silvestris snapshot preserves upstream bytes, including licenses.
+vendor/silvestris/** -whitespace

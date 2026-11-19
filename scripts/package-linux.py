@@ -22,6 +22,7 @@ import subprocess
 import sys
 import tomllib
 from pathlib import Path
+import package_silvestris
 
 ROOT = Path(__file__).resolve().parents[1]
 LICENSE = re.compile(r"^(LICEN[CS]E|COPYING|NOTICE|COPYRIGHT)([-._].*)?$", re.IGNORECASE)
@@ -192,6 +193,7 @@ def main():
     licenses = appdir / "usr/share/licenses"
     shutil.copy2(ROOT / "LICENSE", appdir / "LICENSE")
     metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
+    silvestris = package_silvestris.stage(appdir / "usr/bin/lotus-desktop", metadata, licenses)
     write_json(licenses / "rust-packages.json", rust_notices(metadata, licenses / "rust"))
     sysroot = Path(subprocess.check_output(["rustc", "--print", "sysroot"], text=True).strip())
     copy_licenses(sysroot / "share/doc/rust", licenses / "rust-toolchain")
@@ -203,6 +205,7 @@ def main():
         f"AZAHAR: https://github.com/estyseesghosts/azahar/tree/{pins['azahar']['integration_commit']}\n\n"
         f"CITnLO: https://github.com/estyseesghosts/azahar/tree/{pins['azahar']['experimental_commit']}\n\n"
         f"GPUI: https://github.com/zed-industries/zed/tree/{pins['gpui']['rev']}\n\n"
+        f"Silvestris {silvestris['revision']}: vendor/silvestris in the LOTUS checkout.\n\n"
         "Rust dependency versions are fixed by Cargo.lock; usr/share/licenses/rust-packages.json\n"
         "records their licenses. Build steps: docs/27-build-and-run.md section 11.\n",
         encoding="utf-8")
@@ -211,6 +214,7 @@ def main():
     write_json(appdir / "release-manifest.json", {
         "application": "LOTUS", "version": version, "source": source_sha, "target": "linux-x86_64",
         "native_pins": pins["azahar"], "gpui": pins["gpui"], "runtimes": runtimes,
+        "silvestris": silvestris,
         "minimum_glibc": f"{floor[0]}.{floor[1]}",
         "host_libraries": {name: sorted(set(users)) for name, users in sorted(host.items())},
         "rustc": subprocess.check_output(["rustc", "-vV"], text=True).strip(),

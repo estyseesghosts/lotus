@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -42,6 +43,32 @@ def run(command, **kwargs):
     return result
 
 
+def visible_window(install, cwd, env):
+    """Start the moved AppImage through AppRun on the caller's X server."""
+    display = {key: os.environ[key] for key in ("DISPLAY", "XAUTHORITY") if key in os.environ}
+    check("DISPLAY" in display, "run the desktop check with xvfb-run")
+    with tempfile.TemporaryFile() as errors, subprocess.Popen(
+        [str(install), "--mode", "WindowedMCP"], cwd=cwd, env=env | display,
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=errors,
+    ) as desktop:
+        try:
+            deadline = time.monotonic() + 20
+            while desktop.poll() is None and time.monotonic() < deadline:
+                tree = run(["xwininfo", "-root", "-tree"], env=env | display).stdout
+                if '"LOTUS"' in tree:
+                    return
+                time.sleep(0.2)
+            errors.seek(0)
+            raise AssertionError(f"packaged LOTUS window did not appear: {errors.read().decode(errors='replace')}")
+        finally:
+            desktop.stdin.close()
+            try:
+                desktop.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                desktop.terminate()
+                desktop.wait(timeout=10)
+
+
 def main() -> int:
     image = pathlib.Path(sys.argv[1]).resolve()
     version = tomllib.loads((ROOT / "Cargo.toml").read_text())["workspace"]["package"]["version"]
@@ -59,6 +86,12 @@ def main() -> int:
         appdir = extract / "squashfs-root"
         manifest = json.loads((appdir / "release-manifest.json").read_text())
         check(manifest["version"] == version and manifest["target"] == "linux-x86_64", "manifest identity")
+        check(manifest["silvestris"]["embedded_art_sha256"], "missing Silvestris artwork inventory")
+        fonts = appdir / "usr/share/licenses/silvestris"
+        inventory = json.loads((fonts / "fonts.json").read_text())
+        check(len(inventory["families"]) == 4, "Silvestris font inventory")
+        for family in inventory["families"]:
+            check("SIL OPEN FONT LICENSE" in (fonts / family["license"]).read_text(), family["license"])
         for relative, sha in manifest["files_sha256"].items():
             check(digest(appdir / relative) == sha, f"{relative} differs from the manifest")
         for name in ("AppRun", "lotus.desktop", "lotus.png", "SOURCE.md", "LICENSE",
@@ -112,6 +145,7 @@ def main() -> int:
         reply = json.loads(mcp.stdout.splitlines()[0])
         check(mcp.returncode == 0 and reply.get("id") == 1 and "result" in reply,
               f"MCP initialize: {mcp.returncode} {mcp.stdout[:500]} {mcp.stderr[-500:]}")
+        visible_window(install, cwd, env)
 
         for backend in ("azahar", "citnlo"):
             worker = appdir / "runtimes" / backend / "ctr-worker"

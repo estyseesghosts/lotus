@@ -1,102 +1,45 @@
-# Silvestris adoption staging (#138)
+# Silvestris integration (#138)
 
-Branch: silvestris-adoption. This remains opt-in staging, not the default
-cutover. The default desktop build keeps its current layout, colours, fonts
-and controls. Enabling silvestris-ui registers bundled fonts before the first
-window, loads the saved theme (Geist Dark by default), uses its bundled fonts in
-desktop and Settings, and replaces editable overridden Settings reset actions
-with the shared small Button. The reset still calls SettingsWindow::write
-with None; scope inheritance, validation and persistence retain the same path.
-The feature now mounts the shared source list and measured shell, including
-overlay/pinned inspector presentation in single and split workspaces.
+Lotus 0.1.0 uses Silvestris for Main and Settings in the default desktop
+build. New profiles open in Geist Dark. Settings → General can switch Style
+and Appearance live, and Lotus saves the selection in `desktop.json`.
+Aqua Light becomes the first-run theme after the release gates and sign-off
+in [#138](https://github.com/estyseesghosts/lotus/issues/138).
 
-The emulator/session/controller/MCP crates do not depend on Silvestris.
-The input router, worker commands and settings registry retain their existing
-interfaces. The measured shell supplies preview-fit dimensions. Staged pin/panel
-metadata is namespaced in desktop.json; legacy width/visibility keys remain
-authoritative for rollback. Aqua is now selectable in staging; its controls and
-native chrome migration still need completion and visual acceptance.
+## Build and rollback
 
-## Source and build
+`vendor/silvestris` is an exact Git tree from the independent Silvestris
+workspace. `config/pins.toml` records the source commit and tree. The
+packagers check the vendored tree and record both IDs in the release
+manifest. A clean Lotus checkout and the corresponding-source archive
+contain the snapshot. Updating it is a deliberate import from a committed
+Silvestris revision, with the pin and lockfile checked in the same change.
+The standalone project is still maintained separately.
 
-This development branch requires a sibling source layout:
+On Windows GNU:
 
-    3DS/silvestris
-    3DS/lotus-0.1.0/lotus
-
-config/pins.toml [silvestris] records the source checkout commit.
-scripts/verify-silvestris.ps1 checks HEAD, tracked-source cleanliness, and the
-shared GPUI/Rust pins. Both use GPUI 6b720973027999bae402df23d469026f4cced988.
-
-Silvestris is not published to a reachable independent GitHub repository yet.
-The optional Cargo path dependency still requires that sibling checkout even
-for dependency resolution with the feature disabled. This is a staging branch
-constraint, not a portable-release solution. Publication/source packaging and
-a fetchable immutable dependency are required before merging/releasing it.
-
-On this Windows machine use the GNU toolchain explicitly; the new checkout
-does not inherit the original Lotus directory's rustup override:
-
-    scripts/verify-silvestris.ps1
-    cargo +1.98.1-x86_64-pc-windows-gnu check -p lotus-desktop --features silvestris-ui --locked
-    cargo +1.98.1-x86_64-pc-windows-gnu test -p lotus-desktop --lib --features silvestris-ui --locked
-    cargo +1.98.1-x86_64-pc-windows-gnu run -p lotus-desktop --bin lotus-desktop --features silvestris-ui --locked
-
-To roll back the UI slice, build/run without --features silvestris-ui. Legacy
-layout keys remain usable and the feature-disabled store preserves the unknown
-silvestris object. No guest/card/workspace data migration is involved.
-
-Keep a native Lotus window running while developing this branch:
-
-    ./scripts/run-silvestris-preview.ps1 -Restart
-
-To inspect Aqua Light explicitly:
-
+    ./scripts/verify-silvestris.ps1
+    cargo +1.98.1-x86_64-pc-windows-gnu test --locked -p lotus-desktop
     ./scripts/run-silvestris-preview.ps1 -Restart -Theme aqua-light
 
-The Windows helper verifies the source pin, builds the opt-in GNU binary into
-Silvestris target/, then runs a separate executable copy. This avoids Windows
-locking Cargo's output during subsequent builds. It keeps the old window open
-until the replacement builds and restarts only the recorded executable/PID/start
-time. Without -Restart it leaves the existing preview alone; -NoBuild uses the
-last built artifact. Preferences/logs/process metadata stay under Silvestris
-target/, with an isolated desktop.json path. The helper starts without a host
-configuration or workers. -Theme accepts aqua-light, aqua-dark, geist-light and
-geist-dark, forwarding --theme to Lotus. Without an override the saved choice
-loads; first-run default remains Geist Dark. A running preview is not evidence
-of completed Aqua migration or native input validation.
+To build the legacy renderer, use
+`cargo build --locked --release -p lotus-desktop --bin lotus-desktop --no-default-features --features wgi`.
+Point the resulting desktop at the same `LOTUS_DESKTOP_PREFERENCES` and
+host config as the installed build. Visibility and requested widths share
+the pre-existing keys. Legacy saves preserve the Silvestris object so the
+chosen theme, inspector panel and pin are available on return. Guest
+storage and card IDs use the same paths and format.
 
-## Validation and rollout gates
+## Packaging
 
-The adapter test compares shared Geist Dark surface/text/diagnostic colours
-with the existing palette and checks the bundled font roles. Existing
-desktop tests cover layout, settings defaults/no-overwrite behavior, touch
-transforms and other desktop contracts. These are regression checks, not
-proof of native worker/HID/MCP or visual parity.
+Both packagers use the default desktop and verify the exact font and artwork
+bytes embedded in the executable. The four OFL notices and font provenance
+are included as separate files and covered by the release manifest. Runtime
+startup uses local assets. The Windows ZIP and Linux AppImage use the
+existing native-worker pins and launchers.
 
-Before expanding adoption: inspect the opt-in Settings reset row in both
-Global and Card scope, compare Inter/Geist Mono clipping against existing
-text, and verify keyboard focus and guest input isolation with a live worker.
-The shared controls' mock-platform tests live in the Silvestris repository.
-
-Before cutover: migrate source-list/session targeting and persistent rail,
-overlay/pinned inspector state and epoch validation, responsive toolbar/status,
-menus/commands, Settings chrome, all theme propagation and safe desktop.json
-migration. Preserve malformed-file no-overwrite behavior. Complete native
-regressions, portable font/art/license packaging, startup/memory benchmarks
-and rollback validation before changing the first-run default to Aqua.
-Geist stays selectable.
-
-Sources: issues #118/#126/#138; aqua-gpui handbook 19; Silvestris
-crates/silvestris-core/src/geist.rs explicitly maps the old Lotus palette.
-Local code paths: theme.rs holds the legacy palette, main.rs initializes the
-adapter before open_window, settings_window.rs retains the existing write
-callback, and preferences.rs owns the unchanged persistence behavior.
-
-Verified compiled/tested on Windows GNU: feature-enabled desktop check and
-46 library tests; default desktop 45 library tests. The additional feature
-test compares shared/legacy Geist colours and font roles. Native Settings,
-live worker/HID/MCP and portable packaging are not verified by these tests.
+The sections below record the migration in order. Staging comments describe
+the state at the time of each step.
 
 ## Navigation adapter foundation
 

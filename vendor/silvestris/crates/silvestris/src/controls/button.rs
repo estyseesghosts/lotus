@@ -1,0 +1,633 @@
+//! Push and textured buttons (HIG p. 265-269; handbook 12).
+//!
+//! - Height per control size: `Metrics::push_height` / `push_small_height` /
+//!   `push_mini_height` (M: button.push.default, button.push.normal).
+//! - Width = label + 2 × `Metrics::push_padding` (M: button.push.widths), or
+//!   wider via `min_width` for equal-width groups (HIG PDF p. 359, "Similar
+//!   controls have the same width").
+//! - Label font: system, small system, mini system for regular, small, mini
+//!   (HIG p. 269).
+//! - Pointer and keyboard presses draw the pressed bevel immediately (HIG p. 265).
+//!   GPUI still decides whether the release activates the button. Successful
+//!   activation eases back to the resting bevel when motion is enabled.
+//! - The focus ring shows only after keyboard input (handbook 12 focus manager).
+//! - Disabled buttons are not focusable and have no click handler. GPUI at the
+//!   pin has no `aria_disabled`, so assistive tech is not told the state; this
+//!   is a recorded gap (docs/exceptions.md).
+
+use std::cell::Cell;
+use std::rc::Rc;
+use std::time::{Duration, Instant};
+
+use gpui::{
+    AnyElement, App, ClickEvent, ElementId, FocusHandle, MouseButton, MouseExitEvent,
+    MouseMoveEvent, MouseUpEvent, SharedString, Window, canvas, div, prelude::*, px,
+};
+use silvestris_core::tokens::{Bevel, Theme};
+use silvestris_core::{Gradient, Rgba8};
+
+use crate::convert::hsla;
+use crate::paint;
+use crate::theme::ActiveTheme;
+
+/// HIG control sizes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ControlSize {
+    #[default]
+    Regular,
+    Small,
+    Mini,
+}
+
+impl ControlSize {
+    fn index(self) -> usize {
+        match self {
+            ControlSize::Regular => 0,
+            ControlSize::Small => 1,
+            ControlSize::Mini => 2,
+        }
+    }
+
+    pub fn label_size(self, theme: &Theme) -> f32 {
+        match self {
+            ControlSize::Regular => theme.type_.size_regular,
+            ControlSize::Small => theme.type_.size_small,
+            ControlSize::Mini => theme.type_.size_mini,
+        }
+    }
+}
+
+/// Bezel family.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ButtonStyle {
+    /// Rounded push button for dialogs and content (HIG p. 265).
+    #[default]
+    Push,
+    /// Textured rounded button for window-frame areas (toolbars, bottom bars).
+    Textured,
+    /// Square gradient control for actions adjoining a list (HIG pp. 273–276).
+    Gradient,
+}
+
+type Icon = Box<dyn Fn(gpui::Rgba) -> AnyElement>;
+
+type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+#[derive(IntoElement)]
+pub struct Button {
+    id: ElementId,
+    label: SharedString,
+    style: ButtonStyle,
+    size: ControlSize,
+    default: bool,
+    disabled: bool,
+    selected: bool,
+    min_width: Option<f32>,
+    icon: Option<Icon>,
+    tooltip: Option<SharedString>,
+    destructive: bool,
+    focus: Option<FocusHandle>,
+    on_click: Option<ClickHandler>,
+}
+
+impl Button {
+    pub fn new(id: impl Into<ElementId>, label: impl Into<SharedString>) -> Self {
+        Button {
+            id: id.into(),
+            label: label.into(),
+            style: ButtonStyle::Push,
+            size: ControlSize::Regular,
+            default: false,
+            disabled: false,
+            selected: false,
+            min_width: None,
+            icon: None,
+            tooltip: None,
+            destructive: false,
+            focus: None,
+            on_click: None,
+        }
+    }
+
+    pub fn style(mut self, style: ButtonStyle) -> Self {
+        self.style = style;
+        self
+    }
+
+    pub fn size(mut self, size: ControlSize) -> Self {
+        self.size = size;
+        self
+    }
+
+    /// The default button of a dialog: drawn with `Controls::push_default`.
+    /// Return-key routing belongs to the dialog that owns it (handbook 12).
+    pub fn default_button(mut self, default: bool) -> Self {
+        self.default = default;
+        self
+    }
+
+    pub fn disabled(mut self, disabled: bool) -> Self {
+        self.disabled = disabled;
+        self
+    }
+
+    /// Toggled state for textured buttons (the `selected` bevel).
+    pub fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    /// Minimum width in logical pixels, for equal-width button groups.
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.min_width = Some(width);
+        self
+    }
+
+    /// Replace the visible label with an icon. The label names the control
+    /// for accessibility. The icon receives the current state's ink colour.
+    pub fn icon<E: IntoElement>(mut self, icon: impl Fn(gpui::Rgba) -> E + 'static) -> Self {
+        self.icon = Some(Box::new(move |ink| icon(ink).into_any_element()));
+        self
+    }
+
+    pub fn tooltip(mut self, text: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(text.into());
+        self
+    }
+
+    pub fn destructive(mut self, destructive: bool) -> Self {
+        self.destructive = destructive;
+        self
+    }
+
+    /// Supply a responder handle when a parent owns focus order.
+    pub fn focus_handle(mut self, focus: FocusHandle) -> Self {
+        self.focus = Some(focus);
+        self
+    }
+
+    pub fn on_click(mut self, f: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static) -> Self {
+        self.on_click = Some(Rc::new(f));
+        self
+    }
+}
+
+// Local timing estimate. The held bezel is immediate and the command runs
+// on release, as specified by the HIG.
+const RELEASE_DURATION: Duration = Duration::from_millis(120);
+
+#[derive(Clone, Copy, Default, PartialEq)]
+enum Press {
+    #[default]
+    Resting,
+    Pointer {
+        inside: bool,
+    },
+    Keyboard,
+    Released(Instant),
+}
+
+impl Press {
+    fn amount(self, window: &Window, cx: &App) -> f32 {
+        match self {
+            Self::Pointer { inside: true } | Self::Keyboard => 1.0,
+            Self::Released(start) if !cx.reduce_motion() => {
+                let elapsed = cx
+                    .background_executor()
+                    .now()
+                    .saturating_duration_since(start);
+                let t = (elapsed.as_secs_f32() / RELEASE_DURATION.as_secs_f32()).min(1.0);
+                if t < 1.0 {
+                    window.request_animation_frame();
+                }
+                1.0 - t * t * (3.0 - 2.0 * t)
+            }
+            _ => 0.0,
+        }
+    }
+}
+
+fn blend_bevel(resting: Bevel, pressed: Bevel, amount: f32) -> Bevel {
+    let blend = |a: Gradient, b: Gradient| {
+        Gradient::new(a.from.mix(b.from, amount), a.to.mix(b.to, amount))
+    };
+    Bevel {
+        border: blend(resting.border, pressed.border),
+        upper: blend(resting.upper, pressed.upper),
+        lower: blend(resting.lower, pressed.lower),
+        split: resting.split + (pressed.split - resting.split) * amount,
+        emboss: resting.emboss.mix(pressed.emboss, amount),
+        text: resting.text.mix(pressed.text, amount),
+    }
+}
+
+impl RenderOnce for Button {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let theme = cx.theme().clone();
+        let m = &theme.metrics;
+        let (states, height, radius) = match self.style {
+            ButtonStyle::Push => (
+                &theme.controls.push,
+                match self.size {
+                    ControlSize::Regular => m.push_height,
+                    ControlSize::Small => m.push_small_height,
+                    ControlSize::Mini => m.push_mini_height,
+                },
+                m.push_radius,
+            ),
+            ButtonStyle::Textured => (
+                &theme.controls.textured,
+                m.textured_height,
+                m.textured_radius,
+            ),
+            ButtonStyle::Gradient => (
+                &theme.controls.gradient,
+                match self.size {
+                    ControlSize::Regular => 21.0,
+                    ControlSize::Small => 19.0,
+                    ControlSize::Mini => 17.0,
+                },
+                0.0,
+            ),
+        };
+        let base: Bevel = if self.disabled {
+            states.disabled
+        } else if self.selected {
+            states.selected
+        } else if self.default && self.style == ButtonStyle::Push {
+            theme.controls.push_default
+        } else {
+            states.normal
+        };
+        let state = window.use_keyed_state(self.id.clone(), cx, |_, cx| {
+            (
+                cx.focus_handle().tab_stop(true),
+                Rc::new(Cell::new(Press::Resting)),
+            )
+        });
+        let (default_focus, feedback) = state.read(cx);
+        let focus = self.focus.unwrap_or_else(|| default_focus.clone());
+        let enabled = !self.disabled;
+        let handler = self.on_click.filter(|_| enabled);
+        if handler.is_none()
+            || !window.is_window_active()
+            || (feedback.get() == Press::Keyboard && !focus.is_focused(window))
+        {
+            feedback.set(Press::Resting);
+        }
+        let amount = feedback.get().amount(window, cx);
+        if amount == 0.0 && matches!(feedback.get(), Press::Released(_)) {
+            feedback.set(Press::Resting);
+        }
+        let feedback = handler.as_ref().map(|_| feedback.clone());
+        let bezel = if amount == 0.0 {
+            base
+        } else {
+            let mut pressed = states.pressed;
+            if base == pressed {
+                // The theme can share its pressed material with a latched toggle.
+                // Deepen the inset so the toggle still responds to a fresh press.
+                let black = Rgba8::hex(0);
+                let deepen = |band: Gradient| {
+                    Gradient::new(band.from.mix(black, 0.22), band.to.mix(black, 0.22))
+                };
+                pressed.upper = deepen(pressed.upper);
+                pressed.lower = deepen(pressed.lower);
+            }
+            blend_bevel(base, pressed, amount)
+        };
+        let ink = if self.destructive && enabled {
+            theme.colors.error.mix(states.pressed.text, amount)
+        } else {
+            bezel.text
+        };
+        let ring_focus = focus.clone();
+        let pointer_focus = focus.clone();
+        let ring_color = theme.colors.focus_ring;
+        let ring_profile = m.focus_ring;
+        let label_size = self.size.label_size(&theme);
+        let icon_only = self.icon.is_some();
+        let padding = if icon_only {
+            0.0
+        } else {
+            m.push_padding[self.size.index()]
+        };
+        let icon = self.icon.map(|draw| draw(crate::convert::rgba(ink)));
+        let label_dy = if self.style == ButtonStyle::Push {
+            m.push_label_dy[self.size.index()]
+        } else {
+            0.0
+        };
+        let pointer_down = feedback.clone();
+        let key_down = feedback.clone();
+        let activation = feedback.clone();
+
+        div()
+            .debug_selector(|| self.id.to_string())
+            .id(self.id)
+            .role(gpui::Role::Button)
+            .aria_label(self.label.clone())
+            // Block an enclosing native titlebar's Drag hitbox (same contract
+            // as chrome::traffic_lights); controls must remain clickable.
+            .occlude()
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .h(px(height))
+            .when(icon_only, |el| el.w(px(height)))
+            .px(px(padding))
+            .when_some(self.min_width, |el, w| el.min_w(px(w)))
+            .when_some(self.tooltip, super::tooltip::attach)
+            .font_family(theme.type_.ui)
+            .text_size(px(label_size))
+            .when(enabled, |el| el.track_focus(&focus))
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                if enabled {
+                    window.focus(&pointer_focus, cx);
+                }
+                if let Some(feedback) = &pointer_down {
+                    feedback.set(Press::Pointer { inside: true });
+                    window.refresh();
+                }
+                cx.stop_propagation();
+            })
+            .when_some(key_down, |el, feedback| {
+                let key_focus = focus.clone();
+                let key_up = feedback.clone();
+                el.on_key_down(move |event, window, _| {
+                    if !key_focus.is_focused(window) {
+                        return;
+                    }
+                    let stroke = &event.keystroke;
+                    if !window.default_prevented()
+                        && !stroke.modifiers.modified()
+                        && matches!(stroke.key.as_str(), "enter" | "space")
+                    {
+                        feedback.set(Press::Keyboard);
+                        window.refresh();
+                    } else if feedback.get() == Press::Keyboard {
+                        feedback.set(Press::Resting);
+                        window.refresh();
+                    }
+                })
+                .on_key_up(move |_, window, _| {
+                    if key_up.get() == Press::Keyboard {
+                        key_up.set(Press::Resting);
+                        window.refresh();
+                    }
+                })
+            })
+            .when_some(handler.zip(activation), |el, (handler, feedback)| {
+                el.on_click(move |event, window, cx| {
+                    if !cx.reduce_motion() {
+                        feedback.set(Press::Released(cx.background_executor().now()));
+                    }
+                    window.refresh();
+                    handler(event, window, cx);
+                })
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        paint::bevel(window, bounds, radius, &bezel);
+                        if let Some(feedback) = &feedback {
+                            // Capture release even when another control consumes the mouse-up.
+                            // GPUI's later ClickEvent starts the animation for a valid release.
+                            let release = feedback.clone();
+                            window.on_mouse_event(move |event: &MouseUpEvent, phase, window, _| {
+                                if phase.capture()
+                                    && event.button == MouseButton::Left
+                                    && matches!(release.get(), Press::Pointer { .. })
+                                {
+                                    release.set(Press::Resting);
+                                    window.refresh();
+                                }
+                            });
+                            if matches!(feedback.get(), Press::Pointer { .. }) {
+                                let pointer = feedback.clone();
+                                window.on_mouse_event(
+                                    move |event: &MouseMoveEvent, phase, window, _| {
+                                        let next = Press::Pointer {
+                                            inside: bounds.contains(&event.position),
+                                        };
+                                        if phase.capture()
+                                            && matches!(pointer.get(), Press::Pointer { .. })
+                                            && pointer.replace(next) != next
+                                        {
+                                            window.refresh();
+                                        }
+                                    },
+                                );
+                                let pointer = feedback.clone();
+                                window.on_mouse_event(
+                                    move |_: &MouseExitEvent, phase, window, _| {
+                                        if phase.capture()
+                                            && pointer.get() == (Press::Pointer { inside: true })
+                                        {
+                                            pointer.set(Press::Pointer { inside: false });
+                                            window.refresh();
+                                        }
+                                    },
+                                );
+                            }
+                        }
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+            .when_some(icon, |el, icon| el.child(div().relative().child(icon)))
+            .when(!icon_only, |el| {
+                el.child(
+                    div()
+                        .relative()
+                        .top(px(label_dy))
+                        .text_color(hsla(ink))
+                        .child(self.label),
+                )
+            })
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |bounds, _, window, _| {
+                        if ring_focus.is_focused(window) && window.last_input_was_keyboard() {
+                            paint::focus_ring(
+                                window,
+                                bounds,
+                                radius.min(bounds.size.height.as_f32() / 2.0),
+                                ring_color,
+                                ring_profile,
+                            );
+                        }
+                    },
+                )
+                .absolute()
+                .inset_0(),
+            )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, Modifiers, Render, TestAppContext, VisualTestContext};
+    struct Harness {
+        focus: FocusHandle,
+        activations: usize,
+        background_downs: usize,
+        selected: bool,
+    }
+    impl Render for Harness {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .track_focus(&self.focus)
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|h, _, window, cx| {
+                        h.background_downs += 1;
+                        window.focus(&h.focus, cx);
+                    }),
+                )
+                .child(
+                    Button::new("tool", "Toolbar control")
+                        .style(ButtonStyle::Textured)
+                        .selected(self.selected)
+                        .on_click(cx.listener(|h, _, _, cx| {
+                            h.activations += 1;
+                            cx.notify();
+                        })),
+                )
+        }
+    }
+    fn draw(cx: &mut VisualTestContext) {
+        cx.run_until_parked();
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+    }
+    #[test]
+    fn toolbar_button_keeps_focus_from_a_background_input_responder() {
+        for theme in crate::ThemeId::ALL {
+            let mut app = TestAppContext::single();
+            app.update(|cx| crate::theme::install(crate::ThemePreference::explicit(theme), cx));
+            let (h, cx) = app.add_window_view(|_, cx| Harness {
+                focus: cx.focus_handle(),
+                activations: 0,
+                background_downs: 0,
+                selected: false,
+            });
+            draw(cx);
+            let button = cx.debug_bounds("tool").unwrap();
+            cx.simulate_click(button.center(), Modifiers::default());
+            draw(cx);
+            cx.update(|window, cx| {
+                assert_eq!(h.read(cx).background_downs, 0);
+                assert_eq!(h.read(cx).activations, 1);
+                assert!(!h.read(cx).focus.is_focused(window));
+                assert!(window.focused(cx).is_some());
+            });
+            cx.simulate_keystrokes("space");
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse("space").unwrap(),
+            });
+            draw(cx);
+            cx.update(|_, cx| assert_eq!(h.read(cx).activations, 2));
+        }
+    }
+
+    #[test]
+    fn press_feedback_tracks_activation_cancellation_and_reduced_motion() {
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            crate::theme::install(
+                crate::ThemePreference::explicit(crate::ThemeId::AQUA_LIGHT),
+                cx,
+            )
+        });
+        let (h, cx) = app.add_window_view(|_, cx| Harness {
+            focus: cx.focus_handle(),
+            activations: 0,
+            background_downs: 0,
+            selected: false,
+        });
+        cx.update(|window, _| window.activate_window());
+        draw(cx);
+        let button = cx.debug_bounds("tool").unwrap();
+        let fill = |cx: &mut VisualTestContext| {
+            cx.update(|window, _| {
+                let bounds = paint::inset(button, crate::convert::hairline(window))
+                    .scale(window.scale_factor());
+                window
+                    .painted_quads()
+                    .iter()
+                    .find(|quad| quad.bounds == bounds)
+                    .unwrap()
+                    .background
+            })
+        };
+        let resting = fill(cx);
+        let position = button.center();
+        let outside = gpui::point(position.x, button.bottom() + px(8.));
+        let modifiers = Modifiers::default();
+
+        cx.simulate_mouse_down(position, MouseButton::Left, modifiers);
+        draw(cx);
+        let held = fill(cx);
+        assert_ne!(held, resting);
+        cx.simulate_mouse_move(outside, MouseButton::Left, modifiers);
+        draw(cx);
+        assert_eq!(fill(cx), resting);
+        cx.simulate_mouse_up(outside, MouseButton::Left, modifiers);
+        draw(cx);
+        cx.update(|_, cx| assert_eq!(h.read(cx).activations, 0));
+
+        cx.simulate_click(position, modifiers);
+        draw(cx);
+        assert_eq!(fill(cx), held);
+        cx.update(|_, cx| assert_eq!(h.read(cx).activations, 1));
+        cx.update(|window, cx| {
+            cx.background_executor().advance_clock(RELEASE_DURATION / 2);
+            window.simulate_next_frame(cx);
+        });
+        draw(cx);
+        let halfway = fill(cx);
+        assert_ne!(halfway, held);
+        assert_ne!(halfway, resting);
+        cx.update(|window, cx| {
+            cx.background_executor().advance_clock(RELEASE_DURATION / 2);
+            window.simulate_next_frame(cx);
+        });
+        draw(cx);
+        assert_eq!(fill(cx), resting);
+
+        cx.update(|_, cx| cx.set_reduce_motion(true));
+        cx.simulate_keystrokes("space");
+        draw(cx);
+        assert_eq!(fill(cx), held);
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("space").unwrap(),
+        });
+        draw(cx);
+        assert_eq!(fill(cx), resting);
+        cx.update(|_, cx| assert_eq!(h.read(cx).activations, 2));
+
+        cx.update(|_, cx| {
+            h.update(cx, |h, cx| {
+                h.selected = true;
+                cx.notify();
+            });
+        });
+        draw(cx);
+        let selected = fill(cx);
+        cx.simulate_mouse_down(position, MouseButton::Left, modifiers);
+        draw(cx);
+        assert_ne!(fill(cx), selected);
+        cx.simulate_mouse_up(position, MouseButton::Left, modifiers);
+        draw(cx);
+        assert_eq!(fill(cx), selected);
+    }
+}

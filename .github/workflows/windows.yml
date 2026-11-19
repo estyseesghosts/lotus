@@ -59,7 +59,7 @@ jobs:
           prefix-key: windows-gnu-lint-v1
       - name: fmt and clippy
         run: |
-          cargo fmt --all -- --check
+          cargo fmt -- --check
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --locked --workspace --all-targets -- -D warnings
           exit $LASTEXITCODE
