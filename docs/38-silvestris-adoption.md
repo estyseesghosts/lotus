@@ -363,4 +363,4 @@ and "read-only host" notes appear once at the top of the pane.
 
 Verified in the aqua-light preview: Emulation's five tabs fit at 668 px,
 switching to Clock shrinks the window, moving the window does not resize it.
-Dark themes and Geist are not yet checked by capture.
+aqua-dark checked by capture (Advanced, Graphics & Display); Geist is not.
