@@ -1126,7 +1126,7 @@ mod tests {
         }
         let mut app = TestAppContext::single();
         app.update(|cx| {
-            silvestris::test_support::initialize(ThemePreference::explicit(ThemeId::GEIST_DARK), cx)
+            silvestris::test_support::initialize(ThemePreference::explicit(ThemeId::AQUA_LIGHT), cx)
         });
         let (main, main_cx) = app.add_window_view(LotusWindow::test_preview);
         main_cx.simulate_resize(size(px(1280.), px(880.)));
@@ -1145,10 +1145,10 @@ mod tests {
         let mut main_cx = VisualTestContext::from_window(main_handle, &cx.cx);
         let workspace = main_cx.debug_bounds("shell-workspace").unwrap();
         for (selector, expected) in [
-            ("segment-aqua", ThemeId::AQUA_DARK),
-            ("segment-light", ThemeId::AQUA_LIGHT),
             ("segment-geist", ThemeId::GEIST_LIGHT),
             ("segment-dark", ThemeId::GEIST_DARK),
+            ("segment-aqua", ThemeId::AQUA_DARK),
+            ("segment-light", ThemeId::AQUA_LIGHT),
         ] {
             let segment = cx
                 .debug_bounds(selector)

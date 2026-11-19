@@ -1,10 +1,10 @@
 # Silvestris integration (#138)
 
 Lotus 0.1.0 uses Silvestris for Main and Settings in the default desktop
-build. New profiles open in Geist Dark. Settings → General can switch Style
+build. New profiles open in Aqua Light. Settings → General can switch Style
 and Appearance live, and Lotus saves the selection in `desktop.json`.
-Aqua Light becomes the first-run theme after the release gates and sign-off
-in [#138](https://github.com/estyseesghosts/lotus/issues/138).
+Existing theme choices are preserved. Missing style or appearance values
+use the corresponding Aqua Light default.
 
 ## Build and rollback
 
@@ -87,8 +87,8 @@ the welcome artwork.
 These results leave an idle-memory increase. Windows startup was checked
 with a system-only PATH and clean preferences. Network isolation was verified
 on Linux. Physical gamepads, Windows mixed DPI and macOS remain unverified.
-The cutover in #138 still requires sign-off. Silvestris is the desktop
-implementation and Geist Dark is the first-run theme.
+The first-run default was set to Aqua Light after this test round. The
+measurements above describe the tested integration packages.
 
 The sections below record the migration in order. Staging comments describe
 the state at the time of each step.

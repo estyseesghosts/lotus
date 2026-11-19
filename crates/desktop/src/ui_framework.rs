@@ -1,9 +1,5 @@
-//! Silvestris adapter (#138).
-//! Geist Dark remains the first-run theme until the Aqua cutover in
-//! docs/38-silvestris-adoption.md. Workers/MCP never depend on this module.
+//! Silvestris adapter for the desktop.
 use gpui::App;
-
-pub const STAGING_THEME: silvestris::ThemeId = silvestris::ThemeId::GEIST_DARK;
 
 /// Register bundled fonts and install the shared theme before the first window.
 pub fn initialize(initial_theme: Option<silvestris::ThemeId>, cx: &mut App) -> Result<(), String> {
@@ -26,22 +22,17 @@ pub fn parse_theme(value: &str) -> Option<silvestris::ThemeId> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn theme_arguments_and_staging_default_are_explicit() {
+    fn theme_arguments_are_explicit() {
         let args = ["aqua-light", "aqua-dark", "geist-light", "geist-dark"];
         for (arg, expected) in args.into_iter().zip(silvestris::ThemeId::ALL) {
             assert_eq!(super::parse_theme(arg), Some(expected));
         }
         assert_eq!(super::parse_theme("unknown"), None);
-        assert_eq!(
-            crate::preferences::SharedUiPreferences::default().theme_id(),
-            super::STAGING_THEME
-        );
     }
     #[test]
-    fn staging_palette_matches_legacy_surfaces_and_diagnostics() {
+    fn geist_dark_matches_legacy_surfaces_and_diagnostics() {
         let theme = crate::theme::legacy();
-        assert_eq!(super::STAGING_THEME, silvestris::ThemeId::GEIST_DARK);
-        let shared = silvestris::core::theme(super::STAGING_THEME);
+        let shared = silvestris::core::theme(silvestris::ThemeId::GEIST_DARK);
         assert_eq!(theme.font, shared.type_.ui);
         assert_eq!(theme.mono, shared.type_.mono);
         for (new, old) in [

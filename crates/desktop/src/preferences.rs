@@ -93,8 +93,8 @@ impl Default for SharedUiPreferences {
             schema_version: 1,
             inspector_pinned: false,
             inspector_panel: "cpu".into(),
-            theme_family: silvestris::ThemeFamily::Geist,
-            appearance: silvestris::Appearance::Dark,
+            theme_family: silvestris::ThemeId::AQUA_LIGHT.family,
+            appearance: silvestris::ThemeId::AQUA_LIGHT.appearance,
             extra: Default::default(),
         }
     }
@@ -275,6 +275,41 @@ mod tests {
             assert_eq!(loaded.ui.extra, store.ui.extra);
             loaded.save();
             assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    #[test]
+    fn aqua_light_fills_only_unsaved_theme_dimensions() {
+        use silvestris::ThemeId;
+
+        let dir = test_directory("theme-default");
+        let path = dir.join("desktop.json");
+        assert_eq!(
+            Store::load(Some(path.clone())).ui.theme_id(),
+            ThemeId::AQUA_LIGHT
+        );
+        for (saved, expected) in [
+            (r#"{"inspector_open":true}"#, ThemeId::AQUA_LIGHT),
+            (
+                r#"{"silvestris":{"theme_family":"Geist"}}"#,
+                ThemeId::GEIST_LIGHT,
+            ),
+            (
+                r#"{"silvestris":{"appearance":"Dark"}}"#,
+                ThemeId::AQUA_DARK,
+            ),
+            (
+                r#"{"silvestris":{"theme_family":"Geist","appearance":"Dark"}}"#,
+                ThemeId::GEIST_DARK,
+            ),
+        ] {
+            std::fs::write(&path, saved).unwrap();
+            let store = Store::load(Some(path.clone()));
+            assert!(store.path.is_some(), "{saved}");
+            assert_eq!(store.ui.theme_id(), expected);
         }
         std::fs::remove_file(path).unwrap();
         std::fs::remove_dir(dir).unwrap();

@@ -1,6 +1,6 @@
 LOTUS 0.1.0 uses Silvestris for the desktop and Settings. New profiles use
-Geist Dark. Settings → General switches Style and Appearance without closing
-your sessions. Existing pane sizes and visibility are retained.
+Aqua Light. Settings → General switches Style and Appearance without closing
+your sessions. Saved themes, pane sizes and visibility are retained.
 
 On Windows x64, extract the ZIP and run `LOTUS.cmd` with your own
 `.3dsx` homebrew. `LOTUS-AZAHAR.cmd` selects the upstream-tracking
