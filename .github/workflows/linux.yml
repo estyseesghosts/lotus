@@ -124,7 +124,7 @@ jobs:
       - name: System libraries
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends             build-essential cmake ninja-build pkg-config git libpulse-dev libasound2-dev
+          sudo apt-get install -y --no-install-recommends build-essential cmake ninja-build pkg-config git libpulse-dev libasound2-dev libx11-dev libx11-xcb-dev libwayland-dev libxkbcommon-dev
       - name: Pinned native source
         run: |
           commit=$(python3 -c 'import tomllib; print(tomllib.load(open("config/pins.toml","rb"))["azahar"]["${{ matrix.branch }}_commit"])')

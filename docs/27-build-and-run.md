@@ -254,7 +254,7 @@ include is cleared with `-UCMAKE_PROJECT_citra_INCLUDE`, because CMake 3.28
 treats an empty `-DCMAKE_PROJECT_citra_INCLUDE=` as a directory and fails.
 
 ```sh
-sudo apt install build-essential cmake ninja-build pkg-config git libpulse-dev libasound2-dev
+sudo apt install build-essential cmake ninja-build pkg-config git libpulse-dev libasound2-dev libx11-dev libx11-xcb-dev libwayland-dev libxkbcommon-dev
 git clone --no-checkout https://github.com/estyseesghosts/azahar.git azahar-integration
 git -C azahar-integration checkout --detach <integration_commit from pins.toml>
 git -C azahar-integration submodule update --init --recursive --depth 1
