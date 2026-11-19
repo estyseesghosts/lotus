@@ -19,6 +19,8 @@ Pins (config/pins.toml): integration (AZAHAR) `b04d8a6c`, experimental
   builtin preset reproduces the shipped keys (#57).
 - Preset import refuses binding values of the wrong JSON type instead of
   unbinding the action, and returns what it dropped as `warnings` (#114).
+- An MCP `lotus_workspace single` of a session other than the sidebar
+  selection is no longer reverted on the next desktop tick (#112).
 - Space, `.`, Tab, Esc and modifier keys can no longer be bound to 3DS
   actions: settings reject them and import drops them with a warning. Holding
   Space or `.` no longer leaks the key to the session as a game key (#113).

@@ -508,3 +508,84 @@ fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
     drop(controller);
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// An MCP `single` survives the desktop's selection sync until the user selects again (#112).
+#[test]
+fn an_mcp_single_view_is_not_reverted_by_the_selection() {
+    use lotus_session::telemetry::Actor;
+    use lotus_session::workspace::Operation;
+    let base = std::env::temp_dir().join(format!("lotus-msingle-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).expect("base");
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").expect("content");
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let controller = DesktopController::start(config, McpMode::Off).expect("controller");
+    for _ in 0..2 {
+        controller
+            .commands
+            .send(Command::Create {
+                kind: SessionKind::Secondary { parent: None },
+                asset: Some("demo".into()),
+            })
+            .expect("create");
+    }
+    wait(&controller, "two sessions", |update| {
+        update.sessions.len() == 2
+    });
+    let ids: Vec<String> = {
+        let update = controller.latest.lock().expect("snapshot");
+        update.sessions.iter().map(|s| s.info.id.clone()).collect()
+    };
+    let (a, b) = (ids[0].clone(), ids[1].clone());
+    controller
+        .commands
+        .send(Command::Select(a.clone()))
+        .expect("select");
+    wait(&controller, "A shown", |update| {
+        update.selected == a && update.workspace.layout.visible() == [a.as_str()]
+    });
+    let host = controller.host();
+    let revision = host.workspace().snapshot.revision;
+    let committed = host
+        .update_workspace(
+            &Operation::Single { session: b.clone() },
+            Some(revision),
+            Actor::Mcp,
+        )
+        .expect("single(B)");
+    let start = ticks(&controller);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ticks(&controller) < start + 10 {
+        assert!(Instant::now() < deadline, "the loop stopped ticking");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let status = host.workspace().snapshot;
+    assert_eq!(
+        status.layout.visible(),
+        [b.as_str()],
+        "reverted to the selection"
+    );
+    assert_eq!(
+        status.revision, committed.revision,
+        "needless revision bump"
+    );
+    {
+        let update = controller.latest.lock().expect("snapshot");
+        assert_eq!(
+            update.selected, a,
+            "the workspace never changes the selection"
+        );
+        assert_eq!(update.workspace.layout.visible(), [b.as_str()]);
+    }
+    controller
+        .commands
+        .send(Command::Select(a.clone()))
+        .expect("select");
+    wait(&controller, "selecting A again shows it", |update| {
+        update.workspace.layout.visible() == [a.as_str()]
+    });
+    drop(controller);
+    let _ = std::fs::remove_dir_all(&base);
+}

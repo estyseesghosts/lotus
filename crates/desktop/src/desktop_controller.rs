@@ -252,6 +252,7 @@ impl DesktopController {
             shutdown: shutdown.clone(),
             pending: Arc::new(AtomicUsize::new(0)),
             selected: Arc::new(tokio::sync::watch::channel(String::new()).0),
+            reveal: Arc::new(AtomicBool::new(false)),
             inspected: Arc::new(tokio::sync::watch::channel(String::new()).0),
             generation: Arc::new(AtomicU64::new(0)),
             in_flight: Arc::default(),
@@ -314,6 +315,10 @@ struct Loops {
     pending: Arc<AtomicUsize>,
     /// The selected session, for the preview, inspector and audio tasks.
     selected: Arc<tokio::sync::watch::Sender<String>>,
+    /// Set when the selection was chosen (sidebar, focus request, a new or opened session,
+    /// or the fallback after the selected one stopped); [`Loops::show_selected`] then shows
+    /// it once. Otherwise the committed workspace stands, so an MCP `single` is kept (#112).
+    reveal: Arc<AtomicBool>,
     /// The inspected session ([`Update::inspected`]), for the inspector task.
     inspected: Arc<tokio::sync::watch::Sender<String>>,
     /// Increments on every inspected-session change; results carry the value they started with.
@@ -347,7 +352,7 @@ impl Loops {
                 break;
             }
             if let Some(id) = self.host.take_focus_request() {
-                lock(&self.published).selected = id;
+                self.select(id);
             }
             if catalog_at.is_none_or(|at| at.elapsed() >= CATALOG_PERIOD) {
                 let cards = self.host.cards().unwrap_or_default();
@@ -372,7 +377,7 @@ impl Loops {
                         .clone()
                 }));
             let waiting = self.waiting();
-            let selected = {
+            let (selected, reveal) = {
                 let mut update = lock(&self.published);
                 if !sessions.iter().any(|s| s.info.id == update.selected) {
                     // A stopped tile collapses the split to the other one (lotus#67); keep
@@ -385,11 +390,15 @@ impl Loops {
                         .map(str::to_string)
                         .or_else(|| sessions.first().map(|s| s.info.id.clone()))
                         .unwrap_or_default();
+                    self.reveal.store(true, Ordering::Release);
                 }
                 update.sessions = sessions;
                 update.pending = self.pending.load(Ordering::Acquire);
                 update.waiting = waiting;
-                update.selected.clone()
+                (
+                    update.selected.clone(),
+                    self.reveal.swap(false, Ordering::AcqRel),
+                )
             };
             let changed = self.selected.send_if_modified(|current| {
                 let changed = *current != selected;
@@ -401,7 +410,7 @@ impl Loops {
             if changed && !selected.is_empty() {
                 self.host.set_focus(&selected);
             }
-            self.show_selected(&selected);
+            self.show_selected(&selected, reveal);
             let inspected = {
                 let mut update = lock(&self.published);
                 let shown = update.workspace.layout.visible();
@@ -777,12 +786,25 @@ impl Loops {
         }
     }
 
-    /// Outside a split, the window shows the selected session; this goes through the shared
+    /// Selects `id` and asks [`Loops::show_selected`] to show it.
+    fn select(&self, id: String) {
+        // Under the same lock the loop reads both with, so it never shows a stale id.
+        let mut update = lock(&self.published);
+        update.selected = id;
+        self.reveal.store(true, Ordering::Release);
+    }
+
+    /// Outside a split, a newly chosen selection is shown; this goes through the shared
     /// workspace operation so MCP sees the same revision. A split is never collapsed by
-    /// selection. A session that vanished meanwhile is refused and retried next tick.
-    fn show_selected(&self, selected: &str) {
+    /// selection, and an unchanged selection never overrides the committed workspace.
+    /// A session that vanished meanwhile is refused and retried next tick.
+    fn show_selected(&self, selected: &str, reveal: bool) {
         use lotus_session::workspace::{Layout, Operation};
         let status = self.host.workspace();
+        if !reveal {
+            lock(&self.published).workspace = status.snapshot;
+            return;
+        }
         let shown = match &status.snapshot.layout {
             Layout::Split { .. } => true,
             Layout::Single { session, .. } => session == selected,
@@ -796,7 +818,10 @@ impl Loops {
             };
             self.host
                 .update_workspace(&single, None, Actor::Desktop)
-                .unwrap_or(status.snapshot)
+                .unwrap_or_else(|_| {
+                    self.reveal.store(true, Ordering::Release);
+                    status.snapshot
+                })
         };
         lock(&self.published).workspace = snapshot;
     }
@@ -810,7 +835,7 @@ impl Loops {
                 Err(TryRecvError::Disconnected) => return false,
             };
             if let Command::Select(id) = command {
-                lock(&self.published).selected = id;
+                self.select(id);
                 continue;
             }
             if let Command::Inspect(tile) = command {
@@ -839,7 +864,7 @@ impl Loops {
         match command {
             Command::Create { kind, asset } => {
                 let info = host.create(kind, asset.as_deref(), actor).await?;
-                lock(&self.published).selected = info.id.clone();
+                self.select(info.id.clone());
                 if info.asset.is_some() {
                     host.run(&info.id, actor).await?;
                 }
@@ -860,7 +885,7 @@ impl Loops {
                         host.create(kind, Some(&asset), actor).await?.id
                     }
                 };
-                lock(&self.published).selected = session.clone();
+                self.select(session.clone());
                 host.run(&session, actor).await?;
             }
             Command::Select(_) | Command::Inspect(_) => {}

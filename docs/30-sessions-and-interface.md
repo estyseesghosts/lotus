@@ -291,6 +291,9 @@ same state through `Supervisor::update_workspace`; neither keeps its own layout.
   (`Update::selected`), controller input, audio focus and worker execution.
   Outside a split, selecting a session in the sidebar or with
   `lotus_focus_session` shows it via `single`; selection never collapses a split.
+  Only a new choice does this (sidebar, focus request, a created or opened
+  session, or the fallback after the selected one stops): an MCP `single` of
+  another session stays until the next one (#112).
 - A stopped session leaves the workspace when it is unregistered: a split
   collapses to the other tile, whose worker keeps running; a single view becomes
   empty. A crashed session stays registered and keeps its tile.
