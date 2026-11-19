@@ -271,7 +271,7 @@ checks selection, inspected target, panel, source rows and layout preferences
 survive switching. Persistence tests cover all combinations, missing/invalid
 fields and unknown-field retention. Palette tests check body/secondary/primary
 text contrast in every combination. Native pixel, DPI and live-worker theme
-switch validation remain open, along with the legacy control/menu/chrome
+switch validation remain open, along with the remaining control/menu
 replacement. This does not change the first-run default to Aqua.
 
 ## Settings checkbox adoption
@@ -288,3 +288,34 @@ Silvestris docs/checkbox.md records artwork measurements, estimates and keyboard
 choices. Mock-platform tests cover pointer/Space changes to a desktop preference,
 unrelated-setting retention and a read-only worker setting in all four themes.
 Native input, accessibility delivery and pixel/DPI checks remain unverified.
+
+## Unified window composition
+
+Main and Settings now open through chrome::window_options/open_window and render
+inside WindowFrame. The framework supplies titlebar materials, traffic lights,
+native control hit areas, rounded corners, resize grip and bottom-bar material.
+Main uses one window-wide toolbar with shared textured buttons, followed by the
+measured content shell and a compact host/session/MCP status strip. Settings has
+the same titlebar and frame. Sidebar branding/footer duplication is removed in
+staging. The disconnected workspace uses the existing user-provided Lotus icon
+(assets/README.md records its source/hash) and a functional Settings action.
+
+The shared toolbar keeps Sidebar, Run/Pause, Step, Open, Actions, Inspector and
+Settings reachable at 720 logical px. Zoom/screens controls appear directly at
+1060 px; Actions retains the existing zoom/layout and selected-session commands
+at narrower sizes. The old command popovers, inspector controls, gauges and
+Settings navigation still need conversion; this is not full visual acceptance.
+
+WindowFrame consumes theme-specific title/toolbar/bottom heights. Shell::measured
+therefore receives the real remaining content height, and preview fitting no
+longer subtracts the old workspace toolbar again. Theme switching preserves
+workspace/session state but deliberately recomputes the available preview bounds
+from each theme's chrome metrics. Tests verify exact chrome/content boundaries,
+all-theme minimum-width control reachability, inspector activation and focus.
+
+Sources: #127/#133/#138, handbook 05/13/19, Silvestris chrome.rs and button.rs.
+Windows captures use tools/capture/capture-window.ps1 -WindowOnly -ExactTitle
+with the preview PID, allowing inspection even when the terminal or Settings
+occludes Main. The initial Aqua Light composition was inspected from its native
+1280×880 surface at 100% scale. Other scales/platforms, native window gestures,
+screen-reader delivery and live-worker preview/input acceptance remain open.

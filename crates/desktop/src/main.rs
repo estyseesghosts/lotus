@@ -4,7 +4,9 @@
 //! full MCP toolset on stdio over the same sessions, so an agent can launch
 //! LOTUS as its MCP server while a person watches and uses the same window.
 //! stdout then carries only MCP frames.
-use gpui::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
+use gpui::{App, AppContext, Bounds};
+#[cfg(not(feature = "silvestris-ui"))]
+use gpui::{TitlebarOptions, WindowBounds, WindowOptions};
 use lotus_desktop::desktop_controller::McpMode;
 use lotus_desktop::lotus_window::LotusWindow;
 use lotus_session::supervisor::{parse_asset_dir, HostConfig};
@@ -86,10 +88,18 @@ fn main() {
             return;
         }
         let bounds = Bounds::centered(None, gpui::size(gpui::px(1280.0), gpui::px(880.0)), cx);
-        // Only Windows uses the handle: `ensure_visible` undoes a parent's SW_HIDE.
-        #[cfg_attr(not(windows), allow(unused_variables))]
-        let handle = cx
-            .open_window(
+        let options = {
+            #[cfg(feature = "silvestris-ui")]
+            {
+                silvestris::chrome::window_options(
+                    "LOTUS",
+                    bounds,
+                    gpui::size(gpui::px(720.), gpui::px(560.)),
+                    cx,
+                )
+            }
+            #[cfg(not(feature = "silvestris-ui"))]
+            {
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(TitlebarOptions {
@@ -98,10 +108,19 @@ fn main() {
                     }),
                     window_min_size: Some(gpui::size(gpui::px(720.0), gpui::px(560.0))),
                     ..Default::default()
-                },
-                |window, cx| cx.new(|cx| LotusWindow::new(config, mcp, window, cx)),
-            )
-            .expect("open LOTUS window");
+                }
+            }
+        };
+        let build = |window: &mut gpui::Window, cx: &mut App| {
+            cx.new(|cx| LotusWindow::new(config, mcp, window, cx))
+        };
+        #[cfg(feature = "silvestris-ui")]
+        #[cfg_attr(not(windows), allow(unused_variables))]
+        let handle =
+            silvestris::chrome::open_window(options, cx, build).expect("open LOTUS window");
+        #[cfg(not(feature = "silvestris-ui"))]
+        #[cfg_attr(not(windows), allow(unused_variables))]
+        let handle = cx.open_window(options, build).expect("open LOTUS window");
         #[cfg(windows)]
         let _ = handle.update(cx, |_, window, _| ensure_visible(window));
         cx.activate(true);

@@ -121,3 +121,8 @@ inspector state. The legacy renderer uses its original fixed palette. See [38](3
 Staged Settings Boolean rows use the public Checkbox with descriptor-owned labels
 and the existing write callback. Read-only rows retain their explanatory tooltip
 and use the control's disabled state; no worker setting API changes.
+
+Staged Main/Settings windows use the framework's native window adapter and
+WindowFrame. A window-wide toolbar and status bar surround Main's measured
+content shell; preview sizing consumes the content bounds after chrome layout.
+See [38](38-silvestris-adoption.md) for the remaining control and native gates.

@@ -87,7 +87,8 @@ pub fn from_theme(theme: &silvestris::core::Theme) -> Palette {
         surface_hover: rgba(theme.controls.push.normal.upper.from),
         surface_active: rgba(theme.controls.push.pressed.upper.from),
         border: rgba(colors.divider),
-        border_strong: rgba(theme.controls.push.pressed.border.from),
+        // A structural border is neutral; Aqua's pressed button edge is blue.
+        border_strong: rgba(theme.controls.field.border),
         text: rgba(colors.text),
         text_secondary: rgba(colors.text_secondary),
         // Explanatory text is not disabled UI: retain readable secondary contrast.

@@ -19,8 +19,7 @@ use gpui::prelude::FluentBuilder;
 use gpui::{
     div, px, App, AppContext, Bounds, ClickEvent, Context, FocusHandle, FontWeight,
     InteractiveElement, IntoElement, KeyDownEvent, ParentElement, Render, SharedString, Stateful,
-    StatefulInteractiveElement, Styled, TitlebarOptions, WeakEntity, Window, WindowBounds,
-    WindowHandle, WindowOptions,
+    StatefulInteractiveElement, Styled, WeakEntity, Window, WindowHandle,
 };
 use lotus_session::supervisor::{SettingsTarget, Supervisor};
 use lotus_session::telemetry::Actor;
@@ -30,6 +29,8 @@ use serde_json::Value;
 use crate::icons::{icon, Icon};
 use crate::lotus_window::{with_tooltip, LotusWindow};
 use crate::theme;
+#[cfg(not(feature = "silvestris-ui"))]
+use gpui::{TitlebarOptions, WindowBounds, WindowOptions};
 
 /// `desktop.json` key holding this window's last bounds; window state, not shown as a row.
 pub const BOUNDS_KEY: &str = "lotus.desktop.settings_bounds";
@@ -105,8 +106,10 @@ pub fn open(
     let bounds = saved.unwrap_or_else(|| {
         Bounds::centered(None, gpui::size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)), cx)
     });
-    let opened = cx.open_window(
-        WindowOptions {
+    #[cfg(feature = "silvestris-ui")]
+    let options = silvestris::chrome::window_options("LOTUS Settings", bounds, gpui::size(px(MIN_SIZE.0), px(MIN_SIZE.1)), cx);
+    #[cfg(not(feature = "silvestris-ui"))]
+    let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
                 title: Some("LOTUS Settings".into()),
@@ -114,8 +117,8 @@ pub fn open(
             }),
             window_min_size: Some(gpui::size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
             ..Default::default()
-        },
-        |window, cx| {
+        };
+    let build = |window: &mut Window, cx: &mut App| {
             cx.new(|cx| {
                 let view = SettingsWindow::new(lotus.clone(), host, control, target, window, cx);
                 let remember = lotus.clone();
@@ -125,8 +128,11 @@ pub fn open(
                 });
                 view
             })
-        },
-    );
+        };
+    #[cfg(feature = "silvestris-ui")]
+    let opened = silvestris::chrome::open_window(options, cx, build);
+    #[cfg(not(feature = "silvestris-ui"))]
+    let opened = cx.open_window(options, build);
     match opened {
         Ok(handle) => {
             let _ = handle.update(cx, |view, window, cx| window.focus(&view.focus, cx));
@@ -733,7 +739,7 @@ impl Render for SettingsWindow {
                  settings apply when its primary next starts; input layouts apply at once."
             ),
         };
-        div()
+        let body = div()
             .id("settings-root")
             .track_focus(&self.focus)
             .key_context("Settings")
@@ -799,7 +805,11 @@ impl Render for SettingsWindow {
                             }),
                     )
                     .child(list),
-            )
+            );
+        #[cfg(feature = "silvestris-ui")]
+        { silvestris::chrome::WindowFrame::new("LOTUS Settings").child(body).into_any_element() }
+        #[cfg(not(feature = "silvestris-ui"))]
+        { body.into_any_element() }
     }
 }
 
@@ -1152,7 +1162,11 @@ mod tests {
                     "switch preserves the choice responder"
                 );
             });
-            assert_eq!(main_cx.debug_bounds("shell-workspace").unwrap(), workspace);
+            let bounds = main_cx.debug_bounds("shell-workspace").unwrap();
+            let metrics = silvestris::core::theme(expected).metrics;
+            assert_eq!((bounds.left(), bounds.size.width), (workspace.left(), workspace.size.width));
+            assert_eq!(bounds.top(), px(metrics.titlebar_height + metrics.toolbar_height));
+            assert_eq!(bounds.bottom(), px(880. - metrics.bottom_bar_height));
             assert!(cx.debug_bounds("appearance-settings").is_some());
         }
     }

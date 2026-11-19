@@ -1,8 +1,17 @@
 //! #131/#132/#138: one measured shell for single and split workspaces.
 //! Controller inspection remains explicit per tile, otherwise follows selection.
 use super::*;
+use silvestris::controls::{Button, ButtonStyle, ControlSize};
 use silvestris::core::layout::{self as shared, InspectorPreference, SidebarPreference};
 use silvestris::shell::{Shell, ShellContent};
+use silvestris::ActiveTheme;
+
+static LOTUS_ART: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock::new(|| {
+    Arc::new(gpui::Image::from_bytes(
+        gpui::ImageFormat::Png,
+        include_bytes!("../../assets/lotus.png").to_vec(),
+    ))
+});
 
 fn legacy_plan(plan: &shared::ShellPlan) -> Plan {
     Plan {
@@ -15,6 +24,194 @@ fn legacy_plan(plan: &shared::ShellPlan) -> Plan {
 }
 
 impl LotusWindow {
+    // Handbook 05/13 and #127/#133: the frame owns one window-wide unified
+    // toolbar; shell measurement receives only the remaining content bounds.
+    pub(super) fn render_shared_window(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let title = self
+            .selected_summary()
+            .map(|s| format!("{} — LOTUS", session_tree::session_label(&s.info)))
+            .unwrap_or_else(|| "LOTUS".into());
+        let height = cx.theme().metrics.toolbar_height;
+        silvestris::chrome::WindowFrame::new(title)
+            .toolbar(self.render_shared_toolbar(window, cx), height)
+            .bottom_bar(self.render_shared_status(cx))
+            .child(self.render_shared_shell(cx))
+            .into_any_element()
+    }
+
+    fn render_shared_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
+        let wide = f32::from(window.viewport_size().width) >= 1060.;
+        let loaded = self
+            .selected_summary()
+            .is_some_and(|s| s.info.asset.is_some() && s.telemetry.state.is_active());
+        let playing = self.selected_summary().is_some_and(|s| s.telemetry.playing);
+        let control = self.control && loaded;
+        let button = |id: &'static str, label: &str| {
+            Button::new(id, SharedString::from(label.to_owned()))
+                .style(ButtonStyle::Textured)
+                .size(ControlSize::Small)
+        };
+        div()
+            .id("lotus-unified-toolbar")
+            .debug_selector(|| "lotus-unified-toolbar".into())
+            .size_full()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(10.))
+            // Child controls own focus. Do not send a toolbar click to the
+            // root's screen-focus handler (guest input stays released).
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                button("shared-sidebar", "Sidebar")
+                    .selected(self.preferences.values.sessions_open)
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.release_input();
+                        view.toggle_pane(Pane::Sessions, window);
+                        cx.notify();
+                    })),
+            )
+            .child(div().w(px(1.)).h(px(18.)).bg(theme.border).mx(px(2.)))
+            .child(
+                button("shared-run", if playing { "Pause" } else { "Run" })
+                    .disabled(!control)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.toggle_run();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                button("shared-step", "Step")
+                    .disabled(!control || playing)
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        view.step();
+                        cx.notify();
+                    })),
+            )
+            .child(
+                button("shared-open", "Open…")
+                    .disabled(!self.control || self.controller.is_none())
+                    .on_click(cx.listener(|view, _, _, cx| {
+                        let session = view
+                            .selected_summary()
+                            .filter(|s| s.telemetry.state.is_active())
+                            .map(|s| s.info.id.clone());
+                        view.open_file(session, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px(px(8.))
+                    .text_size(px(11.))
+                    .text_color(theme.text_secondary)
+                    .truncate()
+                    .child(
+                        self.selected_summary()
+                            .map(|s| session_tree::session_label(&s.info))
+                            .unwrap_or_else(|| "No session selected".into()),
+                    ),
+            )
+            .when(wide, |bar| {
+                bar.child(
+                    button("shared-zoom", self.zoom.label()).on_click(cx.listener(
+                        |view, _, _, cx| {
+                            view.release_input();
+                            view.zoom = view.zoom.next();
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(
+                    button("shared-screens", self.layout.label()).on_click(cx.listener(
+                        |view, _, _, cx| {
+                            view.release_input();
+                            view.layout = view.layout.other();
+                            cx.notify();
+                        },
+                    )),
+                )
+            })
+            .child(
+                button("shared-actions", "Actions").on_click(cx.listener(|view, _, _, cx| {
+                    view.menu = if view.menu == Menu::Toolbar {
+                        Menu::Closed
+                    } else {
+                        Menu::Toolbar
+                    };
+                    cx.notify();
+                })),
+            )
+            .child(
+                button("shared-inspector", "Inspector")
+                    .selected(self.preferences.values.inspector_open)
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        view.release_input();
+                        view.toggle_pane(Pane::Inspector, window);
+                        cx.notify();
+                    })),
+            )
+            .child(
+                button("shared-settings", "Settings").on_click(cx.listener(|view, _, _, cx| {
+                    view.open_settings(crate::settings_window::Target::Global, cx)
+                })),
+            )
+    }
+
+    fn render_shared_status(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
+        let mcp = match self.mcp {
+            McpLink::Attached => "MCP attached",
+            McpLink::Closed => "MCP disconnected",
+            McpLink::Off => "MCP off",
+        };
+        let host = if self.controller.is_none() {
+            "No host connected"
+        } else if self.control {
+            "Control enabled"
+        } else {
+            "Read-only host"
+        };
+        div()
+            .id("lotus-status")
+            .debug_selector(|| "lotus-status".into())
+            .size_full()
+            .flex()
+            .items_center()
+            .px(px(12.))
+            .pr(px(26.))
+            .gap(px(10.))
+            .text_size(px(11.))
+            .text_color(theme.text_secondary)
+            .child(format!(
+                "{} session{}",
+                self.sessions.len(),
+                if self.sessions.len() == 1 { "" } else { "s" }
+            ))
+            .child(div().flex_1().min_w_0().truncate().child(host))
+            .child(mcp)
+    }
+
+    pub(super) fn render_shared_disconnected(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::palette(cx);
+        div().id("lotus-disconnected").flex().flex_1().min_h_0().items_center().justify_center()
+            .child(div().flex().flex_col().items_center().gap(px(14.)).max_w(px(420.)).px(px(28.))
+                .child(gpui::img(LOTUS_ART.clone()).size(px(144.)).object_fit(gpui::ObjectFit::Contain))
+                .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child("Welcome to Lotus"))
+                .child(div().text_size(px(13.)).text_color(theme.text_secondary).text_center()
+                    .child("Connect a host configuration to open your cards and run Nintendo 3DS sessions."))
+                .child(Button::new("empty-settings", "Open Settings").on_click(cx.listener(|view, _, _, cx| view.open_settings(crate::settings_window::Target::Global, cx))))
+                .child(div().text_size(px(11.)).text_color(theme.text_secondary).text_center()
+                    .child(if self.startup_error.is_empty() { "Start Lotus with a host.json configuration to connect a workspace.".into() } else { format!("Could not connect: {}", self.startup_error) })))
+            .into_any_element()
+    }
+
     pub(crate) fn ui_theme(&self) -> silvestris::ThemeId {
         self.preferences.ui.theme_id()
     }
@@ -217,6 +414,62 @@ mod tests {
         cx.update(|window, cx| {
             window.draw(cx).clear(cx);
         });
+    }
+
+    #[test]
+    fn frame_budgets_chrome_and_keeps_toolbar_controls_reachable_at_minimum_width() {
+        for theme in silvestris::ThemeId::ALL {
+            let mut app = TestAppContext::single();
+            app.update(|cx| {
+                silvestris::test_support::initialize(
+                    silvestris::ThemePreference::explicit(theme),
+                    cx,
+                )
+            });
+            let (view, cx) = app.add_window_view(LotusWindow::test_preview);
+            for width in [720., 1280.] {
+                cx.simulate_resize(size(px(width), px(880.)));
+                draw(cx);
+                let metrics = silvestris::core::theme(theme).metrics;
+                let workspace = cx.debug_bounds("shell-workspace").unwrap();
+                let toolbar = cx.debug_bounds("lotus-unified-toolbar").unwrap();
+                let status = cx.debug_bounds("lotus-status").unwrap();
+                assert_eq!(toolbar.top(), px(metrics.titlebar_height));
+                assert_eq!(toolbar.bottom(), workspace.top());
+                assert_eq!(workspace.bottom(), status.top());
+                assert_eq!(status.bottom(), px(880.));
+                for control in [
+                    "shared-sidebar",
+                    "shared-run",
+                    "shared-step",
+                    "shared-open",
+                    "shared-actions",
+                    "shared-inspector",
+                    "shared-settings",
+                ] {
+                    let bounds = cx.debug_bounds(control).unwrap();
+                    assert!(
+                        bounds.left() >= px(0.) && bounds.right() <= px(width),
+                        "{theme:?} {width} {control}: {bounds:?}"
+                    );
+                    assert!(bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom());
+                }
+                // The no-host toolbar still exposes navigation/settings, and
+                // disabled Run cannot synthesize a guest control action.
+                let run = cx.debug_bounds("shared-run").unwrap();
+                cx.simulate_click(run.center(), Modifiers::default());
+                draw(cx);
+                cx.update(|_, cx| assert!(view.read(cx).keys.is_empty()));
+                let inspector = cx.debug_bounds("shared-inspector").unwrap();
+                cx.simulate_click(inspector.center(), Modifiers::default());
+                draw(cx);
+                cx.update(|_, cx| assert!(view.read(cx).preferences.values.inspector_open));
+                // Close before the next size; the persistent rail remains.
+                cx.simulate_click(inspector.center(), Modifiers::default());
+                draw(cx);
+                cx.update(|_, cx| assert!(!view.read(cx).preferences.values.inspector_open));
+            }
+        }
     }
 
     #[test]
@@ -452,7 +705,18 @@ mod tests {
         for id in silvestris::ThemeId::ALL {
             cx.update(|_, cx| view.update(cx, |view, cx| view.set_ui_theme(id, cx)));
             draw(cx);
-            assert_eq!(cx.debug_bounds("shell-workspace").unwrap(), closed);
+            let bounds = cx.debug_bounds("shell-workspace").unwrap();
+            let metrics = silvestris::core::theme(id).metrics;
+            assert_eq!(
+                (bounds.left(), bounds.size.width),
+                (closed.left(), closed.size.width)
+            );
+            assert_eq!(
+                bounds.top(),
+                px(metrics.titlebar_height + metrics.toolbar_height)
+            );
+            let height = cx.update(|window, _| window.viewport_size().height);
+            assert_eq!(bounds.bottom(), height - px(metrics.bottom_bar_height));
             cx.update(|_, cx| {
                 let view = view.read(cx);
                 assert_eq!(

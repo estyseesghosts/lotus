@@ -47,6 +47,10 @@ mod shared_navigation;
 mod shared_shell;
 
 const TOOLBAR_HEIGHT: f32 = 52.0;
+// Silvestris measures its content below the frame's unified toolbar.
+fn workspace_toolbar_height() -> f32 {
+    if cfg!(feature = "silvestris-ui") { 0.0 } else { TOOLBAR_HEIGHT }
+}
 const SCREEN_GAP: f32 = 12.0;
 const CONTENT_PADDING: f32 = 24.0;
 /// Session name, controller and layout controls above each tile of a split.
@@ -1056,7 +1060,7 @@ impl LotusWindow {
             .w(px(width))
             .h_full()
             .bg(theme.panel)
-            .child(
+            .when(!cfg!(feature = "silvestris-ui"), |sidebar| sidebar.child(
                 div()
                     .flex()
                     .items_center()
@@ -1091,7 +1095,7 @@ impl LotusWindow {
                             },
                         )),
                     ),
-            )
+            ))
             .child(
                 div()
                     .flex()
@@ -1117,7 +1121,7 @@ impl LotusWindow {
             )
             .child(list)
             .child(self.render_controllers(cx))
-            .child(self.render_sidebar_footer(cx))
+            .when(!cfg!(feature = "silvestris-ui"), |sidebar| sidebar.child(self.render_sidebar_footer(cx)))
             .when(!cfg!(feature = "silvestris-ui"), |sidebar| {
                 sidebar.child(self.divider(Pane::Sessions, cx))
             })
@@ -2394,7 +2398,7 @@ impl LotusWindow {
     fn render_toolbar_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         let mut menu = popover(theme, "toolbar-menu")
-            .top(px(TOOLBAR_HEIGHT - 4.0))
+            .top(px((workspace_toolbar_height() - 4.0).max(4.0)))
             .right(px(16.0))
             .w(px(240.0))
             .on_mouse_down_out(cx.listener(|view, _, _, _| view.menu = Menu::Closed));
@@ -2472,7 +2476,7 @@ impl LotusWindow {
         let theme = theme::palette(cx);
         let session = self.selected.clone();
         popover(theme, "load-menu")
-            .top(px(TOOLBAR_HEIGHT - 4.0))
+            .top(px((workspace_toolbar_height() - 4.0).max(4.0)))
             .right(px(16.0))
             .w(px(280.0))
             .on_mouse_down_out(cx.listener(|view, _, _, _| view.menu = Menu::Closed))
@@ -2537,6 +2541,9 @@ impl LotusWindow {
     ) -> AnyElement {
         let theme = theme::palette(cx);
         if self.controller.is_none() {
+            #[cfg(feature = "silvestris-ui")]
+            return self.render_shared_disconnected(cx);
+            #[cfg(not(feature = "silvestris-ui"))]
             return empty_state(
                 theme,
                 "No host configuration",
@@ -2691,7 +2698,7 @@ impl LotusWindow {
             return div().into_any_element();
         };
         let width = plan.main - 2.0 * CONTENT_PADDING;
-        let height = viewport_height - TOOLBAR_HEIGHT - gauge_height - 2.0 * CONTENT_PADDING;
+        let height = viewport_height - workspace_toolbar_height() - gauge_height - 2.0 * CONTENT_PADDING;
         let ratio = self.ratio_drag.unwrap_or(*ratio);
         let split = split_plan(width, height, *axis, ratio, *screens, self.split_held.get());
         self.split_held.set(Some(split));
@@ -3345,7 +3352,7 @@ impl LotusWindow {
             Zoom::Fit => {
                 let width = plan.main - 2.0 * CONTENT_PADDING;
                 let height =
-                    viewport_height - TOOLBAR_HEIGHT - gauge_height - 2.0 * CONTENT_PADDING;
+                    viewport_height - workspace_toolbar_height() - gauge_height - 2.0 * CONTENT_PADDING;
                 fit_scale(self.layout, width, height)
             }
         }
@@ -4112,7 +4119,6 @@ impl LotusWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let density = layout::toolbar_density(plan.main);
         let mode = layout::gauge_mode(plan.main, viewport_height, self.gauges_expanded);
         // A split shows each console's gauges beside its own tile instead (lotus#70).
         let split = matches!(self.workspace.layout, Layout::Split { .. });
@@ -4135,7 +4141,7 @@ impl LotusWindow {
             .w(px(plan.main.max(0.0)))
             .min_w_0()
             .h_full()
-            .child(self.render_toolbar(density, cx))
+            .when(!cfg!(feature = "silvestris-ui"), |main| main.child(self.render_toolbar(layout::toolbar_density(plan.main), cx)))
             .children(self.render_error(cx))
             .child(self.render_drop_stage(stage, cx))
             .children(gauges)
@@ -4186,7 +4192,7 @@ impl Render for LotusWindow {
                 .into_any_element()
         };
         #[cfg(feature = "silvestris-ui")]
-        let content = self.render_shared_shell(cx);
+        let content = self.render_shared_window(_window, cx);
         div()
             .id("lotus")
             .relative()
