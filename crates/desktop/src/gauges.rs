@@ -24,21 +24,21 @@ pub struct Gauge {
 
 /// The seven gauges, most important first: the compact strip shows the first
 /// [`crate::layout::PRIMARY_GAUGES`] and discloses the rest.
-pub fn gauges(telemetry: &Telemetry) -> [Gauge; 7] {
+pub fn gauges(theme: theme::Palette, telemetry: &Telemetry) -> [Gauge; 7] {
     let speed_colour = if telemetry.fps == 0.0 {
-        theme::text()
+        theme.text
     } else if telemetry.speed >= 0.97 {
-        theme::success()
+        theme.success
     } else if telemetry.speed >= 0.75 {
-        theme::warning()
+        theme.warning
     } else {
-        theme::error()
+        theme.error
     };
     [
         Gauge {
             label: "FPS",
             value: format_rate(telemetry.fps),
-            colour: theme::text(),
+            colour: theme.text,
             detail: "guest frames / host second".into(),
         },
         Gauge {
@@ -50,13 +50,13 @@ pub fn gauges(telemetry: &Telemetry) -> [Gauge; 7] {
         Gauge {
             label: "FRAME",
             value: telemetry.frames.to_string(),
-            colour: theme::text(),
+            colour: theme.text,
             detail: format!("epoch {}", telemetry.epoch),
         },
         Gauge {
             label: "AUDIO",
             value: format_audio(telemetry.audio_rate),
-            colour: theme::text(),
+            colour: theme.text,
             detail: format!("{} dropped · muted", telemetry.audio_dropped),
         },
         Gauge {
@@ -67,9 +67,9 @@ pub fn gauges(telemetry: &Telemetry) -> [Gauge; 7] {
                 telemetry.renderer.clone()
             },
             colour: if telemetry.renderer_fallback.is_empty() {
-                theme::text()
+                theme.text
             } else {
-                theme::warning()
+                theme.warning
             },
             detail: if telemetry.renderer_fallback.is_empty() {
                 telemetry.backend_name.clone()
@@ -83,7 +83,7 @@ pub fn gauges(telemetry: &Telemetry) -> [Gauge; 7] {
                 .memory_bytes
                 .map(format_bytes)
                 .unwrap_or_else(|| "—".into()),
-            colour: theme::text(),
+            colour: theme.text,
             detail: telemetry
                 .pid
                 .map(|pid| format!("pid {pid} · up {}", format_uptime(telemetry.uptime_ms)))
@@ -92,7 +92,7 @@ pub fn gauges(telemetry: &Telemetry) -> [Gauge; 7] {
         Gauge {
             label: "CONTROL",
             value: actor_name(telemetry.last_actor).into(),
-            colour: theme::text(),
+            colour: theme.text,
             detail: format!(
                 "{} · input {}",
                 if telemetry.last_operation.is_empty() {
@@ -111,38 +111,43 @@ pub fn gauges(telemetry: &Telemetry) -> [Gauge; 7] {
 }
 
 /// One row of cards; needs [`crate::layout::CARDS_MIN_WIDTH`].
-pub fn gauge_cards(telemetry: &Telemetry) -> impl IntoElement {
+pub fn gauge_cards(theme: theme::Palette, telemetry: &Telemetry) -> impl IntoElement {
     let mut strip = div()
         .flex()
         .flex_none()
         .gap_2()
         .p_3()
         .border_t_1()
-        .border_color(theme::border());
-    for (index, gauge) in gauges(telemetry).into_iter().enumerate() {
-        let mut card = card(gauge.label);
+        .border_color(theme.border);
+    for (index, gauge) in gauges(theme, telemetry).into_iter().enumerate() {
+        let mut card = card(theme, gauge.label);
         if index == 0 {
             card = card.flex_none().w(px(184.0)).child(
                 div()
                     .flex()
                     .items_end()
                     .gap_3()
-                    .child(figure(gauge.value, gauge.colour))
-                    .child(sparkline(&telemetry.fps_history)),
+                    .child(figure(theme, gauge.value, gauge.colour))
+                    .child(sparkline(theme, &telemetry.fps_history)),
             );
         } else {
             card = card
                 .min_w(px(112.0))
-                .child(figure(gauge.value, gauge.colour));
+                .child(figure(theme, gauge.value, gauge.colour));
         }
-        strip = strip.child(card.child(detail(gauge.detail)));
+        strip = strip.child(card.child(detail(theme, gauge.detail)));
     }
     strip
 }
 
 /// One-line label/value pills, detail in a tooltip.
 /// `wrap` lets the pills flow onto more rows; without it they stay on one line.
-pub fn gauge_pills(gauges: impl IntoIterator<Item = Gauge>, width: f32, wrap: bool) -> gpui::Div {
+pub fn gauge_pills(
+    theme: theme::Palette,
+    gauges: impl IntoIterator<Item = Gauge>,
+    width: f32,
+    wrap: bool,
+) -> gpui::Div {
     let mut row = div().flex().flex_none().gap(px(PILL_GAP));
     if wrap {
         row = row.flex_wrap().w_full();
@@ -166,21 +171,21 @@ pub fn gauge_pills(gauges: impl IntoIterator<Item = Gauge>, width: f32, wrap: bo
                 .px_2()
                 .rounded(px(5.0))
                 .border_1()
-                .border_color(theme::border())
+                .border_color(theme.border)
                 .overflow_hidden()
                 .child(
                     div()
                         .flex_none()
                         .text_size(px(10.5))
                         .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(theme::text_muted())
+                        .text_color(theme.text_muted)
                         .child(gauge.label),
                 )
                 .child(
                     div()
                         .min_w_0()
                         .truncate()
-                        .font_family(theme::MONO)
+                        .font_family(theme.mono)
                         .text_sm()
                         .text_color(gauge.colour)
                         .child(gauge.value),
@@ -191,7 +196,7 @@ pub fn gauge_pills(gauges: impl IntoIterator<Item = Gauge>, width: f32, wrap: bo
     row
 }
 
-fn card(label: &'static str) -> gpui::Div {
+fn card(theme: theme::Palette, label: &'static str) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -203,36 +208,36 @@ fn card(label: &'static str) -> gpui::Div {
         .py_2()
         .rounded(px(6.0))
         .border_1()
-        .border_color(theme::border())
+        .border_color(theme.border)
         .child(
             div()
                 .text_size(px(10.5))
-                .text_color(theme::text_muted())
+                .text_color(theme.text_muted)
                 .font_weight(gpui::FontWeight::MEDIUM)
                 .child(label),
         )
 }
 
-fn figure(text: String, colour: Rgba) -> impl IntoElement {
+fn figure(theme: theme::Palette, text: String, colour: Rgba) -> impl IntoElement {
     div()
-        .font_family(theme::MONO)
+        .font_family(theme.mono)
         .text_size(px(20.0))
         .line_height(px(24.0))
         .text_color(colour)
         .child(text)
 }
 
-fn detail(text: impl Into<gpui::SharedString>) -> impl IntoElement {
+fn detail(theme: theme::Palette, text: impl Into<gpui::SharedString>) -> impl IntoElement {
     div()
         .text_xs()
-        .text_color(theme::text_muted())
+        .text_color(theme.text_muted)
         .truncate()
         .child(text.into())
 }
 
 /// Bars of recent fps samples, scaled to what was observed so slow sessions
 /// still show variation; the full-speed line is drawn only when in range.
-fn sparkline(history: &VecDeque<f32>) -> impl IntoElement {
+fn sparkline(theme: theme::Palette, history: &VecDeque<f32>) -> impl IntoElement {
     let samples: Vec<f32> = history.iter().copied().collect();
     let ceiling = spark_ceiling(&samples);
     canvas(
@@ -248,7 +253,7 @@ fn sparkline(history: &VecDeque<f32>) -> impl IntoElement {
                         bounds.origin + point(px(0.0), px(reference)),
                         size(bounds.size.width, px(1.0)),
                     ),
-                    theme::border_strong(),
+                    theme.border_strong,
                 ));
             }
             let offset = crate::gauges::SPARK_BARS.saturating_sub(samples.len());
@@ -260,7 +265,7 @@ fn sparkline(history: &VecDeque<f32>) -> impl IntoElement {
                         bounds.origin + point(px(x), px(height - bar_height)),
                         size(px((bar - 1.0).max(1.0)), px(bar_height.max(1.0))),
                     ),
-                    theme::text_secondary(),
+                    theme.text_secondary,
                 ));
             }
         },

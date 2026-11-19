@@ -9,15 +9,33 @@ use lotus_desktop::desktop_controller::McpMode;
 use lotus_desktop::lotus_window::LotusWindow;
 use lotus_session::supervisor::{parse_asset_dir, HostConfig};
 
-const USAGE: &str = "usage: lotus-desktop [--mcp] [host.json] [--asset-dir handle=path ...]";
+const USAGE: &str = "usage: lotus-desktop [--mcp] [host.json] [--asset-dir handle=path ...] [--theme aqua-light|aqua-dark|geist-light|geist-dark (silvestris-ui)]";
 
 fn main() {
     let mut mcp = McpMode::Off;
     let mut config_path = None;
     let mut asset_dirs = Vec::new();
+    #[cfg(feature = "silvestris-ui")]
+    let mut initial_theme = None;
     let mut arguments = std::env::args_os().skip(1);
     while let Some(argument) = arguments.next() {
-        if argument == "--asset-dir" {
+        if argument == "--theme" {
+            #[cfg(feature = "silvestris-ui")]
+            {
+                initial_theme = arguments.next().and_then(|value| {
+                    lotus_desktop::ui_framework::parse_theme(&value.to_string_lossy())
+                });
+                if initial_theme.is_none() {
+                    eprintln!("--theme expects a supported theme\n{USAGE}");
+                    std::process::exit(2);
+                }
+            }
+            #[cfg(not(feature = "silvestris-ui"))]
+            {
+                eprintln!("--theme requires a build with silvestris-ui");
+                std::process::exit(2);
+            }
+        } else if argument == "--asset-dir" {
             let parsed = arguments
                 .next()
                 .ok_or_else(|| "--asset-dir expects handle=path".to_string())
@@ -62,7 +80,7 @@ fn main() {
     }
     gpui_platform::application().run(move |cx: &mut App| {
         #[cfg(feature = "silvestris-ui")]
-        if let Err(error) = lotus_desktop::ui_framework::initialize(cx) {
+        if let Err(error) = lotus_desktop::ui_framework::initialize(initial_theme, cx) {
             eprintln!("cannot initialize Silvestris: {error}");
             cx.quit();
             return;

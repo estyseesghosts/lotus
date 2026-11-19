@@ -233,6 +233,14 @@ pub struct LotusWindow {
 }
 
 impl LotusWindow {
+    #[cfg(all(test, feature = "silvestris-ui"))]
+    pub(crate) fn test_preview(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let mut view = Self::new(None, McpMode::Off, window, cx);
+        view.preferences = Store::load(None);
+        view.inspection_panel = Panel::Cpu;
+        view.recent = Pane::Sessions;
+        view
+    }
     pub fn new(
         config: Option<HostConfig>,
         mcp: McpMode,
@@ -284,7 +292,15 @@ impl LotusWindow {
             Ok(controller) => (controller, String::new()),
             Err(error) => (None, error.to_string()),
         };
-        let preferences = Store::load(preferences::default_path());
+        #[allow(unused_mut)]
+        let mut preferences = Store::load(preferences::default_path());
+        #[cfg(feature = "silvestris-ui")]
+        {
+            use silvestris::ActiveTheme;
+            let active = cx.theme().id;
+            preferences.ui.theme_family = active.family;
+            preferences.ui.appearance = active.appearance;
+        }
         if let Some(controller) = &controller {
             #[cfg(feature = "silvestris-ui")]
             {
@@ -566,6 +582,7 @@ impl LotusWindow {
     /// A pane edge that resizes on drag. Lives inside the pane so the centre
     /// column's hitboxes (including the touch screen) never overlap it.
     fn divider(&self, pane: Pane, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let active = self.drag.is_some_and(|drag| drag.pane == pane);
         let line = div()
             .absolute()
@@ -574,11 +591,7 @@ impl LotusWindow {
             .w(px(if active { 2.0 } else { 1.0 }))
             .when(pane == Pane::Sessions, |line| line.right_0())
             .when(pane == Pane::Inspector, |line| line.left_0())
-            .bg(if active {
-                theme::info()
-            } else {
-                theme::border()
-            });
+            .bg(if active { theme.info } else { theme.border });
         div()
             .id(match pane {
                 Pane::Sessions => "sessions-divider",
@@ -591,7 +604,7 @@ impl LotusWindow {
             .when(pane == Pane::Sessions, |edge| edge.right_0())
             .when(pane == Pane::Inspector, |edge| edge.left_0())
             .cursor_col_resize()
-            .hover(|style| style.bg(theme::surface_active()))
+            .hover(|style| style.bg(theme.surface_active))
             .child(line)
             .on_mouse_down(
                 MouseButton::Left,
@@ -980,6 +993,7 @@ impl LotusWindow {
     // ---- sidebar -------------------------------------------------------------
 
     fn render_sidebar(&self, plan: &Plan, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::palette(cx);
         let Some(width) = plan.sessions else {
             return self.render_rail(plan, cx);
         };
@@ -1006,7 +1020,7 @@ impl LotusWindow {
                         .px_4()
                         .py_2()
                         .text_xs()
-                        .text_color(theme::text_muted())
+                        .text_color(theme.text_muted)
                         .child("No sessions running."),
                 );
             }
@@ -1041,7 +1055,7 @@ impl LotusWindow {
             .flex_none()
             .w(px(width))
             .h_full()
-            .bg(theme::panel())
+            .bg(theme.panel)
             .child(
                 div()
                     .flex()
@@ -1050,13 +1064,13 @@ impl LotusWindow {
                     .h(px(TOOLBAR_HEIGHT))
                     .px_4()
                     .border_b_1()
-                    .border_color(theme::border())
+                    .border_color(theme.border)
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap_2()
-                            .child(div().size(px(10.0)).rounded(px(2.0)).bg(theme::text()))
+                            .child(div().size(px(10.0)).rounded(px(2.0)).bg(theme.text))
                             .child(
                                 div()
                                     .text_sm()
@@ -1065,10 +1079,17 @@ impl LotusWindow {
                             ),
                     )
                     .child(
-                        icon_button("collapse", Icon::ChevronLeft, "Collapse sidebar (Ctrl+B)")
-                            .on_click(cx.listener(|view, _: &ClickEvent, _, _| {
+                        icon_button(
+                            theme,
+                            "collapse",
+                            Icon::ChevronLeft,
+                            "Collapse sidebar (Ctrl+B)",
+                        )
+                        .on_click(cx.listener(
+                            |view, _: &ClickEvent, _, _| {
                                 view.close_pane(Pane::Sessions);
-                            })),
+                            },
+                        )),
                     ),
             )
             .child(
@@ -1080,10 +1101,10 @@ impl LotusWindow {
                     .pr_2()
                     .pt_3()
                     .pb_1()
-                    .child(section_label("SESSIONS"))
+                    .child(section_label(theme, "SESSIONS"))
                     .when(self.control, |row| {
                         row.child(
-                            icon_button("new-session", Icon::Plus, "New session").on_click(
+                            icon_button(theme, "new-session", Icon::Plus, "New session").on_click(
                                 cx.listener(|view, _: &ClickEvent, _, _| {
                                     view.menu = match view.menu {
                                         Menu::NewSession => Menu::Closed,
@@ -1107,6 +1128,7 @@ impl LotusWindow {
     }
 
     fn render_rail(&self, plan: &Plan, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::palette(cx);
         let squeezed = plan.squeezed == Some(Pane::Sessions);
         let mut rail = div()
             .relative()
@@ -1116,7 +1138,7 @@ impl LotusWindow {
             .flex_none()
             .w(px(layout::SESSION_RAIL))
             .h_full()
-            .bg(theme::panel())
+            .bg(theme.panel)
             .child(
                 div()
                     .flex()
@@ -1125,9 +1147,9 @@ impl LotusWindow {
                     .h(px(TOOLBAR_HEIGHT))
                     .w_full()
                     .border_b_1()
-                    .border_color(theme::border())
+                    .border_color(theme.border)
                     .child(
-                        icon_button(
+                        icon_button(theme,
                             "expand",
                             Icon::ChevronRight,
                             if squeezed {
@@ -1182,17 +1204,17 @@ impl LotusWindow {
                         .rounded(px(6.0))
                         .border_1()
                         .border_color(if selected {
-                            theme::border_strong()
+                            theme.border_strong
                         } else {
-                            theme::border()
+                            theme.border
                         })
-                        .when(selected, |chip| chip.bg(theme::surface_active()))
+                        .when(selected, |chip| chip.bg(theme.surface_active))
                         .when(depth == Depth::Nested, |chip| chip.border_dashed())
-                        .hover(|style| style.bg(theme::surface_hover()))
-                        .focus_visible(|style| style.border_color(theme::info()))
+                        .hover(|style| style.bg(theme.surface_hover))
+                        .focus_visible(|style| style.border_color(theme.info))
                         .cursor_pointer()
                         .text_xs()
-                        .text_color(theme::text_secondary())
+                        .text_color(theme.text_secondary)
                         .child(initial.to_string())
                         .child(
                             div()
@@ -1201,7 +1223,7 @@ impl LotusWindow {
                                 .right(px(-2.0))
                                 .size(px(7.0))
                                 .rounded_full()
-                                .bg(state_colour(&summary)),
+                                .bg(state_colour(theme, &summary)),
                         )
                         .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
                             view.select(id.clone());
@@ -1219,7 +1241,7 @@ impl LotusWindow {
                     .w_full()
                     .py_2()
                     .border_t_1()
-                    .border_color(theme::border())
+                    .border_color(theme.border)
                     .child(self.preferences_button(cx)),
             )
             .child(self.divider(Pane::Sessions, cx));
@@ -1227,7 +1249,8 @@ impl LotusWindow {
     }
 
     fn preferences_button(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        icon_button("preferences", Icon::Gear, "Settings (Ctrl+,)").on_click(cx.listener(
+        let theme = theme::palette(cx);
+        icon_button(theme, "preferences", Icon::Gear, "Settings (Ctrl+,)").on_click(cx.listener(
             |view, _: &ClickEvent, _, cx| {
                 view.open_settings(crate::settings_window::Target::Global, cx)
             },
@@ -1294,7 +1317,7 @@ impl LotusWindow {
     }
 
     /// Rich Presence connection state for the Settings window: colour and text.
-    pub(crate) fn presence_line(&self) -> Option<(Rgba, String)> {
+    pub(crate) fn presence_line(&self, theme: theme::Palette) -> Option<(Rgba, String)> {
         if !self.preferences.values.discord_presence {
             return None;
         }
@@ -1304,18 +1327,16 @@ impl LotusWindow {
             .map(|controller| controller.presence.status())
             .unwrap_or_default();
         Some(match status {
-            crate::presence::Status::Off => (theme::text_muted(), "Starting…".to_string()),
-            crate::presence::Status::Waiting(_) => (
-                theme::warning(),
-                "Discord not reachable; retrying".to_string(),
-            ),
-            crate::presence::Status::Shown(None) => {
-                (theme::success(), "Connected · nothing loaded".to_string())
+            crate::presence::Status::Off => (theme.text_muted, "Starting…".to_string()),
+            crate::presence::Status::Waiting(_) => {
+                (theme.warning, "Discord not reachable; retrying".to_string())
             }
-            crate::presence::Status::Shown(Some(activity)) => (
-                theme::success(),
-                format!("Connected · {}", activity.details),
-            ),
+            crate::presence::Status::Shown(None) => {
+                (theme.success, "Connected · nothing loaded".to_string())
+            }
+            crate::presence::Status::Shown(Some(activity)) => {
+                (theme.success, format!("Connected · {}", activity.details))
+            }
         })
     }
 
@@ -1508,6 +1529,7 @@ impl LotusWindow {
 
     /// The stage as a drop target for sessions and the divider, with the snap preview.
     fn render_drop_stage(&self, stage: AnyElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let preview = self
             .drop_target
             .filter(|(target, _)| *target != Target::Sidebar)
@@ -1563,14 +1585,15 @@ impl LotusWindow {
                             .size_full()
                             .rounded(px(8.0))
                             .border_2()
-                            .border_color(theme::info())
-                            .bg(theme::info().opacity(0.12)),
+                            .border_color(theme.info)
+                            .bg(theme.info.opacity(0.12)),
                     )
             }))
     }
 
     /// The sidebar as a drop target: a tile dragged here leaves the split, still running.
     fn render_drop_sidebar(&self, sidebar: AnyElement, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let active = self
             .drop_target
             .is_some_and(|(target, _)| target == Target::Sidebar);
@@ -1600,9 +1623,9 @@ impl LotusWindow {
                         .justify_center()
                         .rounded(px(8.0))
                         .border_2()
-                        .border_color(theme::info())
-                        .bg(theme::info().opacity(0.12))
-                        .text_color(theme::text())
+                        .border_color(theme.info)
+                        .bg(theme.info.opacity(0.12))
+                        .text_color(theme.text)
                         .child("Return to sidebar (keeps running)"),
                 )
             })
@@ -1615,6 +1638,7 @@ impl LotusWindow {
         depth: Depth,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let id = summary.info.id.clone();
         let selected = id == self.selected;
         let group = SharedString::from(format!("row-{id}"));
@@ -1638,9 +1662,9 @@ impl LotusWindow {
                     .truncate()
                     .text_sm()
                     .text_color(if selected {
-                        theme::text()
+                        theme.text
                     } else {
-                        theme::text_secondary()
+                        theme.text_secondary
                     })
                     .child(label),
             );
@@ -1648,9 +1672,9 @@ impl LotusWindow {
             name = name.child(
                 div()
                     .flex_none()
-                    .font_family(theme::MONO)
+                    .font_family(theme.mono)
                     .text_xs()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .child(session_tree::short_id(&id)),
             );
         }
@@ -1664,6 +1688,7 @@ impl LotusWindow {
         if let Some((card, asset)) = fork.filter(|_| self.control) {
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("fork-{id}")),
                     Icon::Plus,
                     "Secondary from this card",
@@ -1683,6 +1708,7 @@ impl LotusWindow {
             let card = card.clone();
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("card-settings-{id}")),
                     Icon::Gear,
                     "Card settings",
@@ -1696,6 +1722,7 @@ impl LotusWindow {
         if let Some(tile) = self.tile_with(summary) {
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("tile-{id}")),
                     Icon::SideBySide,
                     "Show beside the current view",
@@ -1709,6 +1736,7 @@ impl LotusWindow {
         if self.control {
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("stop-{id}")),
                     Icon::Close,
                     if is_primary {
@@ -1736,9 +1764,9 @@ impl LotusWindow {
             .pr_1()
             .rounded(px(6.0))
             .cursor_pointer()
-            .when(selected, |row| row.bg(theme::surface_active()))
+            .when(selected, |row| row.bg(theme.surface_active))
             .when(!selected, |row| {
-                row.hover(|style| style.bg(theme::surface_hover()))
+                row.hover(|style| style.bg(theme.surface_hover))
             })
             .when(depth == Depth::Nested, |row| {
                 row.child(
@@ -1748,17 +1776,17 @@ impl LotusWindow {
                         .top_0()
                         .bottom_0()
                         .w(px(1.0))
-                        .bg(theme::border_strong()),
+                        .bg(theme.border_strong),
                 )
             })
-            .child(state_dot(summary, is_primary))
+            .child(state_dot(theme, summary, is_primary))
             .child(name)
             .child(
                 div()
                     .flex_none()
-                    .font_family(theme::MONO)
+                    .font_family(theme.mono)
                     .text_xs()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .group_hover(group, |style| style.invisible())
                     .child(row_meta(summary)),
             )
@@ -1773,6 +1801,7 @@ impl LotusWindow {
 
     #[cfg(not(feature = "silvestris-ui"))]
     fn offline_card_row(&self, card: &str, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let mounted = card.to_string();
         div()
             .id(SharedString::from(format!("offline-{card}")))
@@ -1790,19 +1819,20 @@ impl LotusWindow {
                     .size(px(8.0))
                     .rounded(px(2.0))
                     .border_1()
-                    .border_color(theme::border_strong()),
+                    .border_color(theme.border_strong),
             )
             .child(
                 div()
                     .flex_1()
                     .truncate()
                     .text_sm()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .child(card.to_string()),
             )
             .child({
                 let card = card.to_string();
                 icon_button(
+                    theme,
                     SharedString::from(format!("card-settings-{card}")),
                     Icon::Gear,
                     "Card settings",
@@ -1815,6 +1845,7 @@ impl LotusWindow {
             .when(self.control, |row| {
                 row.child(
                     icon_button(
+                        theme,
                         SharedString::from(format!("mount-{card}")),
                         Icon::Play,
                         "Start primary session",
@@ -1834,6 +1865,7 @@ impl LotusWindow {
     }
 
     fn render_new_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let mounted: Vec<&str> = self
             .sessions
             .iter()
@@ -1842,16 +1874,17 @@ impl LotusWindow {
                 SessionKind::Secondary { .. } => None,
             })
             .collect();
-        let mut menu = popover("new-session-menu")
+        let mut menu = popover(theme, "new-session-menu")
             .top(px(TOOLBAR_HEIGHT + 34.0))
             .left(px(8.0))
             .right(px(8.0))
             .on_mouse_down_out(cx.listener(|view, _, _, _| view.menu = Menu::Closed))
-            .child(menu_heading("PRIMARY · PERSISTENT SD"));
+            .child(menu_heading(theme, "PRIMARY · PERSISTENT SD"));
         for card in self.cards.iter().filter(|p| !mounted.contains(&p.as_str())) {
             let name = card.clone();
             menu = menu.child(
                 menu_item(
+                    theme,
                     SharedString::from(format!("open-{card}")),
                     card.clone(),
                     "open",
@@ -1864,7 +1897,7 @@ impl LotusWindow {
         let fresh = session_tree::next_card_name(&self.cards);
         menu = menu
             .child(
-                menu_item("new-card", "New card", fresh.clone()).on_click(cx.listener(
+                menu_item(theme, "new-card", "New card", fresh.clone()).on_click(cx.listener(
                     move |view, _: &ClickEvent, _, _| {
                         view.create(
                             SessionKind::Primary {
@@ -1875,10 +1908,10 @@ impl LotusWindow {
                     },
                 )),
             )
-            .child(div().h(px(1.0)).my_1().bg(theme::border()))
-            .child(menu_heading("SECONDARY · DISCARDED ON STOP"))
+            .child(div().h(px(1.0)).my_1().bg(theme.border))
+            .child(menu_heading(theme, "SECONDARY · DISCARDED ON STOP"))
             .child(
-                menu_item("new-empty", "Empty", "blank SD").on_click(cx.listener(
+                menu_item(theme, "new-empty", "Empty", "blank SD").on_click(cx.listener(
                     |view, _: &ClickEvent, _, _| {
                         view.create(SessionKind::Secondary { parent: None }, None);
                     },
@@ -1888,6 +1921,7 @@ impl LotusWindow {
             let parent = card.clone();
             menu = menu.child(
                 menu_item(
+                    theme,
                     SharedString::from(format!("copy-{card}")),
                     format!("Copy of {card}"),
                     "snapshot",
@@ -1934,6 +1968,7 @@ impl LotusWindow {
     /// the selected session, and "Identify" to find a physical pad by pressing a button.
     /// Assignment follows running session identity, never selection or focus.
     fn render_controllers(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let listing = &self.controllers;
         let selected = self
             .sessions
@@ -1955,14 +1990,14 @@ impl LotusWindow {
             .pr_2()
             .py_2()
             .border_t_1()
-            .border_color(theme::border())
+            .border_color(theme.border)
             .text_xs()
             .child(
                 div()
                     .flex()
                     .items_center()
                     .justify_between()
-                    .child(section_label("CONTROLLERS"))
+                    .child(section_label(theme, "CONTROLLERS"))
                     .when(!listing.pads.is_empty(), |row| {
                         let label = if listing.identifying {
                             "Press a button…"
@@ -1970,13 +2005,12 @@ impl LotusWindow {
                             "Identify"
                         };
                         row.child(with_tooltip(
-                            small_button("identify-controller", label, Tone::Plain, true).on_click(
-                                cx.listener(|view, _: &ClickEvent, _, _| {
+                            small_button(theme, "identify-controller", label, Tone::Plain, true)
+                                .on_click(cx.listener(|view, _: &ClickEvent, _, _| {
                                     if let Some(controller) = &view.controller {
                                         controller.input().identify();
                                     }
-                                }),
-                            ),
+                                })),
                             "Highlight the next controller that presses a button",
                         ))
                     }),
@@ -1984,7 +2018,7 @@ impl LotusWindow {
         if listing.pads.is_empty() {
             section = section.child(
                 div()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .child("No controllers connected."),
             );
         }
@@ -2001,11 +2035,11 @@ impl LotusWindow {
                 .items_center()
                 .gap_2()
                 .child(div().size(px(6.0)).rounded_full().bg(if identified {
-                    theme::warning()
+                    theme.warning
                 } else if pad.session.is_some() {
-                    theme::success()
+                    theme.success
                 } else {
-                    theme::border_strong()
+                    theme.border_strong
                 }))
                 .child(
                     div()
@@ -2014,12 +2048,7 @@ impl LotusWindow {
                         .flex_1()
                         .min_w_0()
                         .child(div().truncate().child(format!("{} · {device}", pad.name)))
-                        .child(
-                            div()
-                                .truncate()
-                                .text_color(theme::text_muted())
-                                .child(target),
-                        ),
+                        .child(div().truncate().text_color(theme.text_muted).child(target)),
                 );
             let on_selected = pad.session.is_some() && pad.session == selected;
             if let Some(session) = selected.clone().filter(|_| self.control && !on_selected) {
@@ -2034,41 +2063,47 @@ impl LotusWindow {
                     ("Assign", "Drive the selected session with this controller")
                 };
                 row = row.child(with_tooltip(
-                    small_button(format!("assign-{device}"), label, Tone::Plain, true).on_click(
-                        cx.listener(move |view, _: &ClickEvent, _, _| {
+                    small_button(theme, format!("assign-{device}"), label, Tone::Plain, true)
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
                             view.assign_controller(device, Some(session.clone()), replace);
-                        }),
-                    ),
+                        })),
                     tip,
                 ));
             }
             if pad.session.is_some() && self.control {
                 row = row.child(
-                    small_button(format!("unassign-{device}"), "Unassign", Tone::Plain, true)
-                        .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                    small_button(
+                        theme,
+                        format!("unassign-{device}"),
+                        "Unassign",
+                        Tone::Plain,
+                        true,
+                    )
+                    .on_click(cx.listener(
+                        move |view, _: &ClickEvent, _, _| {
                             view.assign_controller(device, None, false);
-                        })),
+                        },
+                    )),
                 );
             }
             section = section.child(row);
         }
         for entry in &listing.remembered {
-            section = section.child(div().truncate().text_color(theme::text_muted()).child(
-                format!(
-                    "{} disconnected; was on {}",
-                    entry.name,
-                    self.session_name(&entry.session)
-                ),
-            ));
+            section = section.child(div().truncate().text_color(theme.text_muted).child(format!(
+                "{} disconnected; was on {}",
+                entry.name,
+                self.session_name(&entry.session)
+            )));
         }
         section
     }
 
     fn render_sidebar_footer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let (colour, text) = match self.mcp {
-            McpLink::Attached => (theme::success(), "MCP attached"),
-            McpLink::Closed => (theme::warning(), "MCP disconnected"),
-            McpLink::Off => (theme::border_strong(), "MCP off"),
+            McpLink::Attached => (theme.success, "MCP attached"),
+            McpLink::Closed => (theme.warning, "MCP disconnected"),
+            McpLink::Off => (theme.border_strong, "MCP off"),
         };
         let slots = format!("{} / {}", self.sessions.len(), self.max_sessions);
         div()
@@ -2079,9 +2114,9 @@ impl LotusWindow {
             .pr_2()
             .py_2()
             .border_t_1()
-            .border_color(theme::border())
+            .border_color(theme.border)
             .text_xs()
-            .text_color(theme::text_muted())
+            .text_color(theme.text_muted)
             .child(
                 div()
                     .flex()
@@ -2089,13 +2124,13 @@ impl LotusWindow {
                     .gap_2()
                     .child(div().size(px(6.0)).rounded_full().bg(colour))
                     .child(div().flex_1().truncate().child(text))
-                    .child(div().font_family(theme::MONO).child(slots))
+                    .child(div().font_family(theme.mono).child(slots))
                     .child(self.preferences_button(cx)),
             )
             .when_some(self.artifacts.as_ref(), |footer, usage| {
                 // Quota and retention at a glance; details per session in lotus_status.
                 let pinned: usize = usage.sessions.values().map(|s| s.pinned).sum();
-                footer.child(div().font_family(theme::MONO).truncate().child(format!(
+                footer.child(div().font_family(theme.mono).truncate().child(format!(
                     "artifacts {}/{} · {}/{} MiB · {pinned} pinned",
                     usage.count,
                     usage.max_count,
@@ -2112,6 +2147,7 @@ impl LotusWindow {
     /// rest become icons, then move into the overflow menu
     /// ([`layout::toolbar_density`]).
     fn render_toolbar(&self, density: ToolbarDensity, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let mut bar = div()
             .flex()
             .flex_none()
@@ -2120,12 +2156,12 @@ impl LotusWindow {
             .h(px(TOOLBAR_HEIGHT))
             .px_4()
             .border_b_1()
-            .border_color(theme::border());
+            .border_color(theme.border);
         let Some(summary) = self.selected_summary() else {
             return bar.child(
                 div()
                     .text_sm()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .child("No session selected"),
             );
         };
@@ -2169,9 +2205,9 @@ impl LotusWindow {
             bar = bar.child(div().flex_none().child(badge(
                 kind_label,
                 if kind_label == "PRIMARY" {
-                    theme::info()
+                    theme.info
                 } else {
-                    theme::warning()
+                    theme.warning
                 },
             )));
         }
@@ -2181,7 +2217,7 @@ impl LotusWindow {
                     .flex_1()
                     .min_w_0()
                     .text_xs()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .truncate()
                     .child(detail),
             );
@@ -2198,7 +2234,7 @@ impl LotusWindow {
                 div()
                     .flex_none()
                     .text_xs()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .child(text),
             );
         }
@@ -2209,6 +2245,7 @@ impl LotusWindow {
             bar = bar
                 .child(
                     button(
+                        theme,
                         "run",
                         if playing { "Pause" } else { "Run" },
                         Tone::Primary,
@@ -2226,6 +2263,7 @@ impl LotusWindow {
                 )
                 .child(
                     tool_button(
+                        theme,
                         "step",
                         "Step",
                         Icon::Step,
@@ -2239,14 +2277,14 @@ impl LotusWindow {
         }
         if density == ToolbarDensity::Compact {
             return bar.child(
-                icon_button("toolbar-more", Icon::More, "More actions").on_click(cx.listener(
-                    |view, _: &ClickEvent, _, _| {
+                icon_button(theme, "toolbar-more", Icon::More, "More actions").on_click(
+                    cx.listener(|view, _: &ClickEvent, _, _| {
                         view.menu = match view.menu {
                             Menu::Toolbar => Menu::Closed,
                             _ => Menu::Toolbar,
                         };
-                    },
-                )),
+                    }),
+                ),
             );
         }
         if self.control && active {
@@ -2254,6 +2292,7 @@ impl LotusWindow {
             bar = bar
                 .child(
                     tool_button(
+                        theme,
                         "reset",
                         "Reset",
                         Icon::Reset,
@@ -2270,6 +2309,7 @@ impl LotusWindow {
                 )
                 .child(
                     tool_button(
+                        theme,
                         "load",
                         "Load",
                         Icon::Load,
@@ -2290,6 +2330,7 @@ impl LotusWindow {
             let stop_id = id.clone();
             bar = bar.child(
                 tool_button(
+                    theme,
                     "stop",
                     "Stop",
                     Icon::Stop,
@@ -2314,22 +2355,22 @@ impl LotusWindow {
             self.layout.other().label()
         );
         let zoom = if labelled {
-            button("zoom", self.zoom.label(), Tone::Plain, true)
+            button(theme, "zoom", self.zoom.label(), Tone::Plain, true)
         } else {
             with_tooltip(
-                icon_tool("zoom", Icon::Zoom).child(
+                icon_tool(theme, "zoom", Icon::Zoom).child(
                     div()
                         .text_xs()
-                        .font_family(theme::MONO)
+                        .font_family(theme.mono)
                         .child(self.zoom.label()),
                 ),
                 zoom_tip,
             )
         };
         let screens = if labelled {
-            button("layout", self.layout.label(), Tone::Plain, true)
+            button(theme, "layout", self.layout.label(), Tone::Plain, true)
         } else {
-            with_tooltip(icon_tool("layout", self.layout.icon()), layout_tip)
+            with_tooltip(icon_tool(theme, "layout", self.layout.icon()), layout_tip)
         };
         bar.child(
             div()
@@ -2337,7 +2378,7 @@ impl LotusWindow {
                 .w(px(1.0))
                 .h(px(20.0))
                 .mx_1()
-                .bg(theme::border()),
+                .bg(theme.border),
         )
         .child(zoom.on_click(cx.listener(|view, _: &ClickEvent, _, _| {
             view.release_input();
@@ -2351,7 +2392,8 @@ impl LotusWindow {
 
     /// Everything the compact toolbar leaves out.
     fn render_toolbar_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut menu = popover("toolbar-menu")
+        let theme = theme::palette(cx);
+        let mut menu = popover(theme, "toolbar-menu")
             .top(px(TOOLBAR_HEIGHT - 4.0))
             .right(px(16.0))
             .w(px(240.0))
@@ -2362,9 +2404,9 @@ impl LotusWindow {
             if self.control && summary.telemetry.state.is_active() {
                 let reset_id = id.clone();
                 menu = menu
-                    .child(menu_heading("SESSION"))
+                    .child(menu_heading(theme, "SESSION"))
                     .child(
-                        menu_item("menu-reset", "Reset", "")
+                        menu_item(theme, "menu-reset", "Reset", "")
                             .when(!loaded, |item| item.opacity(0.4))
                             .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
                                 view.menu = Menu::Closed;
@@ -2373,26 +2415,27 @@ impl LotusWindow {
                                 }
                             })),
                     )
-                    .child(menu_item("menu-load", "Load…", "").on_click(
+                    .child(menu_item(theme, "menu-load", "Load…", "").on_click(
                         cx.listener(|view, _: &ClickEvent, _, _| view.menu = Menu::Load),
                     ));
             }
             if self.control {
                 menu = menu.child(
-                    menu_item("menu-stop", "Stop", "")
-                        .text_color(theme::error())
+                    menu_item(theme, "menu-stop", "Stop", "")
+                        .text_color(theme.error)
                         .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
                             view.menu = Menu::Closed;
                             view.send(Command::Stop(id.clone()));
                         })),
                 );
             }
-            menu = menu.child(div().h(px(1.0)).my_1().bg(theme::border()));
+            menu = menu.child(div().h(px(1.0)).my_1().bg(theme.border));
         }
-        menu = menu.child(menu_heading("ZOOM"));
+        menu = menu.child(menu_heading(theme, "ZOOM"));
         for zoom in [Zoom::Fit, Zoom::Native, Zoom::Double] {
             menu = menu.child(
                 checkbox_item(
+                    theme,
                     SharedString::from(format!("menu-zoom-{}", zoom.label())),
                     zoom.label(),
                     self.zoom == zoom,
@@ -2405,10 +2448,11 @@ impl LotusWindow {
                 })),
             );
         }
-        menu = menu.child(menu_heading("SCREENS"));
+        menu = menu.child(menu_heading(theme, "SCREENS"));
         for layout in [ScreenLayout::Stacked, ScreenLayout::SideBySide] {
             menu = menu.child(
                 checkbox_item(
+                    theme,
                     SharedString::from(format!("menu-layout-{}", layout.label())),
                     layout.label(),
                     self.layout == layout,
@@ -2425,23 +2469,25 @@ impl LotusWindow {
     }
 
     fn render_load_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let session = self.selected.clone();
-        popover("load-menu")
+        popover(theme, "load-menu")
             .top(px(TOOLBAR_HEIGHT - 4.0))
             .right(px(16.0))
             .w(px(280.0))
             .on_mouse_down_out(cx.listener(|view, _, _, _| view.menu = Menu::Closed))
-            .child(menu_heading("APPROVED CONTENT"))
+            .child(menu_heading(theme, "APPROVED CONTENT"))
             .child(self.asset_list(Some(session.clone()), cx))
-            .child(div().h(px(1.0)).my_1().bg(theme::border()))
+            .child(div().h(px(1.0)).my_1().bg(theme.border))
             .child(
-                menu_item("open-file", "Open file…", "Ctrl+O").on_click(cx.listener(
+                menu_item(theme, "open-file", "Open file…", "Ctrl+O").on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| view.open_file(Some(session.clone()), cx),
                 )),
             )
     }
 
     fn asset_list(&self, session: Option<String>, cx: &mut Context<Self>) -> Div {
+        let theme = theme::palette(cx);
         let mut list = div().flex().flex_col();
         if self.assets.is_empty() {
             list = list.child(
@@ -2449,7 +2495,7 @@ impl LotusWindow {
                     .px_2()
                     .py_1()
                     .text_xs()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .child("None configured for this host."),
             );
         }
@@ -2458,6 +2504,7 @@ impl LotusWindow {
             let session = session.clone();
             list = list.child(
                 menu_item(
+                    theme,
                     SharedString::from(format!("asset-{asset}")),
                     session_tree::asset_label(asset),
                     asset.clone(),
@@ -2488,8 +2535,10 @@ impl LotusWindow {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = theme::palette(cx);
         if self.controller.is_none() {
             return empty_state(
+                theme,
                 "No host configuration",
                 if self.startup_error.is_empty() {
                     "Start LOTUS with a host configuration: lotus-desktop [--mcp] host.json"
@@ -2504,37 +2553,36 @@ impl LotusWindow {
             return self.render_split(plan, gauge_height, viewport_height, cx);
         }
         let Some(summary) = self.selected_summary() else {
-            let mut state = empty_state(
+            let mut state = empty_state(theme,
                 "No sessions",
                 "A primary session keeps a persistent SD card. A secondary is a disposable copy, discarded when it stops.".to_string(),
             );
             if self.control {
                 let fresh = session_tree::next_card_name(&self.cards);
                 let primary = self.cards.first().cloned().unwrap_or(fresh);
-                state =
-                    state.child(
-                        div()
-                            .flex()
-                            .gap_2()
-                            .mt_2()
-                            .child(
-                                button("empty-primary", "New primary", Tone::Primary, true)
-                                    .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
-                                        view.create(
-                                            SessionKind::Primary {
-                                                card: primary.clone(),
-                                            },
-                                            None,
-                                        );
-                                    })),
-                            )
-                            .child(
-                                button("empty-secondary", "New secondary", Tone::Plain, true)
-                                    .on_click(cx.listener(|view, _: &ClickEvent, _, _| {
-                                        view.create(SessionKind::Secondary { parent: None }, None);
-                                    })),
-                            ),
-                    );
+                state = state.child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .mt_2()
+                        .child(
+                            button(theme, "empty-primary", "New primary", Tone::Primary, true)
+                                .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                                    view.create(
+                                        SessionKind::Primary {
+                                            card: primary.clone(),
+                                        },
+                                        None,
+                                    );
+                                })),
+                        )
+                        .child(
+                            button(theme, "empty-secondary", "New secondary", Tone::Plain, true)
+                                .on_click(cx.listener(|view, _: &ClickEvent, _, _| {
+                                    view.create(SessionKind::Secondary { parent: None }, None);
+                                })),
+                        ),
+                );
             }
             return state.into_any_element();
         };
@@ -2546,6 +2594,7 @@ impl LotusWindow {
                 .is_some_and(|failure| failure["renderer"] == true);
             let session = summary.info.id.clone();
             return empty_state(
+                theme,
                 "Worker crashed",
                 format!(
                     "{} {} Logs and failure.json are kept in the session root. Stop the session \
@@ -2563,6 +2612,7 @@ impl LotusWindow {
             .child(
                 div().mt_2().child(
                     button(
+                        theme,
                         "copy-crash-report",
                         "Copy local crash report",
                         Tone::Plain,
@@ -2580,6 +2630,7 @@ impl LotusWindow {
         if summary.info.asset.is_none() {
             let session = summary.info.id.clone();
             let mut state = empty_state(
+                theme,
                 "Nothing loaded",
                 "Choose approved content, or open a .3dsx file.".to_string(),
             );
@@ -2591,11 +2642,11 @@ impl LotusWindow {
                         .p_1()
                         .rounded(px(8.0))
                         .border_1()
-                        .border_color(theme::border())
+                        .border_color(theme.border)
                         .child(self.asset_list(Some(session.clone()), cx))
-                        .child(div().h(px(1.0)).my_1().bg(theme::border()))
+                        .child(div().h(px(1.0)).my_1().bg(theme.border))
                         .child(
-                            menu_item("idle-open-file", "Open file…", "Ctrl+O").on_click(
+                            menu_item(theme, "idle-open-file", "Open file…", "Ctrl+O").on_click(
                                 cx.listener(move |view, _: &ClickEvent, _, cx| {
                                     view.open_file(Some(session.clone()), cx)
                                 }),
@@ -2628,6 +2679,7 @@ impl LotusWindow {
         viewport_height: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = theme::palette(cx);
         let Layout::Split {
             first,
             second,
@@ -2679,8 +2731,13 @@ impl LotusWindow {
                     .when(split.vertical, |row| row.flex_col())
                     .children(tiles.into_iter().enumerate().flat_map(
                         |(index, (viewport, session, other, tile))| {
-                            let gauges =
-                                self.render_tile_gauges(viewport, session, split.vertical, tile);
+                            let gauges = self.render_tile_gauges(
+                                theme,
+                                viewport,
+                                session,
+                                split.vertical,
+                                tile,
+                            );
                             let tile = self.render_tile(viewport, session, other, tile, *axis, cx);
                             // Gauges sit on the outer edge: before the first tile, after the second.
                             let (lead, trail) = match viewport {
@@ -2707,6 +2764,7 @@ impl LotusWindow {
 
     /// Drag to resize the split; double-click returns it to an even split.
     fn render_split_divider(&self, vertical: bool, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::palette(cx);
         div()
             .id("split-divider")
             .flex()
@@ -2720,11 +2778,11 @@ impl LotusWindow {
             .when(!vertical, |divider| {
                 divider.w(px(TILE_GAP)).cursor_col_resize()
             })
-            .hover(|style| style.bg(theme::surface_hover()))
+            .hover(|style| style.bg(theme.surface_hover))
             .child(
                 div()
                     .rounded(px(1.0))
-                    .bg(theme::border_strong())
+                    .bg(theme.border_strong)
                     .when(vertical, |grip| grip.w(px(32.0)).h(px(2.0)))
                     .when(!vertical, |grip| grip.w(px(2.0)).h(px(32.0))),
             )
@@ -2752,6 +2810,7 @@ impl LotusWindow {
         session: &str,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = theme::palette(cx);
         let width = self.overlay_width.clamp(
             layout::INSPECTOR_MIN,
             (plan.main - 48.0).max(layout::INSPECTOR_MIN),
@@ -2782,10 +2841,11 @@ impl LotusWindow {
             .py_1()
             .overflow_x_scroll()
             .border_b_1()
-            .border_color(theme::border());
+            .border_color(theme.border);
         for panel in Panel::RAIL.into_iter().chain(Panel::OVERFLOW) {
             views = views.child(
                 rail_button(
+                    theme,
                     SharedString::from(format!("overlay-view-{}", panel.label())),
                     panel.icon(),
                     panel == self.inspection_panel,
@@ -2806,7 +2866,7 @@ impl LotusWindow {
             .pl_3()
             .pr_2()
             .border_b_1()
-            .border_color(theme::border())
+            .border_color(theme.border)
             .child(
                 div()
                     .flex_1()
@@ -2817,6 +2877,7 @@ impl LotusWindow {
             )
             .child(
                 rail_button(
+                    theme,
                     "overlay-run",
                     if playing { Icon::Pause } else { Icon::Play },
                     false,
@@ -2835,6 +2896,7 @@ impl LotusWindow {
             )
             .child(
                 rail_button(
+                    theme,
                     "overlay-step",
                     Icon::Step,
                     false,
@@ -2848,13 +2910,17 @@ impl LotusWindow {
                 })),
             )
             .child(
-                icon_button("overlay-close", Icon::Close, "Close inspector (Ctrl+I)").on_click(
-                    cx.listener(move |view, _: &ClickEvent, _, _| {
-                        if view.inspect_tile.as_deref() == Some(close.as_str()) {
-                            view.toggle_tile_inspector(close.clone());
-                        }
-                    }),
-                ),
+                icon_button(
+                    theme,
+                    "overlay-close",
+                    Icon::Close,
+                    "Close inspector (Ctrl+I)",
+                )
+                .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
+                    if view.inspect_tile.as_deref() == Some(close.as_str()) {
+                        view.toggle_tile_inspector(close.clone());
+                    }
+                })),
             );
         let edge = div()
             .id("overlay-divider")
@@ -2865,7 +2931,7 @@ impl LotusWindow {
             .when(left, |edge| edge.right_0())
             .when(!left, |edge| edge.left_0())
             .cursor_col_resize()
-            .hover(|style| style.bg(theme::surface_active()))
+            .hover(|style| style.bg(theme.surface_active))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|view, _: &MouseDownEvent, _, cx| {
@@ -2882,7 +2948,7 @@ impl LotusWindow {
                 .child(self.render_inspector(width, false, cx))
                 .into_any_element()
         } else {
-            tile_message("Switching inspector…")
+            tile_message(theme, "Switching inspector…")
         };
         div()
             .id("tile-inspector")
@@ -2895,9 +2961,9 @@ impl LotusWindow {
             .w(px(width))
             .flex()
             .flex_col()
-            .bg(theme::panel())
+            .bg(theme.panel)
             .border_1()
-            .border_color(theme::border_strong())
+            .border_color(theme.border_strong)
             .shadow_lg()
             .occlude()
             .child(header)
@@ -2912,6 +2978,7 @@ impl LotusWindow {
     /// left/right tile, a row above or below a top/bottom tile.
     fn render_tile_gauges(
         &self,
+        theme: theme::Palette,
         viewport: Viewport,
         session: &str,
         vertical: bool,
@@ -2923,17 +2990,17 @@ impl LotusWindow {
             None => items.push(gauges::Gauge {
                 label: "STATE",
                 value: "ended".into(),
-                colour: theme::text_muted(),
+                colour: theme.text_muted,
                 detail: "the session is no longer registered".into(),
             }),
             Some(summary) => {
                 items.push(gauges::Gauge {
                     label: "STATE",
                     value: state_name(summary).into(),
-                    colour: state_colour(summary),
+                    colour: state_colour(theme, summary),
                     detail: session_tree::session_label(&summary.info).to_string(),
                 });
-                let [fps, speed, frame, rest @ ..] = gauges::gauges(&summary.telemetry);
+                let [fps, speed, frame, rest @ ..] = gauges::gauges(theme, &summary.telemetry);
                 let more = rest
                     .iter()
                     .map(|gauge| format!("{}: {} · {}", gauge.label, gauge.value, gauge.detail))
@@ -2954,7 +3021,7 @@ impl LotusWindow {
             items.push(gauges::Gauge {
                 label: "PAD",
                 value: "none".into(),
-                colour: theme::text_muted(),
+                colour: theme.text_muted,
                 detail: "No controller is assigned to this session".into(),
             });
         }
@@ -2964,9 +3031,9 @@ impl LotusWindow {
                 label: "PAD",
                 value: pad.name.clone(),
                 colour: if pad.connected {
-                    theme::success()
+                    theme.success
                 } else {
-                    theme::warning()
+                    theme.warning
                 },
                 detail: match &pad.device {
                     Some(device) => format!("{} · {device} → {target}", pad.name),
@@ -2984,12 +3051,12 @@ impl LotusWindow {
         let count = items.len() as f32;
         let strip = if vertical {
             let width = ((tile.width - (count - 1.0) * layout::PILL_GAP) / count).max(0.0);
-            gauges::gauge_pills(items, width, false)
+            gauges::gauge_pills(theme, items, width, false)
                 .w(px(tile.width.max(0.0)))
                 .h(px(GAUGE_ROW))
                 .items_center()
         } else {
-            gauges::gauge_pills(items, GAUGE_COLUMN, false)
+            gauges::gauge_pills(theme, items, GAUGE_COLUMN, false)
                 .flex_col()
                 .w(px(GAUGE_COLUMN))
                 .h(px(tile.height.max(0.0)))
@@ -3028,6 +3095,7 @@ impl LotusWindow {
         axis: Axis,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = theme::palette(cx);
         let focused = self.workspace.focused_viewport == viewport;
         let index = match viewport {
             Viewport::First => 0,
@@ -3058,22 +3126,18 @@ impl LotusWindow {
                     .min_w_0()
                     .truncate()
                     .text_color(if focused {
-                        theme::text()
+                        theme.text
                     } else {
-                        theme::text_secondary()
+                        theme.text_secondary
                     })
                     .child(label.clone()),
             )
             .when(focused, |header| {
-                header.child(
-                    div()
-                        .flex_none()
-                        .text_color(theme::info())
-                        .child("Keyboard"),
-                )
+                header.child(div().flex_none().text_color(theme.info).child("Keyboard"))
             })
             .child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("tile-screens-{index}")),
                     tile.screens.other().icon(),
                     "Switch this tile's screen arrangement",
@@ -3109,7 +3173,7 @@ impl LotusWindow {
                 ),
             };
             header = header.child(with_tooltip(
-                small_button("tile-axis", label, Tone::Plain, true).on_click(cx.listener(
+                small_button(theme, "tile-axis", label, Tone::Plain, true).on_click(cx.listener(
                     move |view, _: &ClickEvent, _, cx| {
                         cx.stop_propagation();
                         view.send(Command::Workspace(Operation::SetAxis { axis: next }));
@@ -3122,6 +3186,7 @@ impl LotusWindow {
         let target = session.to_string();
         header = header.child(
             rail_button(
+                theme,
                 SharedString::from(format!("inspect-{index}")),
                 Icon::Cpu,
                 inspecting,
@@ -3143,6 +3208,7 @@ impl LotusWindow {
         );
         header = header.child(
             icon_button(
+                theme,
                 SharedString::from(format!("untile-{index}")),
                 Icon::Close,
                 "Return to the sidebar; the session keeps running",
@@ -3157,11 +3223,11 @@ impl LotusWindow {
             })),
         );
         let body = match summary {
-            None => tile_message("Session ended"),
+            None => tile_message(theme, "Session ended"),
             Some(summary) if summary.telemetry.state == SessionState::Crashed => {
-                tile_message("Worker crashed")
+                tile_message(theme, "Worker crashed")
             }
-            Some(summary) if summary.info.asset.is_none() => tile_message("Nothing loaded"),
+            Some(summary) if summary.info.asset.is_none() => tile_message(theme, "Nothing loaded"),
             Some(_) => {
                 let scale = match self.zoom {
                     Zoom::Native => 1.0,
@@ -3186,11 +3252,7 @@ impl LotusWindow {
             .h(px(tile.height.max(0.0)))
             .rounded(px(6.0))
             .border_1()
-            .border_color(if focused {
-                theme::info()
-            } else {
-                theme::border()
-            })
+            .border_color(if focused { theme.info } else { theme.border })
             .overflow_hidden()
             .on_mouse_down(
                 MouseButton::Left,
@@ -3209,14 +3271,15 @@ impl LotusWindow {
         scale: f32,
         cx: &mut Context<Self>,
     ) -> Div {
+        let theme = theme::palette(cx);
         let tile = self.tiles.get(session);
-        let mut top = screen_frame(400.0 * scale, 240.0 * scale).id("top-screen");
+        let mut top = screen_frame(theme, 400.0 * scale, 240.0 * scale).id("top-screen");
         if let Some(image) = tile.and_then(|tile| tile.images.first()) {
             top = top.child(gpui::img(image.clone()).size_full());
         }
         let rect = tile.map(|tile| tile.touch.clone()).unwrap_or_default();
         let (down, moved) = (session.to_string(), session.to_string());
-        let mut bottom = screen_frame(320.0 * scale, 240.0 * scale)
+        let mut bottom = screen_frame(theme, 320.0 * scale, 240.0 * scale)
             .id("touch-screen")
             .cursor_crosshair()
             .child(
@@ -3404,6 +3467,7 @@ impl LotusWindow {
     /// (navigation) at the top, execution quick actions separated at the
     /// bottom. No Stop/Reset/trace commands here.
     fn render_inspector_rail(&self, plan: &Plan, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let open = if cfg!(feature = "silvestris-ui") {
             self.preferences.values.inspector_open
         } else {
@@ -3423,12 +3487,13 @@ impl LotusWindow {
         let mut group = "";
         for (index, panel) in Panel::RAIL.into_iter().enumerate() {
             if !group.is_empty() && group != panel.group() {
-                views = views.child(div().w(px(20.0)).h(px(1.0)).my_1().bg(theme::border()));
+                views = views.child(div().w(px(20.0)).h(px(1.0)).my_1().bg(theme.border));
             }
             group = panel.group();
             let current = open && self.inspection_panel == panel;
             views = views.child(
                 rail_button(
+                    theme,
                     SharedString::from(format!("rail-{}", panel as usize)),
                     panel.icon(),
                     current,
@@ -3439,9 +3504,10 @@ impl LotusWindow {
             );
         }
         let overflow_current = open && Panel::OVERFLOW.contains(&self.inspection_panel);
-        views = views.child(div().w(px(20.0)).h(px(1.0)).my_1().bg(theme::border()));
+        views = views.child(div().w(px(20.0)).h(px(1.0)).my_1().bg(theme.border));
         views = views.child(
             rail_button(
+                theme,
                 "rail-more",
                 Icon::More,
                 overflow_current,
@@ -3478,9 +3544,10 @@ impl LotusWindow {
             .gap_1()
             .py_2()
             .border_t_1()
-            .border_color(theme::border())
+            .border_color(theme.border)
             .child(
                 rail_button(
+                    theme,
                     "rail-run",
                     if playing { Icon::Pause } else { Icon::Play },
                     false,
@@ -3495,6 +3562,7 @@ impl LotusWindow {
             )
             .child(
                 rail_button(
+                    theme,
                     "rail-step",
                     Icon::Step,
                     false,
@@ -3523,9 +3591,9 @@ impl LotusWindow {
             .flex_none()
             .w(px(layout::INSPECTOR_RAIL))
             .h_full()
-            .bg(theme::panel())
+            .bg(theme.panel)
             .border_l_1()
-            .border_color(theme::border())
+            .border_color(theme.border)
             .child(
                 div()
                     .flex()
@@ -3535,9 +3603,9 @@ impl LotusWindow {
                     .h(px(TOOLBAR_HEIGHT))
                     .w_full()
                     .border_b_1()
-                    .border_color(theme::border())
+                    .border_color(theme.border)
                     .child(
-                        icon_button(
+                        icon_button(theme,
                             "inspector-toggle",
                             if open { Icon::ChevronRight } else { Icon::ChevronLeft },
                             if open {
@@ -3566,7 +3634,8 @@ impl LotusWindow {
     }
 
     fn render_more_views(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut menu = popover("inspector-more")
+        let theme = theme::palette(cx);
+        let mut menu = popover(theme, "inspector-more")
             .top(px(TOOLBAR_HEIGHT + 8.0))
             .right(px(layout::INSPECTOR_RAIL - 4.0))
             .w(px(200.0))
@@ -3575,16 +3644,17 @@ impl LotusWindow {
         for panel in Panel::OVERFLOW {
             if group != panel.group() {
                 group = panel.group();
-                menu = menu.child(menu_heading(group));
+                menu = menu.child(menu_heading(theme, group));
             }
             let current = self.inspection_panel == panel;
             menu = menu.child(
                 menu_item(
+                    theme,
                     SharedString::from(format!("more-{}", panel as usize)),
                     panel.label(),
                     if current { "shown" } else { "" },
                 )
-                .when(current, |item| item.bg(theme::surface_active()))
+                .when(current, |item| item.bg(theme.surface_active))
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, _| view.show_panel(panel))),
             );
         }
@@ -3661,6 +3731,7 @@ impl LotusWindow {
         docked: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let target = self.inspection_target();
         let current = self.inspection_panel;
         let mut panel = div()
@@ -3671,7 +3742,7 @@ impl LotusWindow {
             .flex_none()
             .w(px(width))
             .h_full()
-            .bg(theme::panel())
+            .bg(theme.panel)
             .child(
                 div()
                     .flex()
@@ -3682,8 +3753,8 @@ impl LotusWindow {
                     .pl_4()
                     .pr_2()
                     .border_b_1()
-                    .border_color(theme::border())
-                    .child(icon(current.icon(), 16.0, theme::text()))
+                    .border_color(theme.border)
+                    .child(icon(current.icon(), 16.0, theme.text))
                     .child(
                         div()
                             .text_sm()
@@ -3696,10 +3767,11 @@ impl LotusWindow {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .child(section_label(current.group())),
+                            .child(section_label(theme, current.group())),
                     )
                     .child(
                         icon_button(
+                            theme,
                             "inspector-utility",
                             Icon::More,
                             "Trace import, clipboard command, keys",
@@ -3724,7 +3796,7 @@ impl LotusWindow {
                 .px_2()
                 .py_2()
                 .border_b_1()
-                .border_color(theme::border());
+                .border_color(theme.border);
             for (label, command, disruptive) in commands {
                 let target = target.clone();
                 let tone = if disruptive {
@@ -3733,13 +3805,12 @@ impl LotusWindow {
                     Tone::Plain
                 };
                 actions = actions.child(
-                    small_button(format!("debug-{label}"), label, tone, self.control).on_click(
-                        cx.listener(move |view, _, _, _| {
+                    small_button(theme, format!("debug-{label}"), label, tone, self.control)
+                        .on_click(cx.listener(move |view, _, _, _| {
                             if view.control {
                                 view.debug_command(&target, command.clone());
                             }
-                        }),
-                    ),
+                        })),
                 );
             }
             panel = panel.child(actions);
@@ -3759,7 +3830,7 @@ impl LotusWindow {
                     div()
                         .p_3()
                         .text_sm()
-                        .text_color(theme::text_secondary())
+                        .text_color(theme.text_secondary)
                         .child("Select a session and inspector. Results are safe-point snapshots; unsupported backend operations show their reason."),
                 )
                 .children(utility);
@@ -3770,7 +3841,7 @@ impl LotusWindow {
                     .px_2()
                     .pt_2()
                     .text_xs()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .truncate()
                     .child(view.source.clone()),
             )
@@ -3785,11 +3856,10 @@ impl LotusWindow {
                     .child(format!("{} rows · {} lost", view.rows.len(), view.lost))
                     .when_some(view.next, |row, next| {
                         row.child(
-                            small_button("inspect-next", "Next page", Tone::Plain, true).on_click(
-                                cx.listener(move |view, _, _, _| {
+                            small_button(theme, "inspect-next", "Next page", Tone::Plain, true)
+                                .on_click(cx.listener(move |view, _, _, _| {
                                     view.choose_inspection(current, next)
-                                }),
-                            ),
+                                })),
                         )
                     }),
             );
@@ -3827,14 +3897,14 @@ impl LotusWindow {
                                     .gap_2()
                                     .items_center()
                                     .overflow_hidden()
-                                    .font_family(theme::MONO)
+                                    .font_family(theme.mono)
                                     .text_xs()
                                     .when(show_lane, |line| {
                                         line.child(
                                             div()
                                                 .w(px(48.0))
                                                 .flex_none()
-                                                .text_color(theme::text_muted())
+                                                .text_color(theme.text_muted)
                                                 .child(row.lane),
                                         )
                                     })
@@ -3857,7 +3927,7 @@ impl LotusWindow {
                             .when_some(action, |element, command| {
                                 element
                                     .cursor_pointer()
-                                    .hover(|style| style.bg(theme::surface_hover()))
+                                    .hover(|style| style.bg(theme.surface_hover))
                                     .on_click(move |_, _, cx| {
                                         let _ = weak.update(cx, |view, _| {
                                             view.debug_command(&target, command.clone())
@@ -3875,6 +3945,7 @@ impl LotusWindow {
 
     /// Utilities that are not tied to the selected view.
     fn render_utility_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let target = self.inspection_target();
         let mut keys = div().flex().flex_col().px_2().pb_1();
         for (key, action) in KEYS {
@@ -3885,50 +3956,55 @@ impl LotusWindow {
                     .gap_3()
                     .h(px(20.0))
                     .text_xs()
-                    .child(div().font_family(theme::MONO).child(key))
-                    .child(div().text_color(theme::text_muted()).child(action)),
+                    .child(div().font_family(theme.mono).child(key))
+                    .child(div().text_color(theme.text_muted).child(action)),
             );
         }
-        popover("inspector-utility-menu")
+        popover(theme, "inspector-utility-menu")
             .top(px(TOOLBAR_HEIGHT - 6.0))
             .right(px(8.0))
             .w(px(280.0))
             .on_mouse_down_out(cx.listener(|view, _, _, _| view.menu = Menu::Closed))
             .child(
-                menu_item("open-trace", "Open JSONL trace…", "≤ 64 MiB").on_click(cx.listener(
-                    |view, _, _, cx| {
+                menu_item(theme, "open-trace", "Open JSONL trace…", "≤ 64 MiB").on_click(
+                    cx.listener(|view, _, _, cx| {
                         view.menu = Menu::Closed;
                         view.open_trace(cx);
-                    },
-                )),
-            )
-            .child(
-                menu_item("clipboard-command", "Run clipboard JSON", "debug command").on_click(
-                    cx.listener(move |view, _, _, cx| {
-                        view.menu = Menu::Closed;
-                        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-                            let command = if text.len() <= 65536 {
-                                serde_json::from_str::<D>(&text).map_err(|e| e.to_string())
-                            } else {
-                                Err("Command exceeds 64 KiB".into())
-                            };
-                            match command {
-                                Ok(command) => match command.validate() {
-                                    Ok(()) => view.debug_command(&target, command),
-                                    Err(error) => view.error = error.into(),
-                                },
-                                Err(error) => view.error = error,
-                            }
-                        }
                     }),
                 ),
             )
-            .child(div().h(px(1.0)).my_1().bg(theme::border()))
-            .child(menu_heading("KEYBOARD"))
+            .child(
+                menu_item(
+                    theme,
+                    "clipboard-command",
+                    "Run clipboard JSON",
+                    "debug command",
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.menu = Menu::Closed;
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        let command = if text.len() <= 65536 {
+                            serde_json::from_str::<D>(&text).map_err(|e| e.to_string())
+                        } else {
+                            Err("Command exceeds 64 KiB".into())
+                        };
+                        match command {
+                            Ok(command) => match command.validate() {
+                                Ok(()) => view.debug_command(&target, command),
+                                Err(error) => view.error = error.into(),
+                            },
+                            Err(error) => view.error = error,
+                        }
+                    }
+                })),
+            )
+            .child(div().h(px(1.0)).my_1().bg(theme.border))
+            .child(menu_heading(theme, "KEYBOARD"))
             .child(keys)
     }
 
     fn render_error(&self, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let theme = theme::palette(cx);
         if self.error.is_empty() || self.error == self.dismissed_error {
             return None;
         }
@@ -3944,14 +4020,16 @@ impl LotusWindow {
                 .py_2()
                 .rounded(px(6.0))
                 .border_1()
-                .border_color(theme::error())
+                .border_color(theme.error)
                 .text_sm()
-                .child(div().size(px(6.0)).rounded_full().bg(theme::error()))
+                .child(div().size(px(6.0)).rounded_full().bg(theme.error))
                 .child(div().flex_1().child(self.error.clone()))
                 .child(
-                    icon_button("dismiss-error", Icon::Close, "Dismiss").on_click(cx.listener(
-                        |view, _: &ClickEvent, _, _| view.dismissed_error = view.error.clone(),
-                    )),
+                    icon_button(theme, "dismiss-error", Icon::Close, "Dismiss").on_click(
+                        cx.listener(|view, _: &ClickEvent, _, _| {
+                            view.dismissed_error = view.error.clone()
+                        }),
+                    ),
                 ),
         )
     }
@@ -3963,12 +4041,13 @@ impl LotusWindow {
         summary: &SessionSummary,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let theme = theme::palette(cx);
         let telemetry = &summary.telemetry;
         match mode {
-            GaugeMode::Cards => gauges::gauge_cards(telemetry).into_any_element(),
+            GaugeMode::Cards => gauges::gauge_cards(theme, telemetry).into_any_element(),
             GaugeMode::Compact { expanded } => {
                 let pills = layout::pills(main);
-                let [fps, speed, frame, rest @ ..] = gauges::gauges(telemetry);
+                let [fps, speed, frame, rest @ ..] = gauges::gauges(theme, telemetry);
                 div()
                     .flex()
                     .flex_col()
@@ -3977,19 +4056,21 @@ impl LotusWindow {
                     .w(px(main))
                     .p(px(layout::PILL_PADDING))
                     .border_t_1()
-                    .border_color(theme::border())
+                    .border_color(theme.border)
                     .child(
                         div()
                             .flex()
                             .items_center()
                             .gap(px(layout::PILL_GAP))
                             .child(gauges::gauge_pills(
+                                theme,
                                 [fps, speed, frame],
                                 pills.primary_width,
                                 false,
                             ))
                             .child(
                                 icon_button(
+                                    theme,
                                     "gauges-disclosure",
                                     if expanded {
                                         Icon::ChevronDown
@@ -4010,7 +4091,12 @@ impl LotusWindow {
                             ),
                     )
                     .when(expanded, |strip| {
-                        strip.child(gauges::gauge_pills(rest, pills.secondary_width, true))
+                        strip.child(gauges::gauge_pills(
+                            theme,
+                            rest,
+                            pills.secondary_width,
+                            true,
+                        ))
                     })
                     .into_any_element()
             }
@@ -4065,6 +4151,7 @@ impl LotusWindow {
 
 impl Render for LotusWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         if let Some(controller) = &self.controller {
             controller.ui.rendered();
         }
@@ -4106,10 +4193,10 @@ impl Render for LotusWindow {
             .flex()
             .size_full()
             .overflow_hidden()
-            .bg(theme::background())
-            .text_color(theme::text())
-            .font_family(theme::FONT)
-            .text_sm()
+            .bg(theme.window)
+            .text_color(theme.text)
+            .font_family(theme.font)
+            .text_size(px(theme.ui_size))
             .track_focus(&self.focus)
             .when(self.drag.is_some(), |root| root.cursor_col_resize())
             .on_drop(cx.listener(|view, _: &DividerDrag, _, _| {
@@ -4188,13 +4275,13 @@ fn drop_images(images: Vec<Arc<RenderImage>>, cx: &mut Context<LotusWindow>) {
     }
 }
 
-fn tile_message(text: &'static str) -> AnyElement {
+fn tile_message(theme: theme::Palette, text: &'static str) -> AnyElement {
     div()
         .flex()
         .flex_1()
         .items_center()
         .justify_center()
-        .text_color(theme::text_muted())
+        .text_color(theme.text_muted)
         .child(text)
         .into_any_element()
 }
@@ -4402,22 +4489,22 @@ fn state_name(summary: &SessionSummary) -> &'static str {
     session_tree::session_status(summary)
 }
 
-fn state_colour(summary: &SessionSummary) -> Rgba {
+fn state_colour(theme: theme::Palette, summary: &SessionSummary) -> Rgba {
     match state_name(summary) {
-        "running" => theme::success(),
-        "paused" => theme::warning(),
-        "crashed" => theme::error(),
-        _ => theme::text_muted(),
+        "running" => theme.success,
+        "paused" => theme.warning,
+        "crashed" => theme.error,
+        _ => theme.text_muted,
     }
 }
 
 /// Square dot for primaries, round for secondaries: shape, not only colour.
-fn state_dot(summary: &SessionSummary, primary: bool) -> impl IntoElement {
+fn state_dot(theme: theme::Palette, summary: &SessionSummary, primary: bool) -> impl IntoElement {
     div()
         .flex_none()
         .size(px(8.0))
         .rounded(px(if primary { 2.0 } else { 4.0 }))
-        .bg(state_colour(summary))
+        .bg(state_colour(theme, summary))
 }
 
 #[cfg(not(feature = "silvestris-ui"))]
@@ -4425,11 +4512,11 @@ fn row_meta(summary: &SessionSummary) -> String {
     session_tree::session_detail(summary)
 }
 
-fn section_label(text: &'static str) -> impl IntoElement {
+fn section_label(theme: theme::Palette, text: &'static str) -> impl IntoElement {
     div()
         .text_size(px(10.5))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(theme::text_muted())
+        .text_color(theme.text_muted)
         .child(text)
 }
 
@@ -4446,16 +4533,22 @@ fn badge(text: &'static str, colour: Rgba) -> impl IntoElement {
         .child(text)
 }
 
-fn tone_colour(tone: Tone) -> Rgba {
+fn tone_colour(theme: theme::Palette, tone: Tone) -> Rgba {
     match tone {
-        Tone::Primary => theme::background(),
-        Tone::Plain => theme::text(),
-        Tone::Danger => theme::error(),
+        Tone::Primary => theme.primary_text,
+        Tone::Plain => theme.text,
+        Tone::Danger => theme.error,
     }
 }
 
 /// Bordered (or filled, for `Primary`) control; keyboard focusable.
-fn control(id: impl Into<SharedString>, tone: Tone, enabled: bool, height: f32) -> Stateful<Div> {
+fn control(
+    theme: theme::Palette,
+    id: impl Into<SharedString>,
+    tone: Tone,
+    enabled: bool,
+    height: f32,
+) -> Stateful<Div> {
     let base = div()
         .id(id.into())
         .tab_index(0)
@@ -4468,21 +4561,21 @@ fn control(id: impl Into<SharedString>, tone: Tone, enabled: bool, height: f32) 
         .rounded(px(6.0))
         .font_weight(FontWeight::MEDIUM)
         .whitespace_nowrap()
-        .text_color(tone_colour(tone))
-        .focus_visible(|style| style.border_color(theme::info()));
+        .text_color(tone_colour(theme, tone))
+        .focus_visible(|style| style.border_color(theme.info));
     let base = match tone {
         Tone::Primary => base
-            .bg(theme::text())
+            .bg(theme.primary_fill)
             .border_1()
-            .border_color(theme::text()),
-        Tone::Plain | Tone::Danger => base.border_1().border_color(theme::border()),
+            .border_color(theme.primary_fill),
+        Tone::Plain | Tone::Danger => base.border_1().border_color(theme.border),
     };
     if enabled {
         base.cursor_pointer().hover(move |style| match tone {
             Tone::Primary => style.opacity(0.88),
             Tone::Plain | Tone::Danger => style
-                .bg(theme::surface_hover())
-                .border_color(theme::border_strong()),
+                .bg(theme.surface_hover)
+                .border_color(theme.border_strong),
         })
     } else {
         base.opacity(0.4)
@@ -4490,12 +4583,13 @@ fn control(id: impl Into<SharedString>, tone: Tone, enabled: bool, height: f32) 
 }
 
 fn button(
+    theme: theme::Palette,
     id: impl Into<SharedString>,
     label: &'static str,
     tone: Tone,
     enabled: bool,
 ) -> Stateful<Div> {
-    control(id, tone, enabled, 30.0)
+    control(theme, id, tone, enabled, 30.0)
         .px_3()
         .text_sm()
         .child(label)
@@ -4503,27 +4597,33 @@ fn button(
 
 /// Inspector context command: shorter than toolbar buttons.
 fn small_button(
+    theme: theme::Palette,
     id: impl Into<SharedString>,
     label: &'static str,
     tone: Tone,
     enabled: bool,
 ) -> Stateful<Div> {
-    control(id, tone, enabled, 26.0)
+    control(theme, id, tone, enabled, 26.0)
         .px_2()
         .text_xs()
         .child(label)
 }
 
 /// Square icon control for the condensed toolbar.
-fn icon_tool(id: impl Into<SharedString>, glyph: Icon) -> Stateful<Div> {
-    control(id, Tone::Plain, true, 30.0)
+fn icon_tool(theme: theme::Palette, id: impl Into<SharedString>, glyph: Icon) -> Stateful<Div> {
+    control(theme, id, Tone::Plain, true, 30.0)
         .min_w(px(30.0))
         .px(px(7.0))
-        .child(icon(glyph, 16.0, theme::text()))
+        .child(icon(glyph, 16.0, theme.text))
 }
 
 /// Toolbar action: labelled at full width, otherwise an icon with a tooltip.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Explicit palette added to the legacy toolbar composer; shared command migration is tracked in #133."
+)]
 fn tool_button(
+    theme: theme::Palette,
     id: &'static str,
     label: &'static str,
     glyph: Icon,
@@ -4533,12 +4633,12 @@ fn tool_button(
     tone: Tone,
 ) -> Stateful<Div> {
     if labelled {
-        return button(id, label, tone, enabled);
+        return button(theme, id, label, tone, enabled);
     }
     with_tooltip(
-        control(id, tone, enabled, 30.0)
+        control(theme, id, tone, enabled, 30.0)
             .w(px(30.0))
-            .child(icon(glyph, 16.0, tone_colour(tone))),
+            .child(icon(glyph, 16.0, tone_colour(theme, tone))),
         description,
     )
 }
@@ -4546,6 +4646,7 @@ fn tool_button(
 /// Inspector rail entry. The current view gets a surface, a stronger icon and
 /// a bar on the outer edge, so it does not depend on colour alone.
 fn rail_button(
+    theme: theme::Palette,
     id: impl Into<SharedString>,
     glyph: Icon,
     current: bool,
@@ -4564,18 +4665,18 @@ fn rail_button(
         .rounded(px(6.0))
         .border_1()
         .border_color(gpui::transparent_black())
-        .focus_visible(|style| style.border_color(theme::info()))
+        .focus_visible(|style| style.border_color(theme.info))
         .child(icon(
             glyph,
             16.0,
             if current {
-                theme::text()
+                theme.text
             } else {
-                theme::text_secondary()
+                theme.text_secondary
             },
         ))
         .when(current, |button| {
-            button.bg(theme::surface_active()).child(
+            button.bg(theme.surface_active).child(
                 div()
                     .absolute()
                     .left(px(-5.0))
@@ -4583,13 +4684,13 @@ fn rail_button(
                     .h(px(16.0))
                     .w(px(3.0))
                     .rounded(px(1.0))
-                    .bg(theme::text()),
+                    .bg(theme.text),
             )
         })
         .when(enabled, |button| {
             button
                 .cursor_pointer()
-                .hover(|style| style.bg(theme::surface_hover()))
+                .hover(|style| style.bg(theme.surface_hover))
         })
         .when(!enabled, |button| button.opacity(0.4));
     with_tooltip(button, description)
@@ -4599,7 +4700,8 @@ fn rail_button(
 struct DragGhost(SharedString);
 
 impl Render for DragGhost {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         if self.0.is_empty() {
             return div();
         }
@@ -4607,12 +4709,12 @@ impl Render for DragGhost {
             .px_2()
             .py_1()
             .rounded(px(4.0))
-            .bg(theme::panel())
+            .bg(theme.panel)
             .border_1()
-            .border_color(theme::info())
-            .font_family(theme::FONT)
+            .border_color(theme.info)
+            .font_family(theme.font)
             .text_xs()
-            .text_color(theme::text())
+            .text_color(theme.text)
             .child(self.0.clone())
     }
 }
@@ -4621,18 +4723,19 @@ impl Render for DragGhost {
 struct Tooltip(SharedString);
 
 impl Render for Tooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         div()
             .max_w(px(360.0))
             .px_2()
             .py_1()
             .rounded(px(4.0))
-            .bg(theme::panel())
+            .bg(theme.panel)
             .border_1()
-            .border_color(theme::border_strong())
-            .font_family(theme::FONT)
+            .border_color(theme.border_strong)
+            .font_family(theme.font)
             .text_xs()
-            .text_color(theme::text())
+            .text_color(theme.text)
             .child(self.0.clone())
     }
 }
@@ -4643,6 +4746,7 @@ pub(crate) fn with_tooltip(element: Stateful<Div>, text: impl Into<SharedString>
 }
 
 fn icon_button(
+    theme: theme::Palette,
     id: impl Into<SharedString>,
     glyph: Icon,
     description: impl Into<SharedString>,
@@ -4662,13 +4766,13 @@ fn icon_button(
         .border_1()
         .border_color(gpui::transparent_black())
         .cursor_pointer()
-        .hover(|style| style.bg(theme::surface_active()))
-        .focus_visible(|style| style.border_color(theme::info()))
-        .child(icon(glyph, 14.0, theme::text_secondary()));
+        .hover(|style| style.bg(theme.surface_active))
+        .focus_visible(|style| style.border_color(theme.info))
+        .child(icon(glyph, 14.0, theme.text_secondary));
     with_tooltip(button, description)
 }
 
-fn popover(id: &'static str) -> Stateful<Div> {
+fn popover(theme: theme::Palette, id: &'static str) -> Stateful<Div> {
     div()
         .id(id)
         .absolute()
@@ -4676,18 +4780,19 @@ fn popover(id: &'static str) -> Stateful<Div> {
         .flex_col()
         .p_1()
         .rounded(px(8.0))
-        .bg(theme::panel())
+        .bg(theme.panel)
         .border_1()
-        .border_color(theme::border_strong())
+        .border_color(theme.border_strong)
         .shadow_lg()
         .occlude()
 }
 
-fn menu_heading(text: &'static str) -> impl IntoElement {
-    div().px_2().pt_2().pb_1().child(section_label(text))
+fn menu_heading(theme: theme::Palette, text: &'static str) -> impl IntoElement {
+    div().px_2().pt_2().pb_1().child(section_label(theme, text))
 }
 
 fn menu_item(
+    theme: theme::Palette,
     id: impl Into<SharedString>,
     label: impl Into<SharedString>,
     detail: impl Into<SharedString>,
@@ -4705,20 +4810,21 @@ fn menu_item(
         .border_1()
         .border_color(gpui::transparent_black())
         .cursor_pointer()
-        .hover(|style| style.bg(theme::surface_active()))
-        .focus_visible(|style| style.border_color(theme::info()))
+        .hover(|style| style.bg(theme.surface_active))
+        .focus_visible(|style| style.border_color(theme.info))
         .child(div().truncate().child(label.into()))
         .child(
             div()
                 .flex_none()
                 .text_xs()
-                .text_color(theme::text_muted())
+                .text_color(theme.text_muted)
                 .child(detail.into()),
         )
 }
 
 /// Menu row with a check box drawn as a shape, so state is not colour alone.
 fn checkbox_item(
+    theme: theme::Palette,
     id: impl Into<SharedString>,
     label: &'static str,
     checked: bool,
@@ -4735,7 +4841,7 @@ fn checkbox_item(
         .rounded(px(5.0))
         .border_1()
         .border_color(gpui::transparent_black())
-        .focus_visible(|style| style.border_color(theme::info()))
+        .focus_visible(|style| style.border_color(theme.info))
         .child(
             div()
                 .flex()
@@ -4744,24 +4850,24 @@ fn checkbox_item(
                 .size(px(14.0))
                 .rounded(px(3.0))
                 .border_1()
-                .border_color(theme::border_strong())
+                .border_color(theme.border_strong)
                 .when(checked, |box_| {
-                    box_.bg(theme::text())
-                        .child(div().size(px(6.0)).rounded(px(1.0)).bg(theme::background()))
+                    box_.bg(theme.text)
+                        .child(div().size(px(6.0)).rounded(px(1.0)).bg(theme.window))
                 }),
         )
         .child(div().flex_1().truncate().child(label));
     if enabled {
         item = item
             .cursor_pointer()
-            .hover(|style| style.bg(theme::surface_active()));
+            .hover(|style| style.bg(theme.surface_active));
     } else {
         item = item.opacity(0.4);
     }
     item
 }
 
-fn empty_state(title: &'static str, body: String) -> Div {
+fn empty_state(theme: theme::Palette, title: &'static str, body: String) -> Div {
     div()
         .flex()
         .flex_col()
@@ -4781,24 +4887,20 @@ fn empty_state(title: &'static str, body: String) -> Div {
                 .max_w(px(420.0))
                 .text_center()
                 .text_sm()
-                .text_color(theme::text_muted())
+                .text_color(theme.text_muted)
                 .child(body),
         )
 }
 
-fn screen_frame(width: f32, height: f32) -> Div {
+fn screen_frame(theme: theme::Palette, width: f32, height: f32) -> Div {
     div()
         .relative()
         .flex_none()
         .w(px(width))
         .h(px(height))
-        .bg(rgb_black())
+        .bg(theme.canvas)
         .border_1()
-        .border_color(theme::border())
-}
-
-fn rgb_black() -> Rgba {
-    theme::background()
+        .border_color(theme.border)
 }
 
 pub(crate) fn hex_string(value: &Value) -> String {

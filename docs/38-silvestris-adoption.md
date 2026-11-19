@@ -3,7 +3,7 @@
 Branch: silvestris-adoption. This remains opt-in staging, not the default
 cutover. The default desktop build keeps its current layout, colours, fonts
 and controls. Enabling silvestris-ui registers bundled fonts before the first
-window, installs the shared Geist Dark theme, uses Inter/Geist Mono in the
+window, loads the saved theme (Geist Dark by default), uses its bundled fonts in
 desktop and Settings, and replaces editable overridden Settings reset actions
 with the shared small Button. The reset still calls SettingsWindow::write
 with None; scope inheritance, validation and persistence retain the same path.
@@ -14,7 +14,8 @@ The emulator/session/controller/MCP crates do not depend on Silvestris.
 The input router, worker commands and settings registry retain their existing
 interfaces. The measured shell supplies preview-fit dimensions. Staged pin/panel
 metadata is namespaced in desktop.json; legacy width/visibility keys remain
-authoritative for rollback. Aqua is not enabled in Lotus.
+authoritative for rollback. Aqua is now selectable in staging; its controls and
+native chrome migration still need completion and visual acceptance.
 
 ## Source and build
 
@@ -49,6 +50,10 @@ Keep a native Lotus window running while developing this branch:
 
     ./scripts/run-silvestris-preview.ps1 -Restart
 
+To inspect Aqua Light explicitly:
+
+    ./scripts/run-silvestris-preview.ps1 -Restart -Theme aqua-light
+
 The Windows helper verifies the source pin, builds the opt-in GNU binary into
 Silvestris target/, then runs a separate executable copy. This avoids Windows
 locking Cargo's output during subsequent builds. It keeps the old window open
@@ -56,8 +61,10 @@ until the replacement builds and restarts only the recorded executable/PID/start
 time. Without -Restart it leaves the existing preview alone; -NoBuild uses the
 last built artifact. Preferences/logs/process metadata stay under Silvestris
 target/, with an isolated desktop.json path. The helper starts without a host
-configuration or workers. The staging palette remains Geist Dark; a running
-preview is not evidence of completed Aqua migration or native input validation.
+configuration or workers. -Theme accepts aqua-light, aqua-dark, geist-light and
+geist-dark, forwarding --theme to Lotus. Without an override the saved choice
+loads; first-run default remains Geist Dark. A running preview is not evidence
+of completed Aqua migration or native input validation.
 
 ## Validation and rollout gates
 
@@ -190,7 +197,8 @@ latest values. Viewport demotion is never saved. Ctrl+I toggles shared inspector
 visibility.
 
 The optional desktop.json silvestris object uses schema_version=1,
-inspector_pinned and inspector_panel (stable string ID). Unknown nested fields
+inspector_pinned, inspector_panel (stable string ID), theme_family and appearance.
+Unknown nested fields
 survive. An existing file with inspector_open=true and no silvestris object
 migrates to pinned=true to preserve its docked intent (handbook 14/19). New or
 previously closed layouts start unpinned. Existing widths, visibility, split
@@ -234,3 +242,34 @@ panel, stalled replies, independent tiled previews, inspected-target swap/untile
 and MCP single-view persistence. Native Azahar behavior and UI-thread performance
 remain unverified. Queued mutating commands still need an atomic expected-epoch
 dispatch guard; reply validation does not prevent a mutation executing late.
+
+## Live theme selection
+
+Global Settings → General → Appearance exposes separate Aqua/Geist and
+Light/Dark segmented controls. Selection updates Silvestris's app-global theme,
+refreshes all open windows and saves the two dimensions independently inside
+the existing silvestris metadata object. Missing fields retain Geist Dark;
+unknown enum values disable saving with the existing no-overwrite policy.
+The optional --theme startup override initializes both the framework and the
+window's preference values; a later ordinary save/close records that choice.
+
+theme.rs now resolves a copyable palette from the active theme for each render.
+Main, Settings, gauges, row indicators, tooltips and drag previews receive that
+palette explicitly. Permanent source-list icon callbacks resolve it at call
+time, rather than keeping their creation theme. Lato/Source Code Pro are used
+for Aqua and Inter/Geist Mono for Geist, from the framework Typography tokens.
+App surfaces use window colours, keeping dark canvas colours inside preview
+frames. Explanatory text uses secondary-text colours rather than disabled ink.
+Flat legacy primary actions sample the default button's lower body stop for
+contrast; they still need migration to the shared layered button renderer.
+
+References: issues #121/#126/#138; handbook 15/19; Silvestris core theme.rs,
+tokens.rs, aqua.rs and geist.rs supply the identities, roles and provenance.
+GPUI tests click all four combinations with Main and Settings both open and
+check focus, palette/fonts and workspace geometry. A populated split-state test
+checks selection, inspected target, panel, source rows and layout preferences
+survive switching. Persistence tests cover all combinations, missing/invalid
+fields and unknown-field retention. Palette tests check body/secondary/primary
+text contrast in every combination. Native pixel, DPI and live-worker theme
+switch validation remain open, along with the legacy control/menu/chrome
+replacement. This does not change the first-run default to Aqua.

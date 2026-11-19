@@ -2,7 +2,9 @@
 [CmdletBinding()]
 param(
     [switch]$NoBuild,
-    [switch]$Restart
+    [switch]$Restart,
+    [ValidateSet('aqua-light', 'aqua-dark', 'geist-light', 'geist-dark')]
+    [string]$Theme
 )
 $ErrorActionPreference = 'Stop'
 $lotusRoot = Split-Path -Parent $PSScriptRoot
@@ -34,6 +36,7 @@ if (Test-Path -LiteralPath $statePath) {
             throw 'Preview process record does not match the live process; refusing restart'
         }
         if (!$Restart) {
+            if ($Theme) { throw 'Use -Restart when changing the preview theme' }
             Write-Output "Preview already running: PID $($running.Id), $($running.MainWindowTitle). Use -Restart to rebuild/relaunch."
             return
         }
@@ -60,7 +63,12 @@ Copy-Item -LiteralPath (Join-Path $buildRoot 'debug/lotus-desktop.exe') -Destina
 $priorPreferences = $env:LOTUS_DESKTOP_PREFERENCES
 try {
     $env:LOTUS_DESKTOP_PREFERENCES = $preferencesPath
-    $preview = Start-Process -FilePath $previewExe -WorkingDirectory $lotusRoot -WindowStyle Normal -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+    $launch = @{
+        FilePath = $previewExe; WorkingDirectory = $lotusRoot; WindowStyle = 'Normal'
+        RedirectStandardOutput = $stdout; RedirectStandardError = $stderr; PassThru = $true
+    }
+    if ($Theme) { $launch.ArgumentList = @('--theme', $Theme) }
+    $preview = Start-Process @launch
 } finally { $env:LOTUS_DESKTOP_PREFERENCES = $priorPreferences }
 @{
     pid = $preview.Id
@@ -68,6 +76,7 @@ try {
     startedUtcTicks = $preview.StartTime.ToUniversalTime().Ticks.ToString()
     preferences = $preferencesPath
     branch = $branch
+    themeOverride = $Theme
     sha256 = (Get-FileHash -LiteralPath $previewExe -Algorithm SHA256).Hash
 } | ConvertTo-Json | Set-Content -LiteralPath $statePath -Encoding UTF8
 # The desktop binary has a console subsystem for --mcp stdio, so
@@ -81,5 +90,6 @@ do {
 } while ([DateTime]::UtcNow -lt $windowDeadline)
 if ($preview.MainWindowHandle -eq 0) { throw "Preview has no window after 10 seconds; inspect $stderr" }
 Write-Output "Visible Lotus preview: PID $($preview.Id), branch $branch"
+if ($Theme) { Write-Output "Initial theme: $Theme" }
 Write-Output "Preferences: $preferencesPath"
 Write-Output "Startup log: $stderr"

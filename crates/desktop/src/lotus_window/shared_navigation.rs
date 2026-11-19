@@ -15,7 +15,9 @@ impl LotusWindow {
             list.set_icon_renderer(
                 move |role, _, _, _, cx| {
                     icons
-                        .read_with(cx, |view, _| view.shared_source_icon(role))
+                        .read_with(cx, |view, cx| {
+                            view.shared_source_icon(theme::palette(cx), role)
+                        })
                         .unwrap_or_else(|_| div().into_any_element())
                 },
                 cx,
@@ -101,7 +103,7 @@ impl LotusWindow {
     fn source_action_current(&self, target: &SessionTarget) -> bool {
         self.control && target.resolve(&self.sessions).is_some()
     }
-    fn shared_source_icon(&self, role: &str) -> AnyElement {
+    fn shared_source_icon(&self, theme: theme::Palette, role: &str) -> AnyElement {
         if let Some(row) = role.strip_prefix("state:") {
             if let Some(summary) = self
                 .source_session(row)
@@ -113,6 +115,7 @@ impl LotusWindow {
                     .items_center()
                     .justify_center()
                     .child(state_dot(
+                        theme,
                         summary,
                         matches!(summary.info.kind, SessionKind::Primary { .. }),
                     ))
@@ -129,7 +132,7 @@ impl LotusWindow {
                     .size(px(8.))
                     .rounded(px(2.))
                     .border_1()
-                    .border_color(theme::border_strong()),
+                    .border_color(theme.border_strong),
             )
             .into_any_element()
     }
@@ -154,6 +157,7 @@ impl LotusWindow {
     }
 
     fn shared_source_actions(&self, row: &SourceRow, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::palette(cx);
         let Some(target) = self.navigation.targets.get(&row.id) else {
             return div().into_any_element();
         };
@@ -171,6 +175,7 @@ impl LotusWindow {
             let settings = card.clone();
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("source-settings-{}", row.id)),
                     Icon::Gear,
                     "Card settings",
@@ -183,6 +188,7 @@ impl LotusWindow {
             if self.control {
                 actions = actions.child(
                     icon_button(
+                        theme,
                         SharedString::from(format!("source-start-{}", row.id)),
                         Icon::Play,
                         "Start primary session",
@@ -214,6 +220,7 @@ impl LotusWindow {
             let settings = card.clone();
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("source-settings-{}", row.id)),
                     Icon::Gear,
                     "Card settings",
@@ -229,6 +236,7 @@ impl LotusWindow {
                 let asset = summary.info.asset.clone();
                 actions = actions.child(
                     icon_button(
+                        theme,
                         SharedString::from(format!("source-fork-{}", row.id)),
                         Icon::Plus,
                         "Secondary from this card",
@@ -252,6 +260,7 @@ impl LotusWindow {
             let revision = self.workspace.revision;
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("source-tile-{}", row.id)),
                     Icon::SideBySide,
                     "Show beside the current view",
@@ -270,6 +279,7 @@ impl LotusWindow {
             let primary = matches!(summary.info.kind, SessionKind::Primary { .. });
             actions = actions.child(
                 icon_button(
+                    theme,
                     SharedString::from(format!("source-stop-{}", row.id)),
                     Icon::Close,
                     if primary {

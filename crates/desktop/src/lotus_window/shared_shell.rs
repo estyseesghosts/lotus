@@ -15,6 +15,17 @@ fn legacy_plan(plan: &shared::ShellPlan) -> Plan {
 }
 
 impl LotusWindow {
+    pub(crate) fn ui_theme(&self) -> silvestris::ThemeId {
+        self.preferences.ui.theme_id()
+    }
+
+    pub(crate) fn set_ui_theme(&mut self, id: silvestris::ThemeId, cx: &mut Context<Self>) {
+        self.preferences.ui.theme_family = id.family;
+        self.preferences.ui.appearance = id.appearance;
+        silvestris::set_theme_preference(silvestris::ThemePreference::explicit(id), cx);
+        self.preferences.save();
+        cx.notify();
+    }
     fn queue_shell_preferences_save(&mut self, cx: &mut Context<Self>) {
         // Shared divider callbacks run on every movement. Coalesce disk writes
         // instead of synchronously writing desktop.json on every input event.
@@ -69,6 +80,7 @@ impl LotusWindow {
     }
 
     pub(super) fn render_shared_shell(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::palette(cx);
         let owner = cx.entity();
         Shell::measured(
             "lotus-shell",
@@ -100,11 +112,14 @@ impl LotusWindow {
                             view.render_inspector(span.width, false, cx)
                                 .into_any_element()
                         } else {
-                            tile_message(if target.is_empty() {
-                                "No session to inspect"
-                            } else {
-                                "Switching inspector…"
-                            })
+                            tile_message(
+                                theme,
+                                if target.is_empty() {
+                                    "No session to inspect"
+                                } else {
+                                    "Switching inspector…"
+                                },
+                            )
                         };
                         div()
                             .id("shared-inspector-content")
@@ -423,5 +438,35 @@ mod tests {
             assert!(matches!(view.workspace.layout, Layout::Split { .. }));
             assert!(view.keys.is_empty());
         });
+        let before = cx.update(|_, cx| {
+            let view = view.read(cx);
+            (
+                view.selected.clone(),
+                view.inspected.clone(),
+                view.workspace.clone(),
+                view.inspection_panel,
+                view.shared_sources.read(cx).state().rows().to_vec(),
+                view.preferences.values.clone(),
+            )
+        });
+        for id in silvestris::ThemeId::ALL {
+            cx.update(|_, cx| view.update(cx, |view, cx| view.set_ui_theme(id, cx)));
+            draw(cx);
+            assert_eq!(cx.debug_bounds("shell-workspace").unwrap(), closed);
+            cx.update(|_, cx| {
+                let view = view.read(cx);
+                assert_eq!(
+                    (
+                        view.selected.clone(),
+                        view.inspected.clone(),
+                        view.workspace.clone(),
+                        view.inspection_panel,
+                        view.shared_sources.read(cx).state().rows().to_vec(),
+                        view.preferences.values.clone()
+                    ),
+                    before
+                );
+            });
+        }
     }
 }

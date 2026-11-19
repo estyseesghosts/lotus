@@ -80,6 +80,8 @@ pub struct SharedUiPreferences {
     pub schema_version: u32,
     pub inspector_pinned: bool,
     pub inspector_panel: String,
+    pub theme_family: silvestris::ThemeFamily,
+    pub appearance: silvestris::Appearance,
     #[serde(flatten)]
     pub extra: serde_json::Map<String, serde_json::Value>,
 }
@@ -91,8 +93,17 @@ impl Default for SharedUiPreferences {
             schema_version: 1,
             inspector_pinned: false,
             inspector_panel: "cpu".into(),
+            theme_family: silvestris::ThemeFamily::Geist,
+            appearance: silvestris::Appearance::Dark,
             extra: Default::default(),
         }
+    }
+}
+
+#[cfg(feature = "silvestris-ui")]
+impl SharedUiPreferences {
+    pub fn theme_id(&self) -> silvestris::ThemeId {
+        silvestris::ThemeId::new(self.theme_family, self.appearance)
     }
 }
 
@@ -271,6 +282,33 @@ mod tests {
 
     #[cfg(feature = "silvestris-ui")]
     #[test]
+    fn theme_dimensions_round_trip_without_changing_layout_or_future_fields() {
+        let dir = test_directory("themes");
+        let path = dir.join("desktop.json");
+        std::fs::write(
+            &path,
+            br#"{"sessions_width":333,"inspector_width":511,"silvestris":{"future":[1,2]}}"#,
+        )
+        .unwrap();
+        for id in silvestris::ThemeId::ALL {
+            let mut store = Store::load(Some(path.clone()));
+            store.ui.theme_family = id.family;
+            store.ui.appearance = id.appearance;
+            store.save();
+            let loaded = Store::load(Some(path.clone()));
+            assert_eq!(loaded.ui.theme_id(), id);
+            assert_eq!(loaded.ui.extra["future"], serde_json::json!([1, 2]));
+            assert_eq!(
+                (loaded.values.sessions_width, loaded.values.inspector_width),
+                (333., 511.)
+            );
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    #[test]
     fn unsupported_or_malformed_shell_metadata_is_preserved() {
         let dir = test_directory("shell-invalid");
         let path = dir.join("desktop.json");
@@ -278,6 +316,8 @@ mod tests {
             r#"{"silvestris":{"schema_version":2,"future":true}}"#,
             r#"{"silvestris":{"inspector_pinned":"bad"}}"#,
             r#"{"silvestris":null}"#,
+            r#"{"silvestris":{"theme_family":"future"}}"#,
+            r#"{"silvestris":{"appearance":"future"}}"#,
         ] {
             std::fs::write(&path, text).unwrap();
             let store = Store::load(Some(path.clone()));

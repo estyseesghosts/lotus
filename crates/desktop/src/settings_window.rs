@@ -188,6 +188,94 @@ pub struct SettingsWindow {
 }
 
 impl SettingsWindow {
+    #[cfg(feature = "silvestris-ui")]
+    fn render_appearance(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use silvestris::controls::{Segment, SegmentedControl};
+        use silvestris::{Appearance, ThemeFamily, ThemeId};
+        let theme = theme::palette(cx);
+        let id = self
+            .lotus
+            .read_with(cx, |view, _| view.ui_theme())
+            .unwrap_or(ThemeId::GEIST_DARK);
+        let family_owner = self.lotus.clone();
+        let appearance_owner = self.lotus.clone();
+        div()
+            .id("appearance-settings")
+            .debug_selector(|| "appearance-settings".into())
+            .flex()
+            .flex_col()
+            .gap_2()
+            .py_3()
+            .border_b_1()
+            .border_color(theme.border)
+            .child(heading(theme, "Appearance"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child("Style")
+                    .child(
+                        SegmentedControl::new(
+                            "theme-family",
+                            "Style",
+                            vec![Segment::new("aqua", "Aqua"), Segment::new("geist", "Geist")],
+                        )
+                        .selected(if id.family == ThemeFamily::Aqua {
+                            "aqua"
+                        } else {
+                            "geist"
+                        })
+                        .on_select(move |id, _, cx| {
+                            let family = match id.as_ref() {
+                                "aqua" => ThemeFamily::Aqua,
+                                "geist" => ThemeFamily::Geist,
+                                _ => return,
+                            };
+                            let _ = family_owner.update(cx, |view, cx| {
+                                view.set_ui_theme(
+                                    ThemeId::new(family, view.ui_theme().appearance),
+                                    cx,
+                                )
+                            });
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child("Appearance")
+                    .child(
+                        SegmentedControl::new(
+                            "theme-appearance",
+                            "Appearance",
+                            vec![Segment::new("light", "Light"), Segment::new("dark", "Dark")],
+                        )
+                        .selected(if id.appearance == Appearance::Light {
+                            "light"
+                        } else {
+                            "dark"
+                        })
+                        .on_select(move |id, _, cx| {
+                            let appearance = match id.as_ref() {
+                                "light" => Appearance::Light,
+                                "dark" => Appearance::Dark,
+                                _ => return,
+                            };
+                            let _ = appearance_owner.update(cx, |view, cx| {
+                                view.set_ui_theme(
+                                    ThemeId::new(view.ui_theme().family, appearance),
+                                    cx,
+                                )
+                            });
+                        }),
+                    ),
+            )
+    }
     fn new(
         lotus: WeakEntity<LotusWindow>,
         host: Option<Arc<Supervisor>>,
@@ -384,6 +472,7 @@ impl SettingsWindow {
     }
 
     fn render_nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         let mut nav = div()
             .id("settings-nav")
             .flex()
@@ -394,10 +483,10 @@ impl SettingsWindow {
             .overflow_y_scroll()
             .p_2()
             .gap(px(2.0))
-            .bg(theme::panel())
+            .bg(theme.panel)
             .border_r_1()
-            .border_color(theme::border())
-            .child(heading("SCOPE"));
+            .border_color(theme.border)
+            .child(heading(theme, "SCOPE"));
         let targets = std::iter::once(Target::Global)
             .chain(self.cards.iter().cloned().map(Target::Card))
             .collect::<Vec<_>>();
@@ -405,11 +494,13 @@ impl SettingsWindow {
             let selected = target == self.target;
             let label = target.title();
             let id = SharedString::from(format!("scope-{label}"));
-            nav = nav.child(nav_item(id, label, None, selected).on_click(
+            nav = nav.child(nav_item(theme, id, label, None, selected).on_click(
                 cx.listener(move |view, _: &ClickEvent, _, cx| view.set_target(target.clone(), cx)),
             ));
         }
-        nav = nav.child(div().h(px(8.0))).child(heading("CATEGORY"));
+        nav = nav
+            .child(div().h(px(8.0)))
+            .child(heading(theme, "CATEGORY"));
         for group in Group::ALL {
             let count = self.rows(group).len();
             if count == 0 {
@@ -418,6 +509,7 @@ impl SettingsWindow {
             let selected = group == self.group;
             nav = nav.child(
                 nav_item(
+                    theme,
                     SharedString::from(format!("group-{group:?}")),
                     group.label().to_string(),
                     Some(count.to_string()),
@@ -437,6 +529,7 @@ impl SettingsWindow {
         descriptor: &'static Descriptor,
         cx: &mut Context<Self>,
     ) -> Stateful<gpui::Div> {
+        let theme = theme::palette(cx);
         let (value, source) = self.value(descriptor, cx);
         let editable = self.editable(descriptor, &source);
         let overridden = match descriptor.owner {
@@ -448,7 +541,7 @@ impl SettingsWindow {
         match (&descriptor.kind, editable) {
             (Kind::Boolean, Ok(())) => {
                 let on = value.as_bool().unwrap_or(false);
-                controls = controls.child(toggle(format!("toggle-{key}"), on).on_click(
+                controls = controls.child(toggle(theme, format!("toggle-{key}"), on).on_click(
                     cx.listener(move |view, _: &ClickEvent, _, cx| {
                         view.write(descriptor, Some(Value::Bool(!on)), cx);
                     }),
@@ -463,16 +556,16 @@ impl SettingsWindow {
                 ] {
                     let options = options.clone();
                     controls = controls.child(
-                        small_button(format!("{label}-{key}"), glyph, label).on_click(cx.listener(
-                            move |view, _: &ClickEvent, _, cx| {
+                        small_button(theme, format!("{label}-{key}"), glyph, label).on_click(
+                            cx.listener(move |view, _: &ClickEvent, _, cx| {
                                 let len = options.len() as isize;
                                 let next = index.map_or(0, |i| (i as isize + step).rem_euclid(len));
                                 view.write(descriptor, Some(options[next as usize].clone()), cx);
-                            },
-                        )),
+                            }),
+                        ),
                     );
                 }
-                controls = controls.child(value_text(display(&value)));
+                controls = controls.child(value_text(theme, display(&value)));
             }
             (kind, Ok(())) if stepper(kind).is_some() => {
                 let (step, min, max, integer) = stepper(kind).unwrap_or((1.0, None, None, true));
@@ -482,8 +575,8 @@ impl SettingsWindow {
                     (1.0, Icon::ChevronUp, "Increase"),
                 ] {
                     controls = controls.child(
-                        small_button(format!("{label}-{key}"), glyph, label).on_click(cx.listener(
-                            move |view, _: &ClickEvent, _, cx| {
+                        small_button(theme, format!("{label}-{key}"), glyph, label).on_click(
+                            cx.listener(move |view, _: &ClickEvent, _, cx| {
                                 let mut next = current + sign * step;
                                 next = (next / step).round() * step;
                                 if let Some(min) = min {
@@ -499,17 +592,17 @@ impl SettingsWindow {
                                     Value::from((next * 1e4).round() / 1e4)
                                 };
                                 view.write(descriptor, Some(next), cx);
-                            },
-                        )),
+                            }),
+                        ),
                     );
                 }
-                controls = controls.child(value_text(display(&value)));
+                controls = controls.child(value_text(theme, display(&value)));
             }
             (_, Ok(())) => {
                 controls = controls.child(with_tooltip(
                     div()
                         .id(SharedString::from(format!("text-{key}")))
-                        .child(value_text(display(&value))),
+                        .child(value_text(theme, display(&value))),
                     "Text and list values are edited with ctr-cli or MCP for now (#54).",
                 ));
             }
@@ -518,7 +611,7 @@ impl SettingsWindow {
                     div()
                         .id(SharedString::from(format!("locked-{key}")))
                         .opacity(0.6)
-                        .child(value_text(display(&value))),
+                        .child(value_text(theme, display(&value))),
                     reason,
                 ));
             }
@@ -536,6 +629,7 @@ impl SettingsWindow {
             .into_any_element();
             #[cfg(not(feature = "silvestris-ui"))]
             let reset = small_button(
+                theme,
                 format!("reset-{key}"),
                 Icon::Reset,
                 reset_label(&self.target, descriptor),
@@ -553,7 +647,7 @@ impl SettingsWindow {
             .gap_3()
             .py_2()
             .border_b_1()
-            .border_color(theme::border())
+            .border_color(theme.border)
             .child(
                 div()
                     .flex()
@@ -567,18 +661,18 @@ impl SettingsWindow {
                             .items_center()
                             .gap_2()
                             .child(div().truncate().child(descriptor.label.clone()))
-                            .child(source_badge(&source, overridden)),
+                            .child(source_badge(theme, &source, overridden)),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(theme::text_muted())
+                            .text_color(theme.text_muted)
                             .child(descriptor.description.clone()),
                     )
                     .child(
                         div()
                             .text_xs()
-                            .text_color(theme::text_muted())
+                            .text_color(theme.text_muted)
                             .opacity(0.7)
                             .child(descriptor.key.clone()),
                     ),
@@ -589,6 +683,7 @@ impl SettingsWindow {
 
 impl Render for SettingsWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = theme::palette(cx);
         if self.rows(self.group).is_empty() {
             if let Some(group) = Group::ALL.into_iter().find(|g| !self.rows(*g).is_empty()) {
                 self.group = group;
@@ -603,6 +698,10 @@ impl Render for SettingsWindow {
             .overflow_y_scroll()
             .px_4()
             .pb_4();
+        #[cfg(feature = "silvestris-ui")]
+        if self.target == Target::Global && self.group == Group::General {
+            list = list.child(self.render_appearance(cx));
+        }
         for descriptor in rows {
             list = list.child(self.render_row(descriptor, cx));
         }
@@ -627,10 +726,10 @@ impl Render for SettingsWindow {
             }))
             .size_full()
             .flex()
-            .bg(theme::background())
-            .text_color(theme::text())
-            .text_sm()
-            .when(cfg!(feature = "silvestris-ui"), |root| root.font_family(theme::FONT))
+            .bg(theme.window)
+            .text_color(theme.text)
+            .text_size(px(theme.ui_size))
+            .when(cfg!(feature = "silvestris-ui"), |root| root.font_family(theme.font))
             .child(self.render_nav(cx))
             .child(
                 div()
@@ -652,15 +751,15 @@ impl Render for SettingsWindow {
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(format!("{} · {}", self.group.label(), self.target.title())),
                             )
-                            .child(div().text_xs().text_color(theme::text_muted()).child(note))
+                            .child(div().text_xs().text_color(theme.text_muted).child(note))
                             .when_some(self.error.clone(), |header, error| {
                                 header.child(
-                                    div().text_xs().text_color(theme::error()).child(error),
+                                    div().text_xs().text_color(theme.error).child(error),
                                 )
                             })
                             .when_some(
                                 (self.group == Group::Discord)
-                                    .then(|| self.lotus.read_with(cx, |l, _| l.presence_line()).ok().flatten())
+                                    .then(|| self.lotus.read_with(cx, |l, _| l.presence_line(theme)).ok().flatten())
                                     .flatten(),
                                 |header, (colour, text)| {
                                     header.child(div().text_xs().text_color(colour).child(text))
@@ -669,13 +768,13 @@ impl Render for SettingsWindow {
                             .when(
                                 !self.lotus.read_with(cx, |l, _| l.preferences_saved()).unwrap_or(true),
                                 |header| {
-                                    header.child(div().text_xs().text_color(theme::warning()).child(
+                                    header.child(div().text_xs().text_color(theme.warning).child(
                                         "desktop.json has no location or could not be read: preference changes are not saved and last until Lotus closes.",
                                     ))
                                 },
                             )
                             .when(self.host.is_none(), |header| {
-                                header.child(div().text_xs().text_color(theme::warning()).child(
+                                header.child(div().text_xs().text_color(theme.warning).child(
                                     "No host configuration: only desktop preferences can be changed.",
                                 ))
                             }),
@@ -776,18 +875,19 @@ fn reset_label(target: &Target, descriptor: &Descriptor) -> &'static str {
     }
 }
 
-fn heading(text: &'static str) -> impl IntoElement {
+fn heading(theme: theme::Palette, text: &'static str) -> impl IntoElement {
     div()
         .px_2()
         .pt_1()
         .pb_1()
         .text_size(px(10.5))
         .font_weight(FontWeight::MEDIUM)
-        .text_color(theme::text_muted())
+        .text_color(theme.text_muted)
         .child(text)
 }
 
 fn nav_item(
+    theme: theme::Palette,
     id: SharedString,
     label: String,
     detail: Option<String>,
@@ -806,22 +906,23 @@ fn nav_item(
         .border_1()
         .border_color(gpui::transparent_black())
         .cursor_pointer()
-        .hover(|style| style.bg(theme::surface_active()))
-        .focus_visible(|style| style.border_color(theme::info()))
-        .when(selected, |item| item.bg(theme::surface_active()))
+        .hover(|style| style.bg(theme.surface_active))
+        .focus_visible(|style| style.border_color(theme.info))
+        .when(selected, |item| item.bg(theme.surface_active))
         .child(div().truncate().child(label))
         .when_some(detail, |item, detail| {
             item.child(
                 div()
                     .flex_none()
                     .text_xs()
-                    .text_color(theme::text_muted())
+                    .text_color(theme.text_muted)
                     .child(detail),
             )
         })
 }
 
 fn small_button(
+    theme: theme::Palette,
     id: impl Into<SharedString>,
     glyph: Icon,
     description: impl Into<SharedString>,
@@ -836,16 +937,16 @@ fn small_button(
         .size(px(24.0))
         .rounded(px(5.0))
         .border_1()
-        .border_color(theme::border())
+        .border_color(theme.border)
         .cursor_pointer()
-        .hover(|style| style.bg(theme::surface_active()))
-        .focus_visible(|style| style.border_color(theme::info()))
-        .child(icon(glyph, 12.0, theme::text_secondary()));
+        .hover(|style| style.bg(theme.surface_active))
+        .focus_visible(|style| style.border_color(theme.info))
+        .child(icon(glyph, 12.0, theme.text_secondary));
     with_tooltip(button, description)
 }
 
 /// A switch drawn as a shape with its state in text, so it is not colour alone.
-fn toggle(id: String, on: bool) -> Stateful<gpui::Div> {
+fn toggle(theme: theme::Palette, id: String, on: bool) -> Stateful<gpui::Div> {
     div()
         .id(SharedString::from(id))
         .tab_index(0)
@@ -856,10 +957,10 @@ fn toggle(id: String, on: bool) -> Stateful<gpui::Div> {
         .h(px(24.0))
         .rounded(px(5.0))
         .border_1()
-        .border_color(theme::border())
+        .border_color(theme.border)
         .cursor_pointer()
-        .hover(|style| style.bg(theme::surface_active()))
-        .focus_visible(|style| style.border_color(theme::info()))
+        .hover(|style| style.bg(theme.surface_active))
+        .focus_visible(|style| style.border_color(theme.info))
         .child(
             div()
                 .flex()
@@ -868,13 +969,9 @@ fn toggle(id: String, on: bool) -> Stateful<gpui::Div> {
                 .h(px(14.0))
                 .p(px(2.0))
                 .rounded_full()
-                .bg(if on {
-                    theme::text()
-                } else {
-                    theme::border_strong()
-                })
+                .bg(if on { theme.text } else { theme.border_strong })
                 .when(on, |track| track.justify_end())
-                .child(div().size(px(10.0)).rounded_full().bg(theme::background())),
+                .child(div().size(px(10.0)).rounded_full().bg(theme.window)),
         )
         .child(
             div()
@@ -884,22 +981,22 @@ fn toggle(id: String, on: bool) -> Stateful<gpui::Div> {
         )
 }
 
-fn value_text(text: String) -> impl IntoElement {
+fn value_text(theme: theme::Palette, text: String) -> impl IntoElement {
     div()
         .min_w(px(56.0))
         .max_w(px(220.0))
         .truncate()
         .text_xs()
         .font_family(if cfg!(feature = "silvestris-ui") {
-            theme::MONO
+            theme.mono
         } else {
             "monospace"
         })
-        .text_color(theme::text_secondary())
+        .text_color(theme.text_secondary)
         .child(text)
 }
 
-fn source_badge(source: &str, overridden: bool) -> impl IntoElement {
+fn source_badge(theme: theme::Palette, source: &str, overridden: bool) -> impl IntoElement {
     let label = match source {
         "default" => "default".to_string(),
         "global" => "global".to_string(),
@@ -912,16 +1009,12 @@ fn source_badge(source: &str, overridden: bool) -> impl IntoElement {
         .px(px(5.0))
         .rounded(px(4.0))
         .border_1()
-        .border_color(if overridden {
-            theme::info()
-        } else {
-            theme::border()
-        })
+        .border_color(if overridden { theme.info } else { theme.border })
         .text_size(px(10.0))
         .text_color(if overridden {
-            theme::info()
+            theme.info
         } else {
-            theme::text_muted()
+            theme.text_muted
         })
         .child(if overridden {
             format!("set here · {label}")
@@ -933,6 +1026,60 @@ fn source_badge(source: &str, overridden: bool) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "silvestris-ui")]
+    #[test]
+    fn appearance_controls_switch_both_dimensions_in_open_main_and_settings_windows() {
+        use gpui::{size, Modifiers, TestAppContext, VisualTestContext};
+        use silvestris::{ActiveTheme, ThemeId, ThemePreference};
+        fn draw(cx: &mut VisualTestContext) {
+            cx.run_until_parked();
+            cx.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+        }
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(ThemePreference::explicit(ThemeId::GEIST_DARK), cx)
+        });
+        let (main, main_cx) = app.add_window_view(LotusWindow::test_preview);
+        main_cx.simulate_resize(size(px(1280.), px(880.)));
+        draw(main_cx);
+        let main_handle = main_cx.update(|window, _| window.window_handle());
+        let (_, cx) = app.add_window_view(|window, cx| {
+            SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx)
+        });
+        cx.simulate_resize(size(px(860.), px(620.)));
+        draw(cx);
+        let mut main_cx = VisualTestContext::from_window(main_handle, &cx.cx);
+        let workspace = main_cx.debug_bounds("shell-workspace").unwrap();
+        for (selector, expected) in [
+            ("segment-aqua", ThemeId::AQUA_DARK),
+            ("segment-light", ThemeId::AQUA_LIGHT),
+            ("segment-geist", ThemeId::GEIST_LIGHT),
+            ("segment-dark", ThemeId::GEIST_DARK),
+        ] {
+            let segment = cx
+                .debug_bounds(selector)
+                .expect("appearance choice mounted");
+            cx.simulate_click(segment.center(), Modifiers::default());
+            let focus = cx.update(|window, cx| window.focused(cx));
+            draw(cx);
+            draw(&mut main_cx);
+            cx.update(|window, cx| {
+                assert_eq!(cx.theme().id, expected);
+                assert_eq!(main.read(cx).ui_theme(), expected);
+                assert_eq!(theme::palette(cx), theme::from_theme(cx.theme()));
+                assert_eq!(
+                    window.focused(cx),
+                    focus,
+                    "switch preserves the choice responder"
+                );
+            });
+            assert_eq!(main_cx.debug_bounds("shell-workspace").unwrap(), workspace);
+            assert!(cx.debug_bounds("appearance-settings").is_some());
+        }
+    }
 
     #[test]
     fn steps_are_round_and_bounded() {

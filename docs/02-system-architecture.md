@@ -112,3 +112,8 @@ inspection.rs is shared by navigation and painted inspector action guards.
 Request interfaces remain unchanged. Inspector reply/cache provenance is
 validated in desktop_controller.rs and again by the window; host-derived
 disassembly retains its source memory-read epoch. See [07](07-debugger-core.md).
+
+In the opt-in build, theme.rs resolves active Silvestris tokens into an explicit
+palette passed through app-owned render helpers. Global Settings selects family
+and appearance independently; all windows refresh without rebuilding session or
+inspector state. The legacy renderer uses its original fixed palette. See [38](38-silvestris-adoption.md).
