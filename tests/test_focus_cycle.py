@@ -59,14 +59,11 @@ def main():
     try:
         run(client, output)
     finally:
-        # WM_CLOSE shuts the desktop down with its workers; kill only as a fallback.
+        # Close the window, then close stdio so the windowed MCP server exits.
         hwnd = window_of(client.process.pid)
         if hwnd:
             user32.PostMessageW(hwnd, 0x10, 0, 0)
-        try:
-            client.process.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            client.process.kill()
+        client.close()
 
 
 def window_of(pid):

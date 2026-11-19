@@ -1,15 +1,13 @@
-LOTUS developer release for Windows x64. Extract the portable ZIP and
-run `LOTUS.cmd` to select your own `.3dsx` homebrew. `LOTUS-AZAHAR.cmd` selects the
-upstream-tracking backend; the default launcher uses CITnLO.
+LOTUS 0.1.0 uses Silvestris for the desktop and Settings. New profiles use
+Geist Dark. Settings → General switches Style and Appearance without closing
+your sessions. Existing pane sizes and visibility are retained.
 
-Includes the GPUI desktop, headless CLI, local MCP server, both native software
-runtimes, license notices and build/source manifests. The source ZIP includes
-LOTUS and its recursive native dependencies. No installer or developer toolchain
-is needed to run; data stays beside the application under `data/` unless
-`LOTUS.cmd -SetDataDir <path>` or a `lotus.json` points elsewhere.
+On Windows x64, extract the ZIP and run `LOTUS.cmd` with your own
+`.3dsx` homebrew. `LOTUS-AZAHAR.cmd` selects the upstream-tracking
+backend. On Linux x86-64, make the AppImage executable and pass it the
+path to your homebrew. Both packages include the desktop, headless CLI,
+local MCP server, both runtimes, fonts, license notices and build manifests.
 
-Requires Windows 11 x64 and Direct3D 11. This is an unsigned, early developer
-build: software rendering and muted audio. No ROMs, Nintendo firmware, keys or
-DSP dump are included. Visible rendering/input and real two-DPI acceptance remain
-unverified; no hardware accuracy claim is made. See the included wave status and
-release documentation for automated checks and limitations.
+Windows requires Windows 11 x64 and Direct3D 11. The packages are unsigned.
+See [the integration evidence](https://github.com/estyseesghosts/lotus/blob/v0.1.0/docs/38-silvestris-adoption.md)
+for the tested desktop, input, worker and package paths.

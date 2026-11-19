@@ -38,6 +38,58 @@ are included as separate files and covered by the release manifest. Runtime
 startup uses local assets. The Windows ZIP and Linux AppImage use the
 existing native-worker pins and launchers.
 
+## 0.1.0 acceptance evidence
+
+The local candidates were built from Lotus `900cd18` with Rust 1.98.1 and
+GPUI `6b720973`. Both reused the released v0.0.7 worker binaries at the
+unchanged pins AZAHAR `b04d8a6c` and CITnLO `c3422b0a`. The packagers
+checked each native build manifest. The Windows package and Linux AppImage
+were relocated and checked for file hashes, dependency resolution, desktop
+visibility, CLI, MCP and both workers. The Linux test ran under Xvfb with no
+network interface beyond loopback. A separate offline run used nested Weston
+and observed the packaged window attach and commit buffers through Wayland.
+The source ZIP contains the Silvestris snapshot and its font sources and
+notices.
+
+On Windows at 96 DPI, two live CITnLO workers rendered the `t03` homebrew
+in a split while all four themes switched in Settings. Both guests continued
+running. Keyboard press/release went to its focused tile, touch went to the
+other tile, and Actions and Settings consumed their keyboard input. Two virtual Xbox pads
+connected through Windows Gaming Input and each sent a press and release to
+only its assigned worker. The legacy rollback and reinstalled desktop kept
+the saved card, existing pane widths, Settings bounds and Aqua preference.
+The packaged AZAHAR focus test saw real Alt+Tab away and back, title-click
+activation, minimize and restore. Installed preview followed published
+preview within two sequences, matching the legacy baseline's maximum lag.
+
+The Windows workspace suite passed 298 tests and Clippy passed. The native
+controller and inspector tests passed separately for each worker, along with
+the packaged debugger acceptance and a clean 51-test legacy desktop run.
+Windowed MCP split, capture, pause, registers, card persistence and
+secondary discard also passed under Linux Xvfb with both packaged workers.
+
+The legacy renderer and Aqua Light produced byte-identical top and bottom
+BGRA captures at frames 30, 60 and 120 with the owned debugger fixture on
+both native backends. The same checkpoints matched on the `t03` CITnLO
+run. On AZAHAR, the first legacy boot of `t03` produced different hashes
+from the next legacy boot, which matched Aqua Light at all three
+checkpoints. Separate `t03` boots are not a deterministic oracle on AZAHAR.
+
+Startup measurements are medians of five interleaved warm launches on one
+Windows 11 machine, measured from process launch to a visible window. With no
+host, legacy and Aqua Light took 164.5 and 176.4 ms, used 47.4 and 64.0 MiB
+working set, and used 46.9 ms CPU over a two-second idle interval. Resizing
+the welcome artwork brought Aqua Light down from about 80 MiB. In the
+launcher-configured idle view, legacy and Aqua Light used 51.8 and 64.7 MiB
+and took 163.2 and 173.8 ms in the pre-resize build. That view does not load
+the welcome artwork.
+
+These results leave an idle-memory increase. Windows startup was checked
+with a system-only PATH and clean preferences. Network isolation was verified
+on Linux. Physical gamepads, Windows mixed DPI and macOS remain unverified.
+The cutover in #138 still requires sign-off. Silvestris is the desktop
+implementation and Geist Dark is the first-run theme.
+
 The sections below record the migration in order. Staging comments describe
 the state at the time of each step.
 
