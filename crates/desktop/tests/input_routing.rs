@@ -217,6 +217,16 @@ fn two_sessions_take_keyboard_and_controllers_independently() {
     // worker and never replayed once control returns.
     host.submit_input(b, InputState::default(), "scenario", Actor::Mcp)
         .expect("scenario");
+    // A live state queued before the scenario state is delivered would replace it as the
+    // newer owner (#48), so wait until the worker holds the scenario state.
+    until("scenario owns B", || {
+        std::fs::read_to_string(root(b).join("inputs.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .last()
+            .and_then(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .is_some_and(|value| value["owner"] == "scenario")
+    });
     script.button(0, Button::West, true);
     script.button(0, Button::West, false);
     std::thread::sleep(Duration::from_millis(300));
