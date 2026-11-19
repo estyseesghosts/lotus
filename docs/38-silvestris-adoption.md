@@ -339,3 +339,28 @@ they are shown in menu rows but are not yet installed through
 CommandRegistry::bindings. Load still opens the legacy asset popover.
 The GPUI test actions_menu_shares_toolbar_commands_and_drops_a_replaced_target
 covers all four themes.
+
+## Settings as System Preferences
+
+settings_window/shared.rs renders Settings with silvestris preferences.rs
+(HIG p. 244): an overview of panes in three bands (Lotus, Emulation,
+Development), back/forward and Show All in the toolbar, and the scope popup
+("Settings for:") in the toolbar's trailing slot. The window title names the
+shown pane. A group with 2 to MAX_TABS subgroups shows them as tabs in a
+TabView (HIG pp. 338-341: tabs sized to their labels with 12 px margins,
+title-style labels); otherwise subgroups are bold headings in one form.
+
+The window fits the shown pane when the pane or tab changes, never on other
+frames: TabView::on_overflow reports the needed size, and fit_size applies it
+only while PreferencesState::fit_pending is set. Width stays at least 668 px;
+both sides are capped at 66% of the display's visible area, independent of
+the window's position. Longer content scrolls with the Aqua scroller
+(silvestris controls/scrollbar.rs).
+
+Each row's note says when the setting takes effect; the source files that
+read it are a help tag on the control (HIG p. 82). "No host configuration"
+and "read-only host" notes appear once at the top of the pane.
+
+Verified in the aqua-light preview: Emulation's five tabs fit at 668 px,
+switching to Clock shrinks the window, moving the window does not resize it.
+Dark themes and Geist are not yet checked by capture.
