@@ -655,6 +655,7 @@ impl LotusWindow {
         };
         let ui = controller.ui.clone();
         let latest = controller.latest.clone();
+        let preview_visible = controller.preview_visible();
         ui.poll_started();
         let controllers = controller.input().controllers();
         if controllers != self.controllers {
@@ -714,7 +715,7 @@ impl LotusWindow {
             }
             // Let any in-flight preview finish, but defer image creation until it can be
             // shown. A paused worker may have sent its final frame just before hiding.
-            let previews = if controller.preview_visible() {
+            let previews = if preview_visible {
                 std::mem::take(&mut update.previews)
             } else {
                 BTreeMap::new()
