@@ -4,7 +4,10 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
-## v0.0.7 (unreleased)
+## v0.0.7 (2026-11-19)
+
+Pins unchanged from v0.0.6: integration (AZAHAR) `b04d8a6c`, experimental
+(CITnLO) `c3422b0a`.
 
 - Linux CI for the Rust workspace on Ubuntu 24.04: build, clippy, tests and a
   headless smoke test; GPUI gets its Wayland and X11 backends (#102).
@@ -25,6 +28,8 @@ documents; this page only says what changed. Labels follow the
 - Faster CI: no 2-job cargo cap, dependency-only caching (Swatinem/rust-cache),
   fmt and clippy in a parallel job, mold on Linux; dev builds keep line tables
   only (#117).
+- The two-pad soak test checks that a stalled sibling does not reach the
+  other session, instead of requiring zero dropped edges on a loaded host.
 
 ## v0.0.6 (2026-11-18)
 

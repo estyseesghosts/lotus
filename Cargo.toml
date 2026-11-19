@@ -17,7 +17,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.6"
+version = "0.0.7"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"
@@ -26,18 +26,18 @@ repository = "https://github.com/estyseesghosts/lotus"
 
 [workspace.dependencies]
 # Internal crates.
-lotus-protocol = { path = "crates/protocol", version = "0.0.6" }
-lotus-session = { path = "crates/session", version = "0.0.6" }
-lotus-trace = { path = "crates/trace", version = "0.0.6" }
-lotus-debugger = { path = "crates/debugger", version = "0.0.6" }
-lotus-runner = { path = "crates/runner", version = "0.0.6" }
-lotus-hardware = { path = "crates/hardware", version = "0.0.6" }
-lotus-accuracy = { path = "crates/accuracy", version = "0.0.6" }
-lotus-mcp = { path = "crates/mcp", version = "0.0.6" }
+lotus-protocol = { path = "crates/protocol", version = "0.0.7" }
+lotus-session = { path = "crates/session", version = "0.0.7" }
+lotus-trace = { path = "crates/trace", version = "0.0.7" }
+lotus-debugger = { path = "crates/debugger", version = "0.0.7" }
+lotus-runner = { path = "crates/runner", version = "0.0.7" }
+lotus-hardware = { path = "crates/hardware", version = "0.0.7" }
+lotus-accuracy = { path = "crates/accuracy", version = "0.0.7" }
+lotus-mcp = { path = "crates/mcp", version = "0.0.7" }
 
-lotus-gdb = { path = "crates/gdb", version = "0.0.6" }
-lotus-input = { path = "crates/input", version = "0.0.6", default-features = false }
-lotus-settings = { path = "crates/settings", version = "0.0.6" }
+lotus-gdb = { path = "crates/gdb", version = "0.0.7" }
+lotus-input = { path = "crates/input", version = "0.0.7", default-features = false }
+lotus-settings = { path = "crates/settings", version = "0.0.7" }
 
 # External crates.
 serde = { version = "1", features = ["derive"] }
