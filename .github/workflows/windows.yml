@@ -29,10 +29,41 @@ defaults:
     shell: pwsh
 
 env:
-  CARGO_BUILD_JOBS: '2'
   CARGO_TERM_COLOR: always
 
 jobs:
+  # fmt and clippy compile the dev profile, so they run beside the release build (#117).
+  lint:
+    if: ${{ !inputs.reuse_build_run }}
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      RUSTUP_TOOLCHAIN: 1.98.1-x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+      - name: Build tools
+        run: |
+          python scripts/setup-build-tools.py build/tools
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "${{ github.workspace }}\build\tools\winlibs\mingw64\bin" >> $env:GITHUB_PATH
+          "GPUI_FXC_PATH=${{ github.workspace }}\build\tools\sdk\c\bin\10.0.28000.0\x64\fxc.exe" >> $env:GITHUB_ENV
+          rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          prefix-key: windows-gnu-lint-v1
+      - name: fmt and clippy
+        run: |
+          cargo fmt --all -- --check
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          exit $LASTEXITCODE
+
   rust:
     if: ${{ !inputs.reuse_build_run }}
     runs-on: windows-2025
@@ -55,20 +86,12 @@ jobs:
           "GPUI_FXC_PATH=${{ github.workspace }}\build\tools\sdk\c\bin\10.0.28000.0\x64\fxc.exe" >> $env:GITHUB_ENV
           rustup toolchain install 1.98.1-x86_64-pc-windows-gnu --profile minimal --component rustfmt --component clippy
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      # Caches dependencies only; workspace crates are rebuilt every run anyway (#117).
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: windows-gnu-release-v1-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
-          restore-keys: windows-gnu-release-v1-
-      - name: Check and build
+          prefix-key: windows-gnu-release-v2
+      - name: Build and test
         run: |
-          cargo fmt --all -- --check
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo clippy --locked --workspace --all-targets -- -D warnings
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --release --bins
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked --release --workspace
@@ -141,8 +164,8 @@ jobs:
           retention-days: 7
 
   package:
-    if: ${{ always() && !cancelled() && (inputs.reuse_build_run || (needs.rust.result == 'success' && needs.native.result == 'success')) }}
-    needs: [rust, native]
+    if: ${{ always() && !cancelled() && (inputs.reuse_build_run || (needs.lint.result == 'success' && needs.rust.result == 'success' && needs.native.result == 'success')) }}
+    needs: [lint, rust, native]
     runs-on: windows-2025
     timeout-minutes: 30
     steps:

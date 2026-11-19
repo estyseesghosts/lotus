@@ -66,6 +66,11 @@ toml = "0.9"
 gpui = { git = "https://github.com/zed-industries/zed", rev = "6b720973027999bae402df23d469026f4cced988", default-features = false }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "6b720973027999bae402df23d469026f4cced988", default-features = false }
 
+# Full debuginfo for the GPUI tree made a Windows dev target reach 114 GB (#117);
+# line tables keep panic backtraces readable.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 opt-level = 3
 lto = "thin"

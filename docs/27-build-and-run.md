@@ -230,6 +230,10 @@ cargo test --locked --release --workspace
 python3 tests/test_headless_smoke.py target/release
 ```
 
+Optional: `apt install mold` and `export RUSTFLAGS="-C link-arg=-fuse-ld=mold"`
+links faster; CI does this (#117). `[profile.dev]` keeps line tables only, so
+dev targets stay small.
+
 `rust-toolchain.toml` names no host, so the Linux host toolchain is used.
 `gpui_platform` gets the `wayland` and `x11` features on Linux; without them
 the desktop opens no window and exits 0.
