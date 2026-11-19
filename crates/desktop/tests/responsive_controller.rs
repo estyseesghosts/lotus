@@ -531,14 +531,24 @@ fn an_mcp_single_view_is_not_reverted_by_the_selection() {
             })
             .expect("create");
     }
-    wait(&controller, "two sessions", |update| {
-        update.sessions.len() == 2
+    // A create selects its session when it finishes; wait for both.
+    wait(&controller, "two sessions created", |update| {
+        update.sessions.len() == 2 && update.pending == 0
     });
     let ids: Vec<String> = {
         let update = controller.latest.lock().expect("snapshot");
         update.sessions.iter().map(|s| s.info.id.clone()).collect()
     };
     let (a, b) = (ids[0].clone(), ids[1].clone());
+    // Show B first: A may already be shown by its create, and then "A shown" could pass
+    // before Select(A) is consumed, leaving its reveal to fire after the MCP change.
+    controller
+        .commands
+        .send(Command::Select(b.clone()))
+        .expect("select");
+    wait(&controller, "B shown", |update| {
+        update.selected == b && update.workspace.layout.visible() == [b.as_str()]
+    });
     controller
         .commands
         .send(Command::Select(a.clone()))
