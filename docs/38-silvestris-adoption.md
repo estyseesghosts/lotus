@@ -1,16 +1,20 @@
 # Silvestris adoption staging (#138)
 
-Branch: silvestris-adoption. This is the initial opt-in adapter, not the shell
+Branch: silvestris-adoption. This remains opt-in staging, not the default
 cutover. The default desktop build keeps its current layout, colours, fonts
 and controls. Enabling silvestris-ui registers bundled fonts before the first
 window, installs the shared Geist Dark theme, uses Inter/Geist Mono in the
 desktop and Settings, and replaces editable overridden Settings reset actions
 with the shared small Button. The reset still calls SettingsWindow::write
 with None; scope inheritance, validation and persistence retain the same path.
+The feature now mounts the shared source list and measured shell, including
+overlay/pinned inspector presentation in single and split workspaces.
 
 The emulator/session/controller/MCP crates do not depend on Silvestris.
-No input router, preview geometry, worker command, settings registry or
-desktop.json schema changes in this slice. Aqua is not enabled in Lotus.
+The input router, worker commands and settings registry retain their existing
+interfaces. The measured shell supplies preview-fit dimensions. Staged pin/panel
+metadata is namespaced in desktop.json; legacy width/visibility keys remain
+authoritative for rollback. Aqua is not enabled in Lotus.
 
 ## Source and build
 
@@ -37,8 +41,9 @@ does not inherit the original Lotus directory's rustup override:
     cargo +1.98.1-x86_64-pc-windows-gnu test -p lotus-desktop --lib --features silvestris-ui --locked
     cargo +1.98.1-x86_64-pc-windows-gnu run -p lotus-desktop --bin lotus-desktop --features silvestris-ui --locked
 
-To roll back the UI slice, build/run without --features silvestris-ui. No
-preference migration or saved state needs reverting.
+To roll back the UI slice, build/run without --features silvestris-ui. Legacy
+layout keys remain usable and the feature-disabled store preserves the unknown
+silvestris object. No guest/card/workspace data migration is involved.
 
 ## Validation and rollout gates
 
@@ -131,8 +136,8 @@ The framework's test-support feature supplies only mock theme/action setup;
 production initialization still registers the bundled fonts.
 
 Native worker drag/drop, row-action execution against live sessions, long
-label/DPI visual review, expansion persistence, source-list context menus and
-the full shell/inspector cutover remain open. No Aqua default change occurs.
+label/DPI visual review, expansion persistence and source-list context menus
+remain open. No Aqua default change occurs.
 
 ## Preference compatibility safeguard
 
@@ -147,4 +152,43 @@ does. The registry still describes only editable known preferences.
 Tests cover future fields, saved widths/bounds, edits through the Settings
 serialization path, repeated-save idempotence, invalid known types, non-object
 JSON and an I/O read failure. The opt-in desktop suite passes 54 tests and
-all-target Clippy passes. Theme/pin/panel schema migration remains open.
+all-target Clippy passes. The subsequent shell metadata migration is below.
+
+## Measured shell and inspector staging
+
+lotus_window/shared_shell.rs now composes Shell::measured. Its single effective
+plan supplies sidebar, workspace fitting, dock/overlay content and rail widths.
+The rail is width-dependent in both single and split workspaces; the old
+per-tile inspector renderer remains only in the feature-disabled build.
+The existing per-tile Inspect request still sets the explicit split target.
+Otherwise inspection follows selection, with the target name/short ID shown in
+the shell header. While the controller acknowledges a changed target, old
+target content is hidden. Inspector row/panel/clipboard actions capture session
+ID, creation time and epoch and revalidate identity/permission at activation.
+This does not add an expected-epoch field to the controller command queue.
+
+Pin/Unpin, Close, outside-click dismissal, Escape, width dragging and divider
+keyboard resizing come from Shell. App menus consume Escape first. Inspector
+shortcuts route through the Lotus adapter; remaining keys cannot reach guest
+HID. Sidebar/inspector resize callbacks save requested widths and pin state;
+divider saves coalesce after 150 ms of inactivity and window close flushes the
+latest values. Viewport demotion is never saved. Ctrl+I toggles shared inspector
+visibility.
+
+The optional desktop.json silvestris object uses schema_version=1,
+inspector_pinned and inspector_panel (stable string ID). Unknown nested fields
+survive. An existing file with inspector_open=true and no silvestris object
+migrates to pinned=true to preserve its docked intent (handbook 14/19). New or
+previously closed layouts start unpinned. Existing widths, visibility, split
+defaults and Settings bounds retain their keys/values. Loading never writes;
+the next ordinary save records metadata. Unsupported schema versions or invalid
+known metadata disable saving. Feature-disabled builds preserve the object.
+
+Mock GPUI tests verify mounted shell allocation, overlay geometry identity,
+pin width reservation, narrow demotion/redocking, split rail/target transition,
+Escape ordering, key isolation, outside dismissal and stale-epoch/read-only
+action rejection. Preference tests verify explicit migration, unknown metadata,
+idempotence and no-overwrite behavior. Native live-screen/touch geometry,
+in-flight debugger response epochs, swap/untile/stop races, native DPI/focus,
+resize cancellation and all-theme main/Settings rendering remain unverified.
+This is progress toward #131/#132/#138, not their acceptance sign-off.

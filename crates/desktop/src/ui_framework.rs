@@ -1,5 +1,5 @@
 //! Opt-in Silvestris adapter (#138), staged on silvestris-adoption.
-//! Preserve Geist Dark and the existing layout until the migration gates in
+//! Retain Geist Dark while the opt-in shell passes the migration gates in
 //! docs/38-silvestris-adoption.md pass. Workers/MCP never depend on this module.
 use gpui::App;
 

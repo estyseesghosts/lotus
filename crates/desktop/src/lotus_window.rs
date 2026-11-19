@@ -1,8 +1,10 @@
 //! The LOTUS window.
 //!
 //! Layout, left to right: the session sidebar (or its chip rail), the centre
-//! column (toolbar, screens, gauges), the inspector panel when open, and the
-//! inspector rail, which is always shown. Both sidebars resize from a divider
+//! column (toolbar, screens, gauges), inspector and rail. The opt-in shared shell
+//! adds overlay/pin presentation and a width-dependent rail in single/split views.
+//! The legacy renderer retains its docked single-view inspector. Panes resize
+//! from dividers
 //! and snap to their rail; widths and open state persist in
 //! [`crate::preferences`]. Pane widths, toolbar density and gauge mode come
 //! from [`crate::layout`] for the space actually available. The window only
@@ -30,7 +32,7 @@ use serde_json::Value;
 use crate::desktop_controller::{Command, DesktopController, McpLink, McpMode};
 use crate::gauges;
 use crate::icons::{icon, Icon};
-use crate::inspection::{Inspection, Panel};
+use crate::inspection::{Inspection, Panel, SessionTarget};
 use crate::layout::{self, Drag, GaugeMode, Pane, PaneState, Plan, ToolbarDensity};
 use crate::preferences::{self, Store};
 use crate::screen_geometry::TouchTransform;
@@ -41,6 +43,8 @@ use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 #[cfg(feature = "silvestris-ui")]
 mod shared_navigation;
+#[cfg(feature = "silvestris-ui")]
+mod shared_shell;
 
 const TOOLBAR_HEIGHT: f32 = 52.0;
 const SCREEN_GAP: f32 = 12.0;
@@ -158,6 +162,10 @@ enum Tone {
 
 pub struct LotusWindow {
     #[cfg(feature = "silvestris-ui")]
+    shared_plan: Cell<Option<silvestris::core::layout::ShellPlan>>,
+    #[cfg(feature = "silvestris-ui")]
+    preference_save: Option<gpui::Task<()>>,
+    #[cfg(feature = "silvestris-ui")]
     shared_sources: gpui::Entity<silvestris::controls::SourceList>,
     #[cfg(feature = "silvestris-ui")]
     navigation: crate::navigation::Navigation,
@@ -233,7 +241,11 @@ impl LotusWindow {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         // The Settings window belongs to this one; it never outlives it (lotus#53).
-        window.on_window_should_close(cx, |_, cx| {
+        #[cfg(feature = "silvestris-ui")]
+        let close_owner = cx.weak_entity();
+        window.on_window_should_close(cx, move |_, cx| {
+            #[cfg(feature = "silvestris-ui")]
+            let _ = close_owner.read_with(cx, |view, _| view.preferences.save());
             crate::settings_window::close(cx);
             true
         });
@@ -273,6 +285,13 @@ impl LotusWindow {
         };
         let preferences = Store::load(preferences::default_path());
         if let Some(controller) = &controller {
+            #[cfg(feature = "silvestris-ui")]
+            {
+                *controller.inspection_selection.lock().unwrap() = (
+                    Panel::from_id(&preferences.ui.inspector_panel).unwrap_or(Panel::Cpu),
+                    0,
+                );
+            }
             controller
                 .inspector
                 .store(preferences.values.inspector_open, Ordering::Release);
@@ -287,6 +306,10 @@ impl LotusWindow {
         #[cfg(feature = "silvestris-ui")]
         let shared_sources = Self::make_shared_sources(cx);
         Self {
+            #[cfg(feature = "silvestris-ui")]
+            shared_plan: Cell::new(None),
+            #[cfg(feature = "silvestris-ui")]
+            preference_save: None,
             #[cfg(feature = "silvestris-ui")]
             shared_sources,
             #[cfg(feature = "silvestris-ui")]
@@ -315,7 +338,16 @@ impl LotusWindow {
             resolved_sent: Cell::new(None),
             registers: None,
             inspection: None,
-            inspection_panel: Panel::Cpu,
+            inspection_panel: {
+                #[cfg(feature = "silvestris-ui")]
+                {
+                    Panel::from_id(&preferences.ui.inspector_panel).unwrap_or(Panel::Cpu)
+                }
+                #[cfg(not(feature = "silvestris-ui"))]
+                {
+                    Panel::Cpu
+                }
+            },
             surface_image: None,
             error: String::new(),
             dismissed_error: String::new(),
@@ -365,6 +397,15 @@ impl LotusWindow {
     }
 
     fn set_pane(&mut self, pane: Pane, state: PaneState) {
+        #[cfg(feature = "silvestris-ui")]
+        if pane == Pane::Inspector {
+            if state.open {
+                self.release_input();
+            }
+            if !state.open && self.inspect_tile.take().is_some() {
+                self.send(Command::Inspect(None));
+            }
+        }
         let values = &mut self.preferences.values;
         let was_open = match pane {
             Pane::Sessions => {
@@ -389,14 +430,21 @@ impl LotusWindow {
     }
 
     fn plan(&self, window: &Window) -> Plan {
-        // A split has no inspector rail; each tile opens its own floating inspector.
-        let inspector = (!self.split()).then(|| self.pane(Pane::Inspector));
-        layout::plan_with(
-            f32::from(window.viewport_size().width),
-            self.pane(Pane::Sessions),
-            inspector,
-            self.recent,
-        )
+        #[cfg(feature = "silvestris-ui")]
+        {
+            self.shared_layout(window)
+        }
+        #[cfg(not(feature = "silvestris-ui"))]
+        {
+            // A split has no inspector rail; each tile opens its own floating inspector.
+            let inspector = (!self.split()).then(|| self.pane(Pane::Inspector));
+            layout::plan_with(
+                f32::from(window.viewport_size().width),
+                self.pane(Pane::Sessions),
+                inspector,
+                self.recent,
+            )
+        }
     }
 
     fn split(&self) -> bool {
@@ -406,9 +454,22 @@ impl LotusWindow {
     /// Open (or, if already open for it, close) the floating inspector of a tile's
     /// session. Never selects it, so audio focus and the gauges' selection stay put.
     fn toggle_tile_inspector(&mut self, session: String) {
-        let next = (self.inspect_tile.as_deref() != Some(session.as_str())).then_some(session);
+        let same = self.inspect_tile.as_deref() == Some(session.as_str())
+            && (!cfg!(feature = "silvestris-ui") || self.preferences.values.inspector_open);
+        let next = (!same).then_some(session);
         self.inspect_tile.clone_from(&next);
         self.send(Command::Inspect(next));
+        #[cfg(feature = "silvestris-ui")]
+        {
+            self.set_pane(
+                Pane::Inspector,
+                PaneState {
+                    open: self.inspect_tile.is_some(),
+                    ..self.pane(Pane::Inspector)
+                },
+            );
+            self.preferences.save();
+        }
     }
 
     /// Show a pane expanded. A pane drawn as its rail only for lack of space
@@ -437,7 +498,16 @@ impl LotusWindow {
         let plan = self.plan(window);
         let shown = match pane {
             Pane::Sessions => plan.sessions.is_some(),
-            Pane::Inspector => plan.inspector.is_some(),
+            Pane::Inspector => {
+                #[cfg(feature = "silvestris-ui")]
+                {
+                    self.preferences.values.inspector_open
+                }
+                #[cfg(not(feature = "silvestris-ui"))]
+                {
+                    plan.inspector.is_some()
+                }
+            }
         };
         if shown {
             self.close_pane(pane);
@@ -578,7 +648,9 @@ impl LotusWindow {
                 }
             }
             if let Some(controller) = &self.controller {
-                let open = if matches!(self.workspace.layout, Layout::Split { .. }) {
+                let open = if cfg!(feature = "silvestris-ui") {
+                    self.preferences.values.inspector_open
+                } else if matches!(self.workspace.layout, Layout::Split { .. }) {
                     self.inspect_tile.is_some()
                 } else {
                     self.preferences.values.inspector_open
@@ -799,7 +871,7 @@ impl LotusWindow {
         if modifiers.control {
             match key {
                 "b" => self.toggle_pane(Pane::Sessions, window),
-                "i" if self.split() => {
+                "i" if self.split() && !cfg!(feature = "silvestris-ui") => {
                     if let Some(session) = self.keyboard_target() {
                         self.toggle_tile_inspector(session);
                     }
@@ -1021,7 +1093,9 @@ impl LotusWindow {
             .child(list)
             .child(self.render_controllers(cx))
             .child(self.render_sidebar_footer(cx))
-            .child(self.divider(Pane::Sessions, cx))
+            .when(!cfg!(feature = "silvestris-ui"), |sidebar| {
+                sidebar.child(self.divider(Pane::Sessions, cx))
+            })
             .when(self.menu == Menu::NewSession, |sidebar| {
                 sidebar.child(self.render_new_menu(cx))
             })
@@ -1206,6 +1280,10 @@ impl LotusWindow {
             return;
         };
         self.preferences.values = updated;
+        #[cfg(feature = "silvestris-ui")]
+        if key.starts_with("lotus.desktop.inspector_") {
+            self.set_pane(Pane::Inspector, self.pane(Pane::Inspector));
+        }
         self.preferences.save();
         self.publish_presence();
         cx.notify();
@@ -2663,6 +2741,7 @@ impl LotusWindow {
     /// commands as the docked inspector, aimed at [`Self::inspected`], over that tile's side
     /// of the stage without shrinking either tile. Views, run/pause/step and close in its
     /// header; resizable from its inner edge.
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_tile_inspector(
         &self,
         plan: &Plan,
@@ -3207,20 +3286,37 @@ impl LotusWindow {
 
     fn choose_inspection(&mut self, panel: Panel, offset: u32) {
         self.inspection_panel = panel;
+        #[cfg(feature = "silvestris-ui")]
+        if self.preferences.ui.inspector_panel != panel.id() {
+            self.preferences.ui.inspector_panel = panel.id().into();
+            self.preferences.save();
+        }
         if let Some(controller) = &self.controller {
             *controller.inspection_selection.lock().unwrap() = (panel, offset);
         }
     }
-    fn debug_command(&mut self, command: D) {
-        if self.inspected.is_empty() {
-            return;
+    fn inspection_target(&self) -> Option<SessionTarget> {
+        #[cfg(feature = "silvestris-ui")]
+        if self.shared_inspector_target() != Some(self.inspected.as_str()) {
+            return None;
         }
+        self.sessions
+            .iter()
+            .find(|s| s.info.id == self.inspected)
+            .map(SessionTarget::from_summary)
+    }
+
+    fn debug_command(&mut self, target: &Option<SessionTarget>, command: D) {
+        let Some(target) = target.as_ref().filter(|target| {
+            self.control
+                && target.resolve(&self.sessions).is_some()
+                && self.inspection_target().as_ref() == Some(*target)
+        }) else {
+            return;
+        };
+        let session = target.id.clone();
         self.choose_inspection(Panel::Result, 0);
-        self.send(Command::Debug {
-            session: self.inspected.clone(),
-            command,
-        });
-        self.inspection_panel = Panel::Result;
+        self.send(Command::Debug { session, command });
     }
     fn open_trace(&mut self, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -3252,6 +3348,8 @@ impl LotusWindow {
                     self.toggle_tile_inspector(session);
                 }
             }
+            #[cfg(feature = "silvestris-ui")]
+            self.open_pane(Pane::Inspector);
             return;
         }
         if !self.preferences.values.inspector_open || self.recent != Pane::Inspector {
@@ -3263,7 +3361,11 @@ impl LotusWindow {
     /// (navigation) at the top, execution quick actions separated at the
     /// bottom. No Stop/Reset/trace commands here.
     fn render_inspector_rail(&self, plan: &Plan, cx: &mut Context<Self>) -> impl IntoElement {
-        let open = plan.inspector.is_some();
+        let open = if cfg!(feature = "silvestris-ui") {
+            self.preferences.values.inspector_open
+        } else {
+            plan.inspector.is_some()
+        };
         let squeezed = plan.squeezed == Some(Pane::Inspector);
         let mut views = div()
             .id("inspector-views")
@@ -3414,7 +3516,7 @@ impl LotusWindow {
             )
             .child(views)
             .child(actions)
-            .when(!open, |rail| rail.child(self.divider(Pane::Inspector, cx)))
+            .when(!open && !cfg!(feature = "silvestris-ui"), |rail| rail.child(self.divider(Pane::Inspector, cx)))
             .when(self.menu == Menu::InspectorMore, |rail| {
                 rail.child(self.render_more_views(cx))
             })
@@ -3516,6 +3618,7 @@ impl LotusWindow {
         docked: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
+        let target = self.inspection_target();
         let current = self.inspection_panel;
         let mut panel = div()
             .id("inspector")
@@ -3580,6 +3683,7 @@ impl LotusWindow {
                 .border_b_1()
                 .border_color(theme::border());
             for (label, command, disruptive) in commands {
+                let target = target.clone();
                 let tone = if disruptive {
                     Tone::Danger
                 } else {
@@ -3589,7 +3693,7 @@ impl LotusWindow {
                     small_button(format!("debug-{label}"), label, tone, self.control).on_click(
                         cx.listener(move |view, _, _, _| {
                             if view.control {
-                                view.debug_command(command.clone());
+                                view.debug_command(&target, command.clone());
                             }
                         }),
                     ),
@@ -3668,6 +3772,7 @@ impl LotusWindow {
                         .map(|index| {
                             let row = &rows[index];
                             let weak = weak.clone();
+                            let target = target.clone();
                             let action = row.action.clone();
                             let tooltip = format!("{}\n{}", row.key, row.value);
                             with_tooltip(
@@ -3712,7 +3817,7 @@ impl LotusWindow {
                                     .hover(|style| style.bg(theme::surface_hover()))
                                     .on_click(move |_, _, cx| {
                                         let _ = weak.update(cx, |view, _| {
-                                            view.debug_command(command.clone())
+                                            view.debug_command(&target, command.clone())
                                         });
                                     })
                             })
@@ -3727,6 +3832,7 @@ impl LotusWindow {
 
     /// Utilities that are not tied to the selected view.
     fn render_utility_menu(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let target = self.inspection_target();
         let mut keys = div().flex().flex_col().px_2().pb_1();
         for (key, action) in KEYS {
             keys = keys.child(
@@ -3755,7 +3861,7 @@ impl LotusWindow {
             )
             .child(
                 menu_item("clipboard-command", "Run clipboard JSON", "debug command").on_click(
-                    cx.listener(|view, _, _, cx| {
+                    cx.listener(move |view, _, _, cx| {
                         view.menu = Menu::Closed;
                         if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                             let command = if text.len() <= 65536 {
@@ -3765,7 +3871,7 @@ impl LotusWindow {
                             };
                             match command {
                                 Ok(command) => match command.validate() {
-                                    Ok(()) => view.debug_command(command),
+                                    Ok(()) => view.debug_command(&target, command),
                                     Err(error) => view.error = error.into(),
                                 },
                                 Err(error) => view.error = error,
@@ -3869,18 +3975,14 @@ impl LotusWindow {
     }
 }
 
-impl Render for LotusWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if let Some(controller) = &self.controller {
-            controller.ui.rendered();
-        }
-        if !cx.has_active_drag() {
-            // A drag released outside every drop target, or cancelled.
-            self.drop_target = None;
-            self.ratio_drag = None;
-        }
-        let plan = self.plan(window);
-        let viewport_height = f32::from(window.viewport_size().height);
+impl LotusWindow {
+    fn render_workspace(
+        &mut self,
+        plan: &Plan,
+        viewport_height: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let density = layout::toolbar_density(plan.main);
         let mode = layout::gauge_mode(plan.main, viewport_height, self.gauges_expanded);
         // A split shows each console's gauges beside its own tile instead (lotus#70).
@@ -3894,9 +3996,9 @@ impl Render for LotusWindow {
         } else {
             0.0
         };
-        let stage = self.render_stage(&plan, gauge_height, viewport_height, window, cx);
+        let stage = self.render_stage(plan, gauge_height, viewport_height, window, cx);
         let gauges = loaded.map(|summary| self.render_gauges(mode, plan.main, &summary, cx));
-        let main = div()
+        div()
             .relative()
             .flex()
             .flex_col()
@@ -3913,7 +4015,48 @@ impl Render for LotusWindow {
             })
             .when(self.menu == Menu::Toolbar, |main| {
                 main.child(self.render_toolbar_menu(cx))
-            });
+            })
+            .into_any_element()
+    }
+}
+
+impl Render for LotusWindow {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if let Some(controller) = &self.controller {
+            controller.ui.rendered();
+        }
+        if !cx.has_active_drag() {
+            // A drag released outside every drop target, or cancelled.
+            self.drop_target = None;
+            self.ratio_drag = None;
+        }
+        #[cfg(not(feature = "silvestris-ui"))]
+        let content = {
+            let plan = self.plan(_window);
+            let height = f32::from(_window.viewport_size().height);
+            let main = self.render_workspace(&plan, height, _window, cx);
+            let sidebar = self.render_sidebar(&plan, cx);
+            div()
+                .flex()
+                .size_full()
+                .child(self.render_drop_sidebar(sidebar, cx))
+                .child(main)
+                .when_some(plan.inspector, |root, width| {
+                    root.child(self.render_inspector(width, true, cx))
+                })
+                .when(plan.inspector_rail, |root| {
+                    root.child(self.render_inspector_rail(&plan, cx))
+                })
+                .children(
+                    self.inspect_tile
+                        .clone()
+                        .filter(|_| self.split())
+                        .map(|session| self.render_tile_inspector(&plan, &session, cx)),
+                )
+                .into_any_element()
+        };
+        #[cfg(feature = "silvestris-ui")]
+        let content = self.render_shared_shell(cx);
         div()
             .id("lotus")
             .relative()
@@ -3982,23 +4125,7 @@ impl Render for LotusWindow {
             .on_key_up(cx.listener(|view, event: &KeyUpEvent, _, _| {
                 view.button(&event.keystroke.key, false)
             }))
-            .child({
-                let sidebar = self.render_sidebar(&plan, cx);
-                self.render_drop_sidebar(sidebar, cx)
-            })
-            .child(main)
-            .when_some(plan.inspector, |root, width| {
-                root.child(self.render_inspector(width, true, cx))
-            })
-            .when(plan.inspector_rail, |root| {
-                root.child(self.render_inspector_rail(&plan, cx))
-            })
-            .children(
-                self.inspect_tile
-                    .clone()
-                    .filter(|_| self.split())
-                    .map(|session| self.render_tile_inspector(&plan, &session, cx)),
-            )
+            .child(content)
     }
 }
 

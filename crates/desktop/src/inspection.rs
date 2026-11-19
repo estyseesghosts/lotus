@@ -3,6 +3,32 @@ use lotus_protocol::debug::DebugCommand as D;
 use serde_json::Value;
 use std::{io, path::Path, sync::Arc};
 
+use lotus_session::supervisor::SessionSummary;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionTarget {
+    pub id: String,
+    pub created_unix_ms: u64,
+    pub epoch: u64,
+}
+impl SessionTarget {
+    pub(crate) fn from_summary(summary: &SessionSummary) -> Self {
+        Self {
+            id: summary.info.id.clone(),
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        }
+    }
+    /// Reject missing/replaced sessions and responses from a previous guest epoch.
+    /// Availability/permission is command-specific and must also be checked.
+    pub fn resolve<'a>(&self, sessions: &'a [SessionSummary]) -> Option<&'a SessionSummary> {
+        sessions.iter().find(|s| {
+            s.info.id == self.id
+                && s.info.created_unix_ms == self.created_unix_ms
+                && s.telemetry.epoch == self.epoch
+        })
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Panel {
@@ -20,6 +46,27 @@ pub enum Panel {
     Result,
 }
 impl Panel {
+    /// Stable preference IDs (handbook 19); independent of display/order/index.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Cpu => "cpu",
+            Self::Threads => "threads",
+            Self::Breakpoints => "breakpoints",
+            Self::Memory => "memory",
+            Self::Settings => "settings",
+            Self::Ipc => "ipc",
+            Self::Logs => "logs",
+            Self::Gpu => "gpu",
+            Self::Audio => "audio",
+            Self::States => "states",
+            Self::Timeline => "timeline",
+            Self::Result => "result",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|p| p.id() == id)
+    }
     pub const ALL: [Self; 12] = [
         Self::Cpu,
         Self::Threads,
@@ -437,6 +484,12 @@ mod tests {
     use super::*;
     #[test]
     fn rail_and_overflow_cover_every_panel_once() {
+        let ids: std::collections::BTreeSet<_> = Panel::ALL.into_iter().map(Panel::id).collect();
+        assert_eq!(ids.len(), Panel::ALL.len());
+        for panel in Panel::ALL {
+            assert_eq!(Panel::from_id(panel.id()), Some(panel));
+        }
+        assert_eq!(Panel::from_id("future"), None);
         let mut seen: Vec<Panel> = Panel::RAIL.into_iter().chain(Panel::OVERFLOW).collect();
         assert_eq!(seen.len(), Panel::ALL.len());
         seen.sort_by_key(|p| *p as usize);

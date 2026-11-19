@@ -103,3 +103,10 @@ The opt-in renderer is now mounted by lotus_window/shared_navigation.rs.
 It consumes navigation.rs descriptors through SourceList accessory/decorator
 slots, retaining DesktopController commands and SessionDrag revision checks.
 Default builds still use the original session rows.
+
+The feature also composes Shell::measured in lotus_window/shared_shell.rs.
+One effective plan fits previews and positions sidebar, inspector and rail.
+Inspector visibility/width keep the legacy preference keys; namespaced pin and
+stable panel metadata migrate existing dock intent. SessionTarget in
+inspection.rs is shared by navigation and painted inspector action guards.
+Controller inspection requests and worker/MCP interfaces remain unchanged.

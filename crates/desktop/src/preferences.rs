@@ -67,6 +67,33 @@ pub struct Store {
     // Keep outside Preferences: these are not editable registry descriptors.
     // Known fields always come from the current typed values when saving.
     original: serde_json::Map<String, serde_json::Value>,
+    #[cfg(feature = "silvestris-ui")]
+    pub ui: SharedUiPreferences,
+}
+
+/// Staged shell metadata, separate from the existing editable registry keys.
+/// Width/visibility still use the legacy keys so rollback keeps current layout.
+#[cfg(feature = "silvestris-ui")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SharedUiPreferences {
+    pub schema_version: u32,
+    pub inspector_pinned: bool,
+    pub inspector_panel: String,
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+#[cfg(feature = "silvestris-ui")]
+impl Default for SharedUiPreferences {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            inspector_pinned: false,
+            inspector_panel: "cpu".into(),
+            extra: Default::default(),
+        }
+    }
 }
 
 #[must_use]
@@ -91,21 +118,21 @@ impl Store {
                 path: None,
                 values: Preferences::default(),
                 original: Default::default(),
+                #[cfg(feature = "silvestris-ui")]
+                ui: Default::default(),
             };
         };
         match std::fs::read(&path) {
-            Ok(bytes) => match Self::decode(&bytes) {
-                Ok((values, original)) => Self {
-                    path: Some(path),
-                    values,
-                    original,
-                },
+            Ok(bytes) => match Self::from_bytes(&path, &bytes) {
+                Ok(store) => store,
                 Err(error) => {
                     tracing::warn!(path = %path.display(), %error, "ignoring unreadable desktop preferences");
                     Self {
                         path: None,
                         values: Preferences::default(),
                         original: Default::default(),
+                        #[cfg(feature = "silvestris-ui")]
+                        ui: Default::default(),
                     }
                 }
             },
@@ -113,6 +140,8 @@ impl Store {
                 path: Some(path),
                 values: Preferences::default(),
                 original: Default::default(),
+                #[cfg(feature = "silvestris-ui")]
+                ui: Default::default(),
             },
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "cannot read desktop preferences; saving disabled");
@@ -120,9 +149,39 @@ impl Store {
                     path: None,
                     values: Preferences::default(),
                     original: Default::default(),
+                    #[cfg(feature = "silvestris-ui")]
+                    ui: Default::default(),
                 }
             }
         }
+    }
+
+    fn from_bytes(path: &Path, bytes: &[u8]) -> serde_json::Result<Self> {
+        let (values, original) = Self::decode(bytes)?;
+        #[cfg(feature = "silvestris-ui")]
+        let ui = if let Some(ui) = original.get("silvestris") {
+            let ui: SharedUiPreferences = serde_json::from_value(ui.clone())?;
+            if ui.schema_version != 1 {
+                return Err(serde_json::Error::io(std::io::Error::other(
+                    "unsupported Silvestris preferences schema",
+                )));
+            }
+            ui
+        } else {
+            // Handbook 14/19: preserve existing docked intent. New files
+            // default to overlay; only an explicitly saved open pane pins.
+            SharedUiPreferences {
+                inspector_pinned: original.get("inspector_open") == Some(&true.into()),
+                ..Default::default()
+            }
+        };
+        Ok(Self {
+            path: Some(path.to_path_buf()),
+            values,
+            original,
+            #[cfg(feature = "silvestris-ui")]
+            ui,
+        })
     }
 
     fn decode(
@@ -141,6 +200,8 @@ impl Store {
         };
         let result = (|| {
             let mut document = self.original.clone();
+            #[cfg(feature = "silvestris-ui")]
+            document.insert("silvestris".into(), serde_json::to_value(&self.ui)?);
             if let serde_json::Value::Object(known) = serde_json::to_value(&self.values)? {
                 document.extend(known);
             }
@@ -170,6 +231,62 @@ mod tests {
             std::env::temp_dir().join(format!("lotus-prefs-{}-{name}-{nonce}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         dir
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    #[test]
+    fn shell_migration_preserves_saved_dock_intent_and_legacy_layout() {
+        let dir = test_directory("shell");
+        let path = dir.join("desktop.json");
+        assert!(!Store::load(Some(path.clone())).ui.inspector_pinned);
+        for open in [false, true] {
+            let old = serde_json::json!({"sessions_open": false, "sessions_width": 333.,
+                "inspector_open": open, "inspector_width": 512.,
+                "settings_bounds": [1., 2., 900., 700.]});
+            std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
+            let mut store = Store::load(Some(path.clone()));
+            assert_eq!(store.ui.inspector_pinned, open);
+            assert_eq!(store.ui.inspector_panel, "cpu");
+            store.ui.inspector_panel = "gpu".into();
+            store
+                .ui
+                .extra
+                .insert("future".into(), serde_json::json!({"a": [1, 2]}));
+            store.save();
+            let bytes = std::fs::read(&path).unwrap();
+            let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            for (key, value) in old.as_object().unwrap() {
+                assert_eq!(document.get(key), Some(value), "{key}");
+            }
+            let loaded = Store::load(Some(path.clone()));
+            assert_eq!(loaded.ui.inspector_pinned, open);
+            assert_eq!(loaded.ui.inspector_panel, "gpu");
+            assert_eq!(loaded.ui.extra, store.ui.extra);
+            loaded.save();
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    #[test]
+    fn unsupported_or_malformed_shell_metadata_is_preserved() {
+        let dir = test_directory("shell-invalid");
+        let path = dir.join("desktop.json");
+        for text in [
+            r#"{"silvestris":{"schema_version":2,"future":true}}"#,
+            r#"{"silvestris":{"inspector_pinned":"bad"}}"#,
+            r#"{"silvestris":null}"#,
+        ] {
+            std::fs::write(&path, text).unwrap();
+            let store = Store::load(Some(path.clone()));
+            assert!(store.path.is_none());
+            store.save();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        }
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
     }
 
     #[test]

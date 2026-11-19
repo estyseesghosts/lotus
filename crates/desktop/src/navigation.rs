@@ -6,30 +6,7 @@ use lotus_session::supervisor::{SessionKind, SessionSummary};
 use silvestris::core::source_list::SourceNode;
 use std::collections::{BTreeMap, BTreeSet};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionTarget {
-    pub id: String,
-    pub created_unix_ms: u64,
-    pub epoch: u64,
-}
-impl SessionTarget {
-    fn from_summary(summary: &SessionSummary) -> Self {
-        Self {
-            id: summary.info.id.clone(),
-            created_unix_ms: summary.info.created_unix_ms,
-            epoch: summary.telemetry.epoch,
-        }
-    }
-    /// Reject missing/replaced sessions and responses from a previous guest epoch.
-    /// Availability/permission is command-specific and must also be checked.
-    pub fn resolve<'a>(&self, sessions: &'a [SessionSummary]) -> Option<&'a SessionSummary> {
-        sessions.iter().find(|s| {
-            s.info.id == self.id
-                && s.info.created_unix_ms == self.created_unix_ms
-                && s.telemetry.epoch == self.epoch
-        })
-    }
-}
+pub use crate::inspection::SessionTarget;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Card {
