@@ -38,7 +38,9 @@ use crate::layout::{self, Drag, Pane, PaneState, Plan};
 use crate::layout::{GaugeMode, ToolbarDensity};
 use crate::preferences::{self, Store};
 use crate::screen_geometry::TouchTransform;
-use crate::session_tree::{self, TreeNode};
+use crate::session_tree;
+#[cfg(not(feature = "silvestris-ui"))]
+use crate::session_tree::TreeNode;
 use crate::theme;
 use crate::tiling::{self, DividerDrag, SessionDrag, Source, Target};
 use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
@@ -160,6 +162,7 @@ impl ScreenLayout {
     }
 }
 
+#[cfg(not(feature = "silvestris-ui"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Depth {
     Top,
@@ -530,20 +533,16 @@ impl LotusWindow {
         self.preferences.save();
     }
 
-    /// Ctrl+B / Ctrl+I and the rail chevrons: toggle what is actually drawn.
-    fn toggle_pane(&mut self, pane: Pane, window: &Window) {
-        let plan = self.plan(window);
-        let shown = match pane {
-            Pane::Sessions => plan.sessions.is_some(),
-            Pane::Inspector => {
-                #[cfg(feature = "silvestris-ui")]
-                {
-                    self.preferences.values.inspector_open
-                }
-                #[cfg(not(feature = "silvestris-ui"))]
-                {
-                    plan.inspector.is_some()
-                }
+    /// Toggle the saved preference in Silvestris, including when space hides a pane.
+    fn toggle_pane(&mut self, pane: Pane, _window: &Window) {
+        #[cfg(feature = "silvestris-ui")]
+        let shown = self.pane(pane).open;
+        #[cfg(not(feature = "silvestris-ui"))]
+        let shown = {
+            let plan = self.plan(_window);
+            match pane {
+                Pane::Sessions => plan.sessions.is_some(),
+                Pane::Inspector => plan.inspector.is_some(),
             }
         };
         if shown {
@@ -1014,7 +1013,10 @@ impl LotusWindow {
     fn render_sidebar(&self, plan: &Plan, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::palette(cx);
         let Some(width) = plan.sessions else {
+            #[cfg(not(feature = "silvestris-ui"))]
             return self.render_rail(plan, cx);
+            #[cfg(feature = "silvestris-ui")]
+            return gpui::Empty.into_any_element();
         };
         #[cfg(feature = "silvestris-ui")]
         let list = div()
@@ -1156,6 +1158,7 @@ impl LotusWindow {
             .into_any_element()
     }
 
+    #[cfg(not(feature = "silvestris-ui"))]
     fn render_rail(&self, plan: &Plan, cx: &mut Context<Self>) -> AnyElement {
         let theme = theme::palette(cx);
         let squeezed = plan.squeezed == Some(Pane::Sessions);
@@ -1221,37 +1224,6 @@ impl LotusWindow {
                 let initial = label.chars().next().unwrap_or('?').to_ascii_uppercase();
                 let size = if depth == Depth::Top { 32.0 } else { 24.0 };
                 let tip = format!("{label} · {}", state_name(&summary));
-                #[cfg(feature = "silvestris-ui")]
-                {
-                    let target = SessionTarget::from_summary(&summary);
-                    let state = state_colour(theme, &summary);
-                    chips = chips.child(
-                        silvestris::controls::Button::new(
-                            SharedString::from(format!("chip-{id}")),
-                            tip.clone(),
-                        )
-                        .style(silvestris::controls::ButtonStyle::Textured)
-                        .selected(selected)
-                        .min_width(size)
-                        .tooltip(tip)
-                        .icon(move |ink| {
-                            div().flex().items_center().gap(px(3.0))
-                                .text_color(ink).child(initial.to_string())
-                                .child(div().size(px(5.0)).rounded_full().bg(state))
-                        })
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            if view.sessions.iter().any(|session| {
-                                session.info.id == target.id
-                                    && session.info.created_unix_ms == target.created_unix_ms
-                            }) {
-                                view.select(target.id.clone());
-                                cx.notify();
-                            }
-                        })),
-                    );
-                }
-                #[cfg(not(feature = "silvestris-ui"))]
-                {
                 chips = chips.child(with_tooltip(
                     div()
                         .id(SharedString::from(format!("chip-{id}")))
@@ -1290,7 +1262,6 @@ impl LotusWindow {
                         })),
                     tip,
                 ));
-                }
             }
         }
         rail = rail
@@ -1305,9 +1276,7 @@ impl LotusWindow {
                     .border_color(theme.border)
                     .child(self.preferences_button(cx)),
             )
-            .when(!cfg!(feature = "silvestris-ui"), |rail| {
-                rail.child(self.divider(Pane::Sessions, cx))
-            });
+            .child(self.divider(Pane::Sessions, cx));
         rail.into_any_element()
     }
 

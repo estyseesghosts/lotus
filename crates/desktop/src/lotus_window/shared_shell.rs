@@ -12,6 +12,12 @@ use silvestris::ActiveTheme;
 
 pub(super) const TELEMETRY_DETAILS_HEIGHT: f32 = 64.0;
 
+// The unified toolbar supplies the Sidebar toggle at every window width.
+const SHELL_GEOMETRY: shared::ShellGeometry = shared::ShellGeometry {
+    sidebar_rail: layout::SESSION_RAIL,
+    ..shared::ShellGeometry::LOTUS_LEGACY
+};
+
 static LOTUS_ART: std::sync::LazyLock<Arc<gpui::Image>> = std::sync::LazyLock::new(|| {
     Arc::new(gpui::Image::from_bytes(
         gpui::ImageFormat::Png,
@@ -254,7 +260,7 @@ impl LotusWindow {
         let previous = self.shared_plan.get();
         legacy_plan(&shared::plan(shared::PlanInput {
             viewport: window.viewport_size().width.into(),
-            geometry: shared::ShellGeometry::LOTUS_LEGACY,
+            geometry: SHELL_GEOMETRY,
             sidebar: self.shared_sidebar_preference(),
             inspector: self.shared_inspector_preference(),
             // Option 1 (HIG p. 229 inspector): no rail; a closed inspector
@@ -276,9 +282,12 @@ impl LotusWindow {
                 owner.update(cx, |view, cx| {
                     view.shared_plan.set(Some(*plan));
                     let legacy = legacy_plan(plan);
-                    let sidebar = view.render_sidebar(&legacy, cx);
-                    let sidebar = view.render_drop_sidebar(sidebar, cx).into_any_element();
-                    let rail = view.render_rail(&legacy, cx);
+                    let sidebar = if plan.sidebar_expanded {
+                        let sidebar = view.render_sidebar(&legacy, cx);
+                        view.render_drop_sidebar(sidebar, cx).into_any_element()
+                    } else {
+                        gpui::Empty.into_any_element()
+                    };
                     let workspace = view.render_workspace(&legacy, size.height.into(), window, cx);
                     let target = view.shared_inspector_target().unwrap_or("");
                     // The panel names what it inspects; the view pop-up names the view.
@@ -315,7 +324,7 @@ impl LotusWindow {
                     });
                     ShellContent {
                         sidebar,
-                        sidebar_rail: rail,
+                        sidebar_rail: gpui::Empty.into_any_element(),
                         workspace,
                         inspector,
                         inspector_title: title.into(),
@@ -324,6 +333,7 @@ impl LotusWindow {
                 })
             },
         )
+        .geometry(SHELL_GEOMETRY)
         .on_inspector_key_down({
             let owner = cx.entity();
             move |event, window, cx| {
@@ -456,12 +466,40 @@ mod tests {
                 cx.simulate_click(inspector.center(), Modifiers::default());
                 draw(cx);
                 cx.update(|_, cx| assert!(view.read(cx).preferences.values.inspector_open));
-                // Close before the next size; the persistent rail remains.
+                // Close before the next size.
                 cx.simulate_click(inspector.center(), Modifiers::default());
                 draw(cx);
                 cx.update(|_, cx| assert!(!view.read(cx).preferences.values.inspector_open));
             }
         }
+    }
+
+    #[test]
+    fn collapsed_sidebar_gives_the_workspace_its_full_width() {
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx)
+        });
+        let (_, cx) = app.add_window_view(LotusWindow::test_preview);
+        cx.simulate_resize(size(px(900.), px(700.)));
+        draw(cx);
+        let open = cx.debug_bounds("shell-workspace").unwrap();
+        let toggle = cx.debug_bounds("shared-sidebar").unwrap().center();
+        assert!(open.left() > px(0.));
+        assert!(cx.debug_bounds("sidebar-divider").is_some());
+
+        cx.simulate_click(toggle, Modifiers::default());
+        draw(cx);
+        let closed = cx.debug_bounds("shell-workspace").unwrap();
+        assert_eq!(closed.left(), px(0.));
+        assert_eq!(closed.right(), open.right());
+        assert!(cx.debug_bounds("sidebar-divider").is_none());
+        assert!(cx.debug_bounds("shared-settings").is_some());
+
+        cx.simulate_click(toggle, Modifiers::default());
+        draw(cx);
+        assert_eq!(cx.debug_bounds("shell-workspace"), Some(open));
+        assert!(cx.debug_bounds("sidebar-divider").is_some());
     }
 
     #[test]

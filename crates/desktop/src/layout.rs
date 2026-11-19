@@ -6,8 +6,11 @@
 //! 720 logical pixels; UI scale and window size reduce to the same inputs.
 //! Pure functions so the policy is unit-tested without a window.
 
-/// Session sidebar collapsed to its chip rail.
+#[cfg(not(feature = "silvestris-ui"))]
 pub const SESSION_RAIL: f32 = 52.0;
+/// Silvestris uses the unified toolbar to reopen a fully hidden sidebar.
+#[cfg(feature = "silvestris-ui")]
+pub const SESSION_RAIL: f32 = 0.0;
 pub const SESSION_MIN: f32 = 200.0;
 pub const SESSION_MAX: f32 = 440.0;
 pub const SESSION_DEFAULT: f32 = 264.0;
@@ -37,7 +40,7 @@ pub struct PaneState {
 /// What is rendered for one viewport width.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Plan {
-    /// Session sidebar width when shown expanded, `None` for the rail.
+    /// Session sidebar width when shown expanded.
     pub sessions: Option<f32>,
     /// Inspector panel width beside its rail, `None` when only the rail shows.
     pub inspector: Option<f32>,

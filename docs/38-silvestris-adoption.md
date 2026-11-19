@@ -445,3 +445,16 @@ and then verifies inspection works against the new epoch.
 Release gates in #138 still apply. Windows exterior shadow remains
 unverified, along with macOS menu behavior, mixed DPI, live AZAHAR/CITnLO
 and portable builds.
+
+## Sidebar collapse and button feedback
+
+The staged workspace takes the full shell width when the session sidebar
+closes. The toolbar Sidebar command and its shortcut restore the saved
+width. The Settings command stays in the unified toolbar.
+
+Silvestris push, textured and square gradient buttons show the pressed
+bevel on pointer or activation-key down. The GPUI click dispatch still
+controls command activation. A successful click blends back to the
+resting or selected material over 120 ms, a local timing estimate.
+Reduced motion keeps the held state and skips the release transition.
+See HIG push buttons pp. 265–269 and Aqua GPUI handbook 09 and 10.
