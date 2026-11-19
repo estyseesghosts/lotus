@@ -625,7 +625,20 @@ fn two_pads_soak_without_crossover_or_stuck_input() {
         cost_two.1
     );
     assert_eq!(service.diagnostics().dropped, 0, "device events dropped");
-    assert_eq!(input_b.edges_dropped, 0, "B lost presses");
+    // A's stall must not reach B. B can still drop a few edges when its own exchange
+    // outlasts MAILBOX steps (8 x ~1 ms) on a loaded host (#48); a leaked stall would hold
+    // B for ~2 s and drop edges at A's rate.
+    assert!(
+        input_b.latency_max_ms < 250.0,
+        "B waited {:.1} ms during A's stall",
+        input_b.latency_max_ms
+    );
+    assert!(
+        input_b.edges_dropped * 10 < input_a.edges_dropped,
+        "B lost {} presses against A's {}",
+        input_b.edges_dropped,
+        input_a.edges_dropped
+    );
     assert_eq!((input_a.denied, input_b.denied), (0, 0));
 
     shutdown.store(true, std::sync::atomic::Ordering::Release);

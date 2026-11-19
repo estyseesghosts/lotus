@@ -722,7 +722,10 @@ The test asserts:
 - Each device's routing p95 is under 25 ms.
 - The second pad keeps pad 1's p95 within 3× + 2 ms of its baseline, and the
   per-event router cost within 3× + 20 µs.
-- B's `edges_dropped` is 0, and `denied` is 0 on both sessions.
+- A's stall does not reach B: B's delivery max stays under 250 ms and B drops
+  under a tenth of A's edges. B may drop a few edges when its own exchange
+  outlasts 8 steps on a loaded host (CI run 44455387914: 30 ms max, 2 dropped,
+  against A's 605). `denied` is 0 on both sessions.
 
 The 60 s run on Windows 11 (debug build, 2026-11-18) gave:
 
