@@ -156,6 +156,10 @@ fixture memory and screen hashes against the pinned worker
 `676e395` was rejected by the source pin check before deserialization
 (`runs/r32-format-final`). The 0.1.0 CITnLO package uses `c3422b0a`.
 Queue depth configuration requires the newer experimental worker.
+The updated host refused an explicit depth on `c3422b0a` and ran it on
+the worker that advertised support (`runs/r32-capability-live`). The reverse
+matrix, debugger and save-state round trips passed again on `9e6d051`
+(`runs/r32-citnlo-9e6d051`).
 
 ### #46 Packaged Vulkan worker scaling
 
@@ -198,6 +202,23 @@ advanced frames and returned both screen artifacts in both runs. New Vulkan
 sessions were admitted again after the load was released
 (`runs/r46-pressure-live-03`, repeated with the committed harness in
 `runs/r46-pressure-citnlo`, verified emulator).
+
+On the same worker, allocation fault injection produced typed out-of-memory
+reports at first allocation and at frame 64 while creating a present image.
+Three other Vulkan sessions kept advancing and capturing
+(`runs/r46-injection-citnlo`). A host regression test reproduced stale
+admission pressure from the exited worker's last sample. Admission now uses
+active workers only, and session status retains the failure report.
+
+AZAHAR `7148e13`, built separately from `b04d8a6` with the package's
+flags, passed both admission cases on the same machine. Its reported headroom
+went from 15,078 to 13,004 MiB under load and cleared pressure after release.
+First-allocation and mid-scene injection produced typed failures. The three
+siblings advanced and returned both screens
+(`runs/r46-pressure-azahar`, `runs/r46-injection-azahar`).
+Both candidate workers completed 120 running Vulkan previews with zero
+GPU waits and a maximum lag of one guest frame
+(`runs/r46-preview-citnlo`, `runs/r46-preview-azahar`, verified emulator).
 
 The regression uses the Windows SDK/WinLibs and the same t03 fixture.
 Choose a reserve between the test adapter's idle and loaded headroom.
