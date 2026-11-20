@@ -23,10 +23,11 @@ def forward(peer, reason):
     return result["stop"]
 
 
-def run(worker, rom, root, new, interval=1, level=None):
+def run(worker, rom, root, new, interval=1, level=None, queue=None):
     syms = symbols(rom.with_suffix(".elf"))
     peer = Peer(worker, root)
-    evidence = dict(new_3ds=new, interval_frames=interval, compression_level=level, checks={})
+    evidence = dict(new_3ds=new, interval_frames=interval, compression_level=level, compression_queue=queue,
+                    checks={})
     try:
         peer.call("hello")
         peer.debug("settings_set", name="is_new_3ds", value=new)
@@ -34,9 +35,12 @@ def run(worker, rom, root, new, interval=1, level=None):
         extra = dict(interval_frames=interval) if interval != 1 else {}
         if level is not None:
             extra["compression_level"] = level
+        if queue is not None:
+            extra["compression_queue"] = queue
         configured = peer.debug("rewind_configure", enabled=True, capacity=32, budget_mib=128, **extra)
         assert configured.get("interval_frames", 1) == interval, configured
         assert level is None or configured.get("compression_level") == level, configured
+        assert queue is None or configured.get("compression_queue") == queue, configured
 
         # Write watchpoint: values v, v+1, v+2 observed after each access.
         bp = peer.debug("breakpoint_set", address=syms["watched"], kind="write", length=4)
@@ -101,7 +105,28 @@ def run(worker, rom, root, new, interval=1, level=None):
         evidence["checks"]["no_breakpoint_refused"] = peer.call(
             "debug", dict(operation="reverse_continue"), expected="invalid_argument")
         assert u32(peer, syms["counter"]) == before
-        evidence["checks"]["status"] = peer.debug("rewind_status")
+        status = peer.debug("rewind_status")
+        evidence["checks"]["status"] = status
+        # lotus#32: every checkpoint is accounted once its compression settles, and with a
+        # queue none is compressed on the emulation thread.
+        if "compression_queue" in status:
+            assert status["checkpoint_compress_failures"] == 0, status
+            if status["compression_queue"]:
+                assert status["checkpoint_inline_compressions"] == 0, status
+            else:
+                assert status["checkpoint_inline_compressions"] == status["checkpoints"], status
+        if interval == 1 and queue == 2:
+            # Use a slow level so the reconfigure reaches a worker with a pending checkpoint.
+            peer.debug("rewind_configure", enabled=True, capacity=32, budget_mib=128,
+                       compression_queue=2, compression_level=19)
+            peer.debug("step", core=0, count=1)
+            pending = peer.debug("rewind_status")
+            assert pending["compression_pending"] > 0, pending
+            reset = peer.debug("rewind_configure", enabled=True, capacity=32, budget_mib=128,
+                               compression_queue=0)
+            assert reset["snapshots"] == reset["compression_pending"] == 0, reset
+            assert reset["compression_pending_bytes"] == reset["compression_pending_peak_bytes"] == 0, reset
+            evidence["checks"]["queue_to_sync"] = {"before": pending, "after": reset}
         (root / "acceptance.json").write_text(json.dumps(evidence, indent=2))
     finally:
         peer.close()
@@ -115,8 +140,10 @@ if __name__ == "__main__":
     parser.add_argument("output", type=Path)
     parser.add_argument("--interval-frames", type=int, default=1, help="rewind checkpoint interval (1..60)")
     parser.add_argument("--compression-level", type=int, help="rewind checkpoint zstd level (-7..19)")
+    parser.add_argument("--compression-queue", type=int,
+                        help="checkpoints compressed off the emulation thread at once (0..4, lotus#32)")
     args = parser.parse_args()
     for new in (False, True):
         result = run(args.worker.resolve(), args.rom.resolve(), args.output.resolve() / ("new" if new else "old"), new,
-                     args.interval_frames, args.compression_level)
+                     args.interval_frames, args.compression_level, args.compression_queue)
         print(json.dumps({"new_3ds": new, "checks": list(result["checks"])}), flush=True)

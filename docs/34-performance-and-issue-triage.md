@@ -86,6 +86,77 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
   AZAHAR built with both value-initialization fixes (`794b84ca3`), t03 Vulkan, 5 trials (`runs/bench-async29-integration-794b`; before: `runs/bench-async29-integration`, `b4b9f0c`): deterministic async ends on 1 screen out of 5, as before; host async on 3 (before 4). Guest ticks were identical within each config both times, so the host-async spread is in what the guest drew, consistent with the async wake timing above.
   Decision: CITnLO's `DefaultProfile` turns `deterministic_async_operations` on; `settings_set` before `load` turns it off for a session (it is a boot setting). AZAHAR keeps the upstream default under ADR-010. **Proposed ADR-012** (owner decision): make it the default for both workers, so AZAHAR control runs in matrix comparisons are repeatable too; the cost above is the evidence. Not covered: games whose FS or AM operations take long on the host (large reads, CIA installs), where deterministic async stalls the emulation thread for the host duration instead of overlapping it.
 
+### #32 Async rewind compression
+
+CITnLO `0ce7886` serializes at the existing emulation-thread safe point and
+passes the immutable result to one zstd thread per rewind worker. A reverse
+operation can restore a serialized checkpoint directly while compression is
+pending. `rewind_configure.compression_queue` defaults to 1, accepts 0..4, and
+uses the synchronous path at 0. A full queue waits before allocating another
+serialized buffer. `676e395` drains old work on reset and reconfigure so
+switching to synchronous compression cannot allocate beside the old queue.
+See `src/ctr_worker/checkpoint.h` and `src/ctr_worker/debug.h` in the CITnLO fork.
+
+Verified emulator on Windows 11, Ryzen 5 3600 and Radeon RX 9060 XT
+(32.0.32029.2010). The sweep used unthrottled Old 3DS t03, Vulkan, a
+three-second warm-up, one eight-second window per row, and the batch policy
+through `lotus-mcp`. Worker `0ce7886` was built with WinLibs UCRT GNU in
+Release, Vulkan and software enabled, Qt, SDL2, OpenGL, Libretro and LTO
+disabled. Host CPU load was 1.7% before and 4.7% after the sweep.
+See `runs/r32-sweep-02/report.json` for per-worker checkpoint timings,
+CPU time, probe latency, memory and binary hashes.
+
+| Workers | Off, aggregate fps | Sync, aggregate fps | Queue 1, aggregate fps | Queue 2, aggregate fps |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1845 | 37.9 | 43.1 | 72.1 |
+| 2 | 3342 | 64.7 | 65.9 | 106.0 |
+| 4 | 5588 | 80.7 | 76.7 | 81.3 |
+| 8 | 7607 | 107.8 | 95.5 | 125.7 |
+
+At four workers, mean emulation-thread checkpoint cost was 146, 142 and
+129 ms for sync, queue 1 and queue 2. Mean serialization cost rose from
+72 ms on sync to 109 ms on queue 2, and aggregate worker CPU rose from
+31.7 to 56.2 CPU seconds over the window. An earlier 20-second four-worker
+run measured 81, 77 and 72 fps (`runs/bp-rewind32-01`), so the results do
+not establish a four-worker speedup. The sweep saw only capacity evictions
+and no probe errors or compression failures.
+
+At four workers, queue 1 used 571 MiB of serialized payload at the sum of
+the per-worker peaks. Queue 2 used 1141 MiB. With the configured 64 MiB
+history allowance per worker, those payload sizes give about 827 and
+1397 MiB of queued and retained data respectively for this title.
+These figures exclude allocator capacity, zstd scratch, guest memory
+and renderer allocations. The four-worker sums of process peak private
+commit were 4.92 GiB with rewind off, 7.52 GiB sync, 8.14 GiB queue 1,
+and 9.53 GiB queue 2. Individual lifetime peaks can occur at different
+times. Serialized sizes vary by guest and 3DS model. The interactive
+host policy still defaults to two rewind sessions. A host-wide byte
+budget and separate allocator, page-walk and GPU-wait timings remain open.
+
+`tools/reverse_acceptance.py` passed intervals 1, 5 and 20 at depths 0, 1
+and 2 on both models, including watchpoints, breakpoint changes mid-window
+and replay after input changes (`runs/r32-final-int*-q*`, worker `676e395`).
+Reconfiguring from depth 2 to depth 0 with work pending cleared both the
+pending and peak byte counts. The same test left 142 MiB pending on
+`0ce7886` (`runs/r32-reset-before`). On the earlier `0ce7886` matrix
+(`runs/rev32-int*-q*-01`),
+mean restore time across intervals was 193–199 ms for Old 3DS and
+256–274 ms for New 3DS, with up to three direct serialized restores per run.
+
+`tools/rewind_failure_acceptance.py` terminated one of four Vulkan workers.
+Lotus reported the failure and each sibling advanced 15 frames and took two
+more checkpoints after Lotus observed the exit. All three answered register
+requests and returned both screen artifacts (`runs/r32-failure-final-02`).
+
+Debugger and save-state round trips passed on Old and New 3DS
+(`runs/r32-debugger-676e395`, `runs/r32-format-roundtrip-676e395`).
+The prior format comparison used matching source IDs and compared registers,
+fixture memory and screen hashes against the pinned worker
+(`runs/savestate-fmt-32-01`). Loading a checkpoint from `c3422b0a` with
+`676e395` was rejected by the source pin check before deserialization
+(`runs/r32-format-final`). The 0.1.0 CITnLO package uses `c3422b0a`.
+Queue depth configuration requires the newer experimental worker.
+
 ## Quiet-machine timing runs
 
 Use a Release build ([27](27-build-and-run.md) §4) on an otherwise idle host; `--require-idle` refuses to start above 15 % CPU load. ROM paths must be absolute. `<w>` is `build/native-<branch>/bin/Release/ctr-worker.exe`, or `runtimes/<backend>/ctr-worker.exe` in an unpacked portable ZIP.

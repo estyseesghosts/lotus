@@ -73,6 +73,12 @@ CONFIGS = {
                                                                interval_frames=n,
                                                                compression_level=REWIND_FAST_LEVEL))]
        for n in (1, 2, 5, 10)},
+    # lotus#32: the worker default (compression_queue 1) compresses checkpoints off the
+    # emulation thread; `_sync` compresses on it, as every worker before #32 did, and
+    # `_queue_2` allows two checkpoints in compression at once.
+    **{f"rewind_interval_{n}_{name}": [("rewind_configure", dict(enabled=True, capacity=32, budget_mib=64,
+                                                                 interval_frames=n, compression_queue=queue))]
+       for n in (1, 2, 5, 10) for name, queue in (("sync", 0), ("queue_2", 2))},
     **{f"bp_execute_{n}": [("breakpoint_set", dict(address=UNHIT + 4 * i, kind="execute", length=4))
                            for i in range(n)] for n in (1, 8, 64)},
     "watch_write_1": [("breakpoint_set", dict(address=TEXT_BASE, kind="write", length=4))],
@@ -227,7 +233,7 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
         for operation, params in operations:
             reply = peer.debug(operation, **params)
             # Older workers ignore unknown parameters; refuse rather than mislabel the trial.
-            for key in ("interval_frames", "compression_level"):
+            for key in ("interval_frames", "compression_level", "compression_queue"):
                 if key in params and reply.get(key) != params[key]:
                     raise AssertionError(f"worker does not support rewind {key}")
         before = process_usage(peer.process)

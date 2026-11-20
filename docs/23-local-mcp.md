@@ -90,7 +90,11 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
 - `rewind_sessions`: sessions recording rewind checkpoints at once. Enabling a
   third is refused with `ResourceBusy` naming the holders; disabling or ending a
   holder frees its place. docs/34 measured 142 MiB (Old 3DS) and 274 MiB (New 3DS)
-  serialized per checkpoint.
+  serialized per checkpoint. The experimental CITnLO rewind worker accepts
+  `compression_queue` (0..4, default 1) in `rewind_configure`. A positive depth
+  bounds the number of serialized checkpoints waiting or being compressed.
+  Depth 0 uses one serialized checkpoint at a time on the emulation thread.
+  The stored history has its own `budget_mib` limit. See [#32](34-performance-and-issue-triage.md#32-async-rewind-compression).
 - `gpu_capture_sessions`: sessions with `gpu_configure` above `counters`.
 - `snapshot_slots`: one-shot full-state work host-wide (`save_state`,
   `load_state`, `fork`, `matrix`, copying a card for a secondary). Extra requests

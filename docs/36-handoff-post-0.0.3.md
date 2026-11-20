@@ -26,7 +26,8 @@ acceptance evidence. Quiet-machine commands are in docs/34 "Quiet-machine timing
 
 ## Not started
 
-- #32 async rewind compression and budgets. Read #40 first; the #23 rewind budget exists.
+- #32 has since landed on the local CITnLO experimental branch. See the
+  [measurements and remaining work](34-performance-and-issue-triage.md#32-async-rewind-compression).
 - Proposals #34–#41: not read this session beyond overlaps.
 
 Done before this session (2026-11-16, see `git log v0.0.3..c9ca88f`): #19/#20 per-session supervision

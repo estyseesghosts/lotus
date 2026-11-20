@@ -36,6 +36,8 @@ pub enum Workload {
 
 /// Interactive default for each budget. Two keeps the transient checkpoint buffers of
 /// simultaneous rewind sessions near 0.3-0.6 GiB (docs/34) and never limits one session.
+/// The default async queue keeps the same one-serialized-checkpoint limit per worker as
+/// synchronous compression (lotus#32). Larger worker queues increase that limit.
 const INTERACTIVE_BUDGET: usize = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

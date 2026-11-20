@@ -1811,6 +1811,16 @@
             "null"
           ]
         },
+        "compression_queue": {
+          "description": "Checkpoints waiting for or undergoing background compression (0..=4, worker default\n1). Each holds its serialized state until compressed. A full queue makes the next\ncheckpoint wait. 0 compresses on the emulation thread.",
+          "format": "uint8",
+          "maximum": 4,
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "enabled": {
           "type": "boolean"
         },

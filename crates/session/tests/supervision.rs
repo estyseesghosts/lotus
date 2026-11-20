@@ -351,6 +351,7 @@ async fn concurrent_rewind_enables_respect_the_budget() {
         budget_mib: 64,
         interval_frames: None,
         compression_level: None,
+        compression_queue: None,
     };
     for round in 0..3 {
         // Every worker's next reply stalls, so all requests are in flight together.
@@ -371,6 +372,7 @@ async fn concurrent_rewind_enables_respect_the_budget() {
             budget_mib: 64,
             interval_frames: None,
             compression_level: None,
+            compression_queue: None,
         };
         fixture
             .host

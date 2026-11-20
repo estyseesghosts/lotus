@@ -110,7 +110,9 @@ class Process:
         seconds = lambda t: ((t.dwHighDateTime << 32) | t.dwLowDateTime) / 1e7
         return dict(cpu_seconds=seconds(times[2]) + seconds(times[3]), io_read_bytes=io.ReadTransferCount,
                     io_write_bytes=io.WriteTransferCount, working_set_bytes=memory.WorkingSetSize,
-                    private_bytes=memory.PrivateUsage)
+                    private_bytes=memory.PrivateUsage, peak_working_set_bytes=memory.PeakWorkingSetSize,
+                    # Peak commit charge of the process: private bytes at their highest (lotus#32).
+                    peak_private_bytes=memory.PeakPagefileUsage)
 
     def suspend(self, on):
         ntdll = ctypes.windll.ntdll
@@ -217,6 +219,9 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                                                                  "command": {"operation": operation, **params}})
                 if error:
                     return dict(status="unsupported", error=f"{operation}: {error}")
+                for key in ("interval_frames", "compression_level", "compression_queue"):
+                    if key in params and reply.get(key) != params[key]:
+                        return dict(status="unsupported", error=f"worker does not support rewind {key}")
         for session in sessions:
             if not session["idle"]:
                 tool(frontend, "lotus_control", {"session": session["id"], "operation": "run"})
@@ -267,6 +272,17 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
         elapsed = time.perf_counter() - start
         last = rows(frontend)
         usage_after = [p.usage() for p in processes]
+        # Checkpoint costs, pending compression and loss reasons per session (lotus#32).
+        rewind = {}
+        if not args.smoke and any(op == "rewind_configure" for op, _ in bench.CONFIGS[config_name]):
+            for session in sessions:
+                if session["idle"] or (args.stall and session is sessions[0]):
+                    continue
+                _, reply, error = call(frontend, "lotus_debug", {"session": session["id"],
+                                                                 "command": {"operation": "rewind_status"}})
+                if error:
+                    errors[session["id"]].append(f"rewind_status: {error}")
+                rewind[session["id"]] = reply
         ram_after = available_ram()
         gpu_after = gpu_policy(frontend)
         if args.stall:
@@ -292,8 +308,10 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                     cpu_seconds=after["cpu_seconds"] - before["cpu_seconds"],
                     io_read_bytes=after["io_read_bytes"] - before["io_read_bytes"],
                     io_write_bytes=after["io_write_bytes"] - before["io_write_bytes"],
-                    working_set_bytes=after["working_set_bytes"], private_bytes=after["private_bytes"]),
-                guest_ticks=(registers or {}).get("guest_ticks")))
+                    working_set_bytes=after["working_set_bytes"], private_bytes=after["private_bytes"],
+                    peak_working_set_bytes=after["peak_working_set_bytes"],
+                    peak_private_bytes=after["peak_private_bytes"]),
+                guest_ticks=(registers or {}).get("guest_ticks"), rewind=rewind.get(sid)))
         running = [r["fps"] for r in results if not (r["stalled"] or r["idle"])]
         closing = time.perf_counter()
         frontend.close()

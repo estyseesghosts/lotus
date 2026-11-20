@@ -235,6 +235,12 @@ pub enum DebugCommand {
         /// the same state; lower levels trade memory for checkpoint time.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         compression_level: Option<i8>,
+        /// Checkpoints waiting for or undergoing background compression (0..=4, worker default
+        /// 1). Each holds its serialized state until compressed. A full queue makes the next
+        /// checkpoint wait. 0 compresses on the emulation thread.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(range(max = 4))]
+        compression_queue: Option<u8>,
     },
     RewindStatus,
     ReverseStep {
@@ -609,6 +615,10 @@ impl DebugCommand {
                 compression_level: Some(level),
                 ..
             } if !(-7..=19).contains(level) => Err("rewind compression_level -7..19"),
+            Self::RewindConfigure {
+                compression_queue: Some(queue),
+                ..
+            } if *queue > 4 => Err("rewind compression_queue 0..4"),
             Self::ReverseStep { core } if *core > 3 => Err("invalid core"),
             Self::Fork { count, overrides } if !(1..=3).contains(count) || overrides.len() > 32 => {
                 Err("fork requires 1..3 siblings and at most 32 overrides")
@@ -924,11 +934,23 @@ mod tests {
             budget_mib: 128,
             interval_frames: None,
             compression_level: level,
+            compression_queue: None,
         };
         assert!(rewind(Some(20)).validate().is_err());
         assert!(rewind(Some(-8)).validate().is_err());
         assert!(rewind(Some(-7)).validate().is_ok());
         assert!(rewind(None).validate().is_ok());
+        let queue = |queue| DebugCommand::RewindConfigure {
+            enabled: true,
+            capacity: 32,
+            budget_mib: 128,
+            interval_frames: None,
+            compression_level: None,
+            compression_queue: queue,
+        };
+        assert!(queue(Some(0)).validate().is_ok());
+        assert!(queue(Some(4)).validate().is_ok());
+        assert!(queue(Some(5)).validate().is_err());
         let gpu = |capture, stop_events, draw_range, max_draws| DebugCommand::GpuConfigure {
             enabled: true,
             stop_events,
