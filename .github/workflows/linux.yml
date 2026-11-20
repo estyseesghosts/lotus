@@ -52,6 +52,11 @@ jobs:
           cargo clippy --locked --workspace --all-targets -- -D warnings
           python3 tests/test_build_config.py
           python3 tests/test_package_linux.py
+      - name: Desktop unit and interaction tests
+        # GPUI only records debug selectors with debug assertions enabled.
+        run: |
+          cargo test --locked -p lotus-desktop --lib --bins
+          cargo test --locked -p lotus-desktop --doc
 
   rust:
     runs-on: ubuntu-24.04
@@ -79,7 +84,8 @@ jobs:
         run: |
           cargo build --locked --release --bins
           cargo build --locked --release --bin lotus-desktop --bin lotus-mcp --bin ctr-cli
-          cargo test --locked --release --workspace
+          cargo test --locked --release --workspace --exclude lotus-desktop
+          cargo test --locked --release -p lotus-desktop --test '*'
       - name: Headless smoke
         run: |
           python3 tests/test_headless_smoke.py target/release

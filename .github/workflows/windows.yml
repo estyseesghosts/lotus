@@ -63,6 +63,13 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo clippy --locked --workspace --all-targets -- -D warnings
           exit $LASTEXITCODE
+      - name: Desktop unit and interaction tests
+        # GPUI only records debug selectors with debug assertions enabled.
+        run: |
+          cargo test --locked -p lotus-desktop --lib --bins
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked -p lotus-desktop --doc
+          exit $LASTEXITCODE
 
   rust:
     if: ${{ !inputs.reuse_build_run }}
@@ -94,7 +101,9 @@ jobs:
         run: |
           cargo build --locked --release --bins
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo test --locked --release --workspace
+          cargo test --locked --release --workspace --exclude lotus-desktop
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --release -p lotus-desktop --test '*'
           exit $LASTEXITCODE
       - name: Parallel session smoke (mock workers)
         run: |
