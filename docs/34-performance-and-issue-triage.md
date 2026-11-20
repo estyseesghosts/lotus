@@ -119,6 +119,15 @@ previous epoch (`runs/r06-native-citnlo`, `runs/r06-native-azahar`, verified
 emulator). Both native builds used the WinLibs UCRT GNU Release configuration
 with Vulkan and software enabled and Qt, SDL2, OpenGL, Libretro and LTO disabled.
 
+With the rebuilt release frontends and CITnLO `a3994c1`, the same three
+Vulkan trials recorded zero desktop GPU waits and a median of 25.4 fresh
+previews per second. Guest throughput was 1849.5 fps headless (0.541 ms per
+guest frame) and 1749.6 fps on the visible desktop (0.572 ms per guest frame).
+CPU load was 6% before and 3% after. This measures the desktop cost on the
+candidate build. The package and candidate use different host and worker
+revisions, so their throughput difference cannot isolate the cost of the wait
+change (`runs/r06-frontends-candidate/report.json`, verified emulator).
+
 ### #32 Async rewind compression
 
 CITnLO `0ce7886` serializes at the existing emulation-thread safe point and
