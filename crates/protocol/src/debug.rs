@@ -508,6 +508,10 @@ impl DebugCommand {
             Self::GpuConfigure {
                 capture: Some(_), ..
             } => Some(feature::GPU_CAPTURE_LEVELS),
+            Self::RewindConfigure {
+                compression_queue: Some(_),
+                ..
+            } => Some(feature::REWIND_COMPRESSION_QUEUE),
             Self::EventsConfigure { .. } => Some(feature::EVENT_SUBSCRIPTIONS),
             Self::StateHash { .. } => Some(feature::STATE_HASH),
             Self::SettingsSet { name, .. } if name == "deterministic_async_operations" => {

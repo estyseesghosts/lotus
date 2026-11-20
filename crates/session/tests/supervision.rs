@@ -875,6 +875,26 @@ async fn requests_needing_unadvertised_features_are_refused() {
         .debug(&id, &counters, Actor::Host)
         .await
         .expect("advertised");
+    let rewind = |compression_queue| DebugCommand::RewindConfigure {
+        enabled: true,
+        capacity: 32,
+        budget_mib: 64,
+        interval_frames: None,
+        compression_level: None,
+        compression_queue,
+    };
+    let error = fixture
+        .host
+        .debug(&id, &rewind(Some(0)), Actor::Host)
+        .await
+        .expect_err("rewind queue not advertised");
+    assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+    assert!(error.to_string().contains("rewind_compression_queue"));
+    fixture
+        .host
+        .debug(&id, &rewind(None), Actor::Host)
+        .await
+        .expect("legacy rewind needs no queue capability");
     let manifest: serde_json::Value = serde_json::from_slice(
         &std::fs::read(fixture.root(&id).join("native-manifest.json")).expect("manifest"),
     )

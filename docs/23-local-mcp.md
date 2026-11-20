@@ -94,6 +94,7 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
   `compression_queue` (0..4, default 1) in `rewind_configure`. A positive depth
   bounds the number of serialized checkpoints waiting or being compressed.
   Depth 0 uses one serialized checkpoint at a time on the emulation thread.
+  An explicit depth requires the worker's `rewind_compression_queue` feature.
   The stored history has its own `budget_mib` limit. See [#32](34-performance-and-issue-triage.md#32-async-rewind-compression).
 - `gpu_capture_sessions`: sessions with `gpu_configure` above `counters`.
 - `snapshot_slots`: one-shot full-state work host-wide (`save_state`,

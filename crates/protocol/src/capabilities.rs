@@ -112,8 +112,10 @@ pub mod feature {
     pub const GPU_MEMORY: &str = "gpu_memory";
     /// Fast `input` takes `circle_pad`/`c_stick` and keeps fields it is not sent (#60).
     pub const ANALOG_INPUT: &str = "analog_input";
+    /// `rewind_configure.compression_queue` controls native checkpoint compression (#32).
+    pub const REWIND_COMPRESSION_QUEUE: &str = "rewind_compression_queue";
     /// Every feature this host knows, for manifests and release notes.
-    pub const ALL: [&str; 8] = [
+    pub const ALL: [&str; 9] = [
         FLUSH_STORAGE,
         EVENT_SUBSCRIPTIONS,
         GPU_CAPTURE_LEVELS,
@@ -122,6 +124,7 @@ pub mod feature {
         DETERMINISTIC_ASYNC,
         GPU_MEMORY,
         ANALOG_INPUT,
+        REWIND_COMPRESSION_QUEUE,
     ];
 }
 
