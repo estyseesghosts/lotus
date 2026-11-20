@@ -4,6 +4,19 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## v0.1.0
+
+Silvestris is the default desktop and Settings renderer. New profiles use
+Aqua Light. The theme can be changed live, and the legacy renderer remains
+available as a build option. See [38](38-silvestris-adoption.md).
+
+Native pins: integration (AZAHAR) `5ecbd982`, experimental (CITnLO)
+`a3994c1d`. Both workers avoid blocking Vulkan preview between playback
+batches (#6) and report Windows adapter-wide memory pressure (#46).
+Lotus suspends preview polling while its window is hidden (#25). CITnLO
+supports a bounded rewind compression queue, and Lotus frees rewind
+and GPU-capture slots when a worker exits (#32).
+
 ## v0.0.7 (2026-11-19)
 
 Pins unchanged from v0.0.6: integration (AZAHAR) `b04d8a6c`, experimental

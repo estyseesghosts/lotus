@@ -5,6 +5,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import tomllib
 import zipfile
 
 
@@ -39,13 +40,18 @@ def archive(destination, repository, revision, prefix):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--experimental-source", type=Path, help="CITnLO checkout with recursive submodules")
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(args.output)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     root = Path(__file__).resolve().parents[1]
+    pins = tomllib.loads((root / "config/pins.toml").read_text(encoding="utf-8"))["azahar"]
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as destination:
         archive(destination, root, "HEAD", "LOTUS-source/")
+        if args.experimental_source:
+            archive(destination, args.experimental_source, pins["experimental_commit"],
+                    "LOTUS-source/vendor/citnlo/")
     print(args.output)
 
 

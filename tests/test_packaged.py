@@ -37,7 +37,7 @@ from mcp_client import Client  # noqa: E402
 EXPECTED = {
     "azahar": {"flush_storage", "deterministic_async", "analog_input"},
     "citnlo": {"flush_storage", "event_subscriptions", "gpu_capture_levels", "state_hash",
-               "deterministic_async", "analog_input"},
+               "deterministic_async", "analog_input", "rewind_compression_queue"},
 }
 BUILD_DEPENDENT = {"preview_nonblocking", "gpu_memory"}
 

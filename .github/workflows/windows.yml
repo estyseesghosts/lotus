@@ -217,7 +217,15 @@ jobs:
           python tests/test_packaged.py --zip "build/dist/LOTUS-v$version-windows-x64.zip" build/fixture/debugger.3dsx build/fixture/debugger.elf build/packaged
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item build/packaged/packaged.json "build/dist/LOTUS-v$version-packaged-acceptance.json"
-          python scripts/archive-source.py "build/dist/LOTUS-v$version-source.zip"
+          Import-Module ./scripts/Pins.psm1
+          $pins = (Read-Pins config/pins.toml)['azahar']
+          git clone --no-checkout --filter=blob:none $pins['fork'] build/citnlo-source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C build/citnlo-source checkout --detach $pins['experimental_commit']
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C build/citnlo-source submodule update --init --recursive --depth 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts/archive-source.py "build/dist/LOTUS-v$version-source.zip" --experimental-source build/citnlo-source
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-ChildItem build/dist/*.zip, build/dist/*.json | ForEach-Object { "$((Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $($_.Name)" } | Set-Content build/dist/SHA256SUMS.txt
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -258,5 +266,12 @@ jobs:
           # linux.yml may have created the release first (#108); never overwrite an asset.
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) { gh release upload $tag @assets build/dist/SHA256SUMS.txt }
-          else { gh release create $tag @assets build/dist/SHA256SUMS.txt @verify --target $env:GITHUB_SHA --title "LOTUS $tag" --notes-file packaging/release-notes.md }
+          else {
+            gh release create $tag @assets build/dist/SHA256SUMS.txt @verify --target $env:GITHUB_SHA --title "LOTUS $tag" --notes-file packaging/release-notes.md
+            if ($LASTEXITCODE -ne 0) {
+              gh release view $tag *> $null
+              if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+              gh release upload $tag @assets build/dist/SHA256SUMS.txt
+            }
+          }
           exit $LASTEXITCODE

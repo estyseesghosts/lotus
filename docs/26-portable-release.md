@@ -52,8 +52,9 @@ Local native fixture results and stock comparisons remain in
 deferred at the user's instruction. Audio playback and hardware accuracy are not
 claimed. Rollback is extracting an earlier ZIP; preserve `data/` when upgrading.
 
-Corresponding source: the tag's LOTUS tree, pinned fork commits and recursive
-submodules, plus Cargo.lock's exact Rust sources. The source ZIP excludes Git
+Corresponding source: the tag's LOTUS tree, AZAHAR under `vendor/azahar` and
+CITnLO under `vendor/citnlo`, each at its pinned revision with recursive
+submodules. Cargo.lock identifies the exact Rust dependencies. The source ZIP excludes Git
 metadata; use `git clone --branch v0.0.3 --recurse-submodules
 https://github.com/estyseesghosts/lotus.git` for the Git-based build scripts.
 
