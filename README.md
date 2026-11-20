@@ -10,6 +10,8 @@ currently, this is more of a debugging and MCP wrapper around azahar.
 
 eventual goal is to replace azahar/CITnLO with a more hardware-accurate emulator.
 
+if you like the UI, check out [silvestris](https://github.com/estyseesghosts/silvestris)
+
 ### quick start
 
 1. download `LOTUS-v<version>-windows-x64.zip` from [releases](https://github.com/estyseesghosts/lotus/releases) (Windows 11 x64)
