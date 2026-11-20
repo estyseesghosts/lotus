@@ -14,6 +14,8 @@ if you like the UI, check out [silvestris](https://github.com/estyseesghosts/sil
 
 ### quick start
 
+currently, lotus only supports x64, and only windows and linux. 
+
 1. download `LOTUS-v<version>-windows-x64.zip` from [releases](https://github.com/estyseesghosts/lotus/releases) (Windows 11 x64)
 2. extract it anywhere writable and run `LOTUS.cmd`
 3. open your own `.3dsx` homebrew from the sidebar and press Space to run
