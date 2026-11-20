@@ -209,6 +209,7 @@ pub struct SessionSummary {
 /// A session's lock domain. Lock order: `native`, then `info`, `mailbox`, `telemetry`.
 struct SessionHandle {
     info: Mutex<SessionInfo>,
+    budgets: Arc<crate::policy::Budgets>,
     root: PathBuf,
     native: tokio::sync::Mutex<NativeSession>,
     telemetry: Mutex<Telemetry>,
@@ -249,6 +250,9 @@ impl SessionHandle {
     }
     fn telemetry(&self) -> MutexGuard<'_, Telemetry> {
         lock(&self.telemetry)
+    }
+    fn release_tool_budgets(&self) {
+        self.budgets.release(&lock(&self.info).id);
     }
     fn record(&self, actor: Actor, operation: &str) {
         self.telemetry().record(actor, operation);
@@ -318,7 +322,7 @@ pub struct Supervisor {
     /// Serializes shader seed publication between concurrent clean stops.
     shader_publish: tokio::sync::Mutex<()>,
     /// Holders of the expensive-tool budgets and the snapshot slots.
-    budgets: crate::policy::Budgets,
+    budgets: Arc<crate::policy::Budgets>,
     /// Session whose worker runs at raised priority (`policy.focus_priority`).
     focused: Mutex<Option<String>>,
     /// Saved global and card settings (lotus#51).
@@ -386,7 +390,7 @@ impl Supervisor {
             closing: AtomicBool::new(false),
             frontend_metrics: Mutex::default(),
             shader_publish: tokio::sync::Mutex::default(),
-            budgets: crate::policy::Budgets::new(policy),
+            budgets: Arc::new(crate::policy::Budgets::new(policy)),
             focused: Mutex::default(),
             workspace: Mutex::default(),
             workspace_resolved: Mutex::default(),
@@ -677,6 +681,7 @@ impl Supervisor {
             .contains(lotus_protocol::capabilities::feature::ANALOG_INPUT);
         let handle = Arc::new(SessionHandle {
             info: Mutex::new(info.clone()),
+            budgets: self.budgets.clone(),
             root,
             native: tokio::sync::Mutex::new(native),
             telemetry: Mutex::new(telemetry),
@@ -2353,6 +2358,9 @@ fn check_debug_target(expected: Option<(u64, u64)>, created: u64, epoch: u64) ->
 }
 
 fn observe(handle: &SessionHandle, native: &NativeSession, status: &serde_json::Value) {
+    if !native.state().is_active() {
+        handle.release_tool_budgets();
+    }
     let mut telemetry = handle.telemetry();
     telemetry.playing = handle.is_playing();
     telemetry.observe(status, native.state(), native.epoch(), Instant::now());

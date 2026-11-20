@@ -147,6 +147,14 @@ mean restore time across intervals was 193–199 ms for Old 3DS and
 Lotus reported the failure and each sibling advanced 15 frames and took two
 more checkpoints after Lotus observed the exit. All three answered register
 requests and returned both screen artifacts (`runs/r32-failure-final-02`).
+With a four-session rewind limit, the same test on CITnLO `9e6d051`
+verified that each survivor took another five checkpoints and returned both
+screen artifacts. A replacement started recording in the released slot
+while the failed session and its report remained visible
+(`runs/r32-crashed-budget-live`, verified emulator). The host process test
+`crashed_worker_releases_tool_budgets_before_unregistering` reproduced the
+stale rewind and GPU-capture slots before the fix
+(`runs/r32-crashed-budget-before.log`, verified compiled).
 
 Debugger and save-state round trips passed on Old and New 3DS
 (`runs/r32-debugger-676e395`, `runs/r32-format-roundtrip-676e395`).

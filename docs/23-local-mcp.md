@@ -97,6 +97,8 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
   An explicit depth requires the worker's `rewind_compression_queue` feature.
   The stored history has its own `budget_mib` limit. See [#32](34-performance-and-issue-triage.md#32-async-rewind-compression).
 - `gpu_capture_sessions`: sessions with `gpu_configure` above `counters`.
+  When Lotus observes a worker exit, it releases both the rewind and
+  GPU-capture slots. The failed session and its report stay available.
 - `snapshot_slots`: one-shot full-state work host-wide (`save_state`,
   `load_state`, `fork`, `matrix`, copying a card for a secondary). Extra requests
   wait up to `snapshot_wait_ms`, then fail with the reason.

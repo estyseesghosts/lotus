@@ -87,6 +87,7 @@ async fn poll(handle: &SessionHandle, due: Instant, started: Instant, wait: bool
         return Next::Inactive;
     }
     if !native.state().is_active() {
+        handle.release_tool_budgets();
         handle.set_playing(false);
         let mut telemetry = handle.telemetry();
         telemetry.state = native.state();
@@ -107,17 +108,17 @@ async fn poll(handle: &SessionHandle, due: Instant, started: Instant, wait: bool
     let status = match status {
         Ok(status) => status,
         Err(error) => {
+            let active = native.state().is_active();
+            if !active {
+                handle.release_tool_budgets();
+            }
             handle.set_playing(false);
             let mut telemetry = handle.telemetry();
             telemetry.state = native.state();
             telemetry.last_error = error.to_string();
             telemetry.failure = native.failure().map(super::failure_value);
             telemetry.supervision.status_failures += 1;
-            return if native.state().is_active() {
-                Next::Period
-            } else {
-                Next::Inactive
-            };
+            return if active { Next::Period } else { Next::Inactive };
         }
     };
     observe(handle, &native, &status);

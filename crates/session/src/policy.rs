@@ -131,9 +131,20 @@ struct Holders {
 }
 
 impl Holders {
+    /// Ended sessions stay here only until their outstanding permits are dropped.
+    fn live_pending<'a>(
+        &'a self,
+        ended: &'a BTreeSet<String>,
+    ) -> impl Iterator<Item = (&'a String, &'a usize)> {
+        self.pending.iter().filter(|(id, _)| !ended.contains(*id))
+    }
+
     /// Sessions that consume the budget: active or with an enable in flight.
-    fn occupied(&self) -> BTreeSet<&String> {
-        self.active.iter().chain(self.pending.keys()).collect()
+    fn occupied<'a>(&'a self, ended: &'a BTreeSet<String>) -> BTreeSet<&'a String> {
+        self.active
+            .iter()
+            .chain(self.live_pending(ended).map(|(id, _)| id))
+            .collect()
     }
 }
 
@@ -146,6 +157,13 @@ struct Ledger {
 }
 
 impl Ledger {
+    fn holders(&self, tool: Tool) -> &Holders {
+        match tool {
+            Tool::Rewind => &self.rewind,
+            Tool::GpuCapture => &self.gpu,
+        }
+    }
+
     fn tool(&mut self, tool: Tool) -> &mut Holders {
         match tool {
             Tool::Rewind => &mut self.rewind,
@@ -268,12 +286,12 @@ impl Budgets {
             return Ok(permit);
         }
         let mut ledger = self.ledger();
-        let holders = ledger.tool(tool);
-        let occupied = holders.occupied();
+        let holders = ledger.holders(tool);
+        let occupied = holders.occupied(&ledger.ended);
         if let Some(limit) = limit {
             if !occupied.contains(&session.to_string()) && occupied.len() >= limit {
                 let users: Vec<String> = occupied.into_iter().cloned().collect();
-                let pending = holders.pending.len();
+                let pending = holders.live_pending(&ledger.ended).next().is_some();
                 drop(ledger);
                 let mut permit = permit;
                 permit.pending = false;
@@ -287,7 +305,7 @@ impl Budgets {
                         tool.name(),
                         users.len(),
                         users.join(", "),
-                        if pending > 0 {
+                        if pending {
                             ", including enables in flight"
                         } else {
                             ""
@@ -300,7 +318,11 @@ impl Budgets {
                 ));
             }
         }
-        *holders.pending.entry(session.to_string()).or_default() += 1;
+        *ledger
+            .tool(tool)
+            .pending
+            .entry(session.to_string())
+            .or_default() += 1;
         Ok(permit)
     }
 
@@ -366,9 +388,10 @@ impl Budgets {
         serde_json::json!({
             "workload": self.policy.workload,
             "rewind": {"limit": self.policy.rewind_limit(), "sessions": ledger.rewind.active,
-                "pending": ledger.rewind.pending},
+                "pending": ledger.rewind.live_pending(&ledger.ended).collect::<BTreeMap<_, _>>()},
             "gpu_capture": {"limit": self.policy.gpu_capture_limit(),
-                "sessions": ledger.gpu.active, "pending": ledger.gpu.pending},
+                "sessions": ledger.gpu.active,
+                "pending": ledger.gpu.live_pending(&ledger.ended).collect::<BTreeMap<_, _>>()},
             "snapshots": {"limit": self.policy.snapshot_limit(), "in_use": in_use,
                 "queued": self.queued.load(std::sync::atomic::Ordering::Relaxed)},
             "refused": self.refused.load(std::sync::atomic::Ordering::Relaxed),
@@ -700,13 +723,18 @@ mod tests {
         let b = budgets.reserve(Tool::GpuCapture, "b", true).expect("free");
         // The session ends while its enable is in flight: the late commit is ignored.
         budgets.release("b");
+        let status = budgets.status(&Memory::default(), &GpuMemory::default());
+        assert!(status["gpu_capture"]["pending"]
+            .as_object()
+            .unwrap()
+            .is_empty());
+        let c = budgets
+            .reserve(Tool::GpuCapture, "c", true)
+            .expect("slot freed on exit");
         b.commit(true);
         assert!(active(&budgets, Tool::GpuCapture).is_empty());
         assert!(budgets.ledger().ended.is_empty(), "no leaked end markers");
-        budgets
-            .reserve(Tool::GpuCapture, "c", true)
-            .expect("nothing leaked")
-            .commit(true);
+        c.commit(true);
     }
 
     #[tokio::test]

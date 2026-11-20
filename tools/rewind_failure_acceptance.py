@@ -1,4 +1,4 @@
-"""Verify native rewind in three surviving sessions after a fourth worker dies (#32)."""
+"""Verify native rewind continuity and reuse of a crashed worker's slot (#32)."""
 import argparse
 import hashlib
 import json
@@ -23,8 +23,8 @@ def run(server, worker, rom, root):
     config = root / "host.json"
     config.write_text(json.dumps({
         "worker": str(worker), "storage_root": str(root / "storage"),
-        "allow_control": True, "assets": {"rom": str(rom)}, "max_sessions": 4,
-        "prefer_vulkan": True, "policy": {"workload": "batch"},
+        "allow_control": True, "assets": {"rom": str(rom)}, "max_sessions": 5,
+        "prefer_vulkan": True, "policy": {"workload": "batch", "rewind_sessions": 4},
         "profile": {"graphics_api": 2, "init_clock": INIT_CLOCK_FIXED, "frame_limit": 100},
     }))
     frontend = frontend_for("headless", {"headless": server}, config, root)
@@ -38,11 +38,14 @@ def run(server, worker, rom, root):
             tool(frontend, "lotus_create_session", {"kind": "secondary", "asset": "rom"})["session"]
             for _ in range(4)
         ]
-        for session in sessions:
+        def record(session):
             status = rewind(session, "rewind_configure", enabled=True, capacity=32, budget_mib=64,
                             interval_frames=5, compression_queue=1)
             assert status["compression_queue"] == 1, status
             tool(frontend, "lotus_control", {"session": session, "operation": "run"})
+
+        for session in sessions:
+            record(session)
 
         baseline = {}
 
@@ -64,6 +67,8 @@ def run(server, worker, rom, root):
         subprocess.run(["taskkill", "/F", "/PID", str(victim_pid)], check=True, timeout=10)
         failure = wait_until(lambda: rows(frontend)[victim]["telemetry"].get("failure"))
         assert failure["cause"] == "abort" and failure["exit_code"], failure
+        policy = tool(frontend, "lotus_status", {})["policy"]["rewind"]
+        assert policy["limit"] == 4 and set(policy["sessions"]) == set(survivors), policy
         observed_failure = rows(frontend)
         at_failure = {
             session: {"frames": observed_failure[session]["telemetry"]["frames"], "history": rewind(session)}
@@ -95,10 +100,26 @@ def run(server, worker, rom, root):
             })
             assert not capture.get("isError") and len(capture["content"]) == 2, capture
             assert all(item["type"] == "resource_link" for item in capture["content"]), capture
+        replacement = tool(frontend, "lotus_create_session", {
+            "kind": "secondary", "asset": "rom",
+        })["session"]
+        record(replacement)
+
+        def replacement_recording():
+            history = rewind(replacement)
+            return history if history["checkpoints"] >= 3 else None
+
+        replacement_history = wait_until(replacement_recording)
+        status = tool(frontend, "lotus_status", {})
+        assert set(status["policy"]["rewind"]["sessions"]) == set(survivors + [replacement]), status
+        assert any(row["id"] == victim and row["telemetry"]["failure"]
+                   for row in status["sessions"]), status
+        tool(frontend, "lotus_control", {"session": replacement, "operation": "stop"})
         for session in survivors:
             tool(frontend, "lotus_control", {"session": session, "operation": "stop"})
         return {"failed_session": victim, "failure": failure, "before": baseline,
-                "at_failure": at_failure, "after": after}
+                "at_failure": at_failure, "after": after,
+                "replacement": {"session": replacement, "history": replacement_history}}
     finally:
         frontend.close()
 
@@ -113,7 +134,7 @@ def main():
     report["sha256"] = {name: hashlib.sha256(path.read_bytes()).hexdigest()
                         for name, path in vars(args).items() if name != "output"}
     (root / "report.json").write_text(json.dumps(report, indent=2) + "\n")
-    print("One worker failed and all three siblings kept recording rewind and returned both screens.")
+    print("Three siblings kept recording rewind and returned both screens. A replacement reused the failed worker's slot.")
 
 
 if __name__ == "__main__":

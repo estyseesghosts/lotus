@@ -396,6 +396,74 @@ async fn concurrent_rewind_enables_respect_the_budget() {
         .expect("budget was not leaked");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn crashed_worker_releases_tool_budgets_before_unregistering() {
+    use lotus_protocol::debug::{DebugCommand, GpuCapture};
+    use lotus_session::SessionState;
+
+    let fixture = host_with("crashed-budget", 2, |config| {
+        config.policy.rewind_sessions = Some(1);
+        config.policy.gpu_capture_sessions = Some(1);
+    });
+    let ids = fixture.running(2).await;
+    let commands = [
+        DebugCommand::RewindConfigure {
+            enabled: true,
+            capacity: 8,
+            budget_mib: 64,
+            interval_frames: None,
+            compression_level: None,
+            compression_queue: None,
+        },
+        DebugCommand::GpuConfigure {
+            enabled: true,
+            stop_events: Vec::new(),
+            capture: Some(GpuCapture::Events),
+            draw_range: None,
+            max_draws: None,
+            resources: None,
+        },
+    ];
+    for command in &commands {
+        fixture
+            .host
+            .debug(&ids[0], command, Actor::Host)
+            .await
+            .expect("enable");
+        let error = fixture
+            .host
+            .debug(&ids[1], command, Actor::Host)
+            .await
+            .expect_err("budget full");
+        assert_eq!(error.kind(), std::io::ErrorKind::ResourceBusy);
+    }
+    std::fs::write(fixture.root(&ids[0]).join("mock-exit-code"), "3").expect("exit");
+    until("crash is reported", || {
+        telemetry(&fixture.host, &ids[0]).state == SessionState::Crashed
+    })
+    .await;
+
+    let status = fixture.host.policy_status();
+    for name in ["rewind", "gpu_capture"] {
+        assert!(
+            status[name]["sessions"].as_array().unwrap().is_empty(),
+            "{status}"
+        );
+    }
+    assert_eq!(
+        telemetry(&fixture.host, &ids[0]).failure.unwrap()["exit_code"],
+        3
+    );
+    for command in &commands {
+        fixture
+            .host
+            .debug(&ids[1], command, Actor::Host)
+            .await
+            .expect("slot freed on exit");
+    }
+    fixture.host.close().await;
+}
+
 async fn futures_join(
     host: &Arc<Supervisor>,
     ids: &[String],
