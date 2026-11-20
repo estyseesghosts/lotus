@@ -160,6 +160,7 @@ def device_local(gpu_memory):
     heaps = [heap for heap in gpu_memory["heaps"] if heap["device_local"]]
     return dict(budget_source=gpu_memory["budget_source"],
                 allocation_failures=gpu_memory["allocation_failures"],
+                adapter_dedicated_usage_bytes=gpu_memory.get("adapter_dedicated_usage_bytes"),
                 block_bytes=sum(heap["block_bytes"] for heap in heaps),
                 block_bytes_high_water=sum(heap["block_bytes_high_water"] for heap in heaps))
 
@@ -191,7 +192,7 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
     config = root / "host.json"
     config.write_text(json.dumps({
         "worker": str(worker), "storage_root": str(root / "storage"), "allow_control": True,
-        "max_sessions": max(count + args.idle + 1, 4), "assets": {name: str(path) for name, path in roms},
+        "max_sessions": max(count + args.idle, 4), "assets": {name: str(path) for name, path in roms},
         "prefer_vulkan": renderer == "vulkan", "shader_seed": args.shader_cache == "seeded",
         "profile": profile,
         "policy": {"workload": args.workload, "focus_priority": args.focus_priority}}))
@@ -208,7 +209,11 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
         for index in range(count + args.idle):
             asset = roms[index % len(roms)][0]
             created_at = time.perf_counter()
-            session = tool(frontend, "lotus_create_session", {"kind": "secondary", "asset": asset})["session"]
+            _, reply, error = call(frontend, "lotus_create_session", {"kind": "secondary", "asset": asset})
+            if error:
+                return dict(status="create_failed", error=error, sessions_created=len(sessions),
+                            gpu_memory_after=gpu_policy(frontend))
+            session = reply["session"]
             sessions.append(dict(id=session, asset=asset, create_seconds=time.perf_counter() - created_at,
                                  idle=index >= count))
         if kind == "desktop" or args.focus_priority:
@@ -300,7 +305,8 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                 if sid not in stalled else (0, None, None)
             results.append(dict(
                 session, stalled=sid in stalled, fps=(t1["frames"] - t0["frames"]) / elapsed,
-                state=t1["state"], renderer=t1["renderer"], renderer_fallback=t1["renderer_fallback"],
+                state=t1["state"], failure=t1.get("failure"), renderer=t1["renderer"],
+                renderer_fallback=t1["renderer_fallback"],
                 gpu_memory=device_local(t1.get("gpu_memory")),
                 command=percentiles(commands[sid]), input=percentiles(inputs[sid]),
                 errors=errors[sid][:4], error_count=len(errors[sid]), supervision=supervision,
@@ -412,6 +418,9 @@ def main():
     pairs = lambda values: [(name, Path(path).resolve()) for name, path in (v.split("=", 1) for v in values)]
     workers, roms = pairs(args.worker), pairs(args.rom)
     counts = args.workers or [1, 2, 4]
+    # supervisor.rs accepts at most 16 sessions, including paused sessions.
+    if args.idle < 0 or any(count < 1 or count + args.idle > 16 for count in counts):
+        parser.error("each --workers count must be positive and total sessions including --idle must be at most 16")
     renderers = args.renderer or ["vulkan"]
     models = args.model or ["old"]
     configs = args.config or ["off"]

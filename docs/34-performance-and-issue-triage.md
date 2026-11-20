@@ -66,7 +66,7 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
 
   Busy host, t03 Vulkan unthrottled, not acceptance evidence (`runs/bp-real-04`): aggregate 1788 / 3058 / 5075 fps at N = 1 / 2 / 4 (per session 1788 / 1529 / 1274), command p50 0.5–0.6 ms, no late polls, about 961 MiB working set per worker. Two paused sessions next to two running ones used 0.002–0.008 CPU s/s and 938 MiB each (`runs/bp-idle-01`). One armed write watchpoint (`watch_write_1`) puts CITnLO into instruction stepping: 0.4 fps per session.
 - #23 host policy (`crates/session/src/policy.rs`, docs/23): `interactive` (default) allows 2 rewind sessions, 2 GPU-capture sessions above `counters` and 2 concurrent full-state operations; `batch` has no budgets. New sessions need available RAM above `memory_reserve_mib` plus the largest worker working set. Optional above-normal priority for the focused session's worker. `tests/test_mcp_policy.py` passes against CITnLO (`runs/policy-01`, verified emulator).
-- #46 Vulkan allocation failure. The pinned fork called `UNREACHABLE()` when `vmaCreateImage` failed (`vk_texture_runtime.cpp`), which ended the 4-worker run in docs/36. CITnLO now turns allocation failures and device loss into a typed failure (`vk_gpu_error.h`, `vk_gpu_status.h`): the texture runtime, swapchain/present, stream buffers, pipeline builds, scheduler and master semaphore report it instead of aborting. The worker writes one `worker_gpu_error: {json}` stderr line (cause, `VkResult`, object, frame, heap budgets) and exits with code 4, and Lotus classifies it (`failure.rs`, `telemetry.failure.gpu`). The worker exits instead of unwinding because a draw that allocates is called from guest code: gdb on an injected failure showed `Draw` ← GSP ← SVC ← a dynarmic JIT frame, and the C++ exception died there (exit 0x20474343, MinGW's unhandled-exception code); JIT frames carry no SEH unwind data. Injection: `CTR_WORKER_VK_FAIL_ALLOC=N` fails the Nth Vulkan image/buffer allocation, `=file` reads N from `<root>/vk-fail-alloc`. Swept N = 1–14 on t03: every case reported `vulkan_out_of_memory` with exit 4. Before the failure handler existed, N = 1–2 (inside the rasterizer cache constructor) ended in 0xc0000409 rather than an exception; the cause was not established. Four sessions with one failing mid-scene: the other three kept advancing and capturing. AZAHAR carries the same change (`4f441bcdb`) and passes both checks: first allocation fails at load as `vulkan_out_of_memory`, and mid-scene session A fails on `present frame 400x240` with its report while three siblings advance 194 → 317 frames and capture (verified emulator, both workers). Status reports `gpu_memory` (VMA heap budgets, `VK_EXT_memory_budget` or labelled `vma_estimate`, live and high-water device-memory bytes, failed allocations) and the host admits new Vulkan sessions on that headroom (docs/23). Not done: the 1/2/4/8/16 sweep and a run under a controlled external VRAM load.
+- #46 Vulkan allocation failure. The pinned fork called `UNREACHABLE()` when `vmaCreateImage` failed (`vk_texture_runtime.cpp`), which ended the 4-worker run in docs/36. CITnLO now turns allocation failures and device loss into a typed failure (`vk_gpu_error.h`, `vk_gpu_status.h`): the texture runtime, swapchain/present, stream buffers, pipeline builds, scheduler and master semaphore report it instead of aborting. The worker writes one `worker_gpu_error: {json}` stderr line (cause, `VkResult`, object, frame, heap budgets) and exits with code 4, and Lotus classifies it (`failure.rs`, `telemetry.failure.gpu`). The worker exits instead of unwinding because a draw that allocates is called from guest code: gdb on an injected failure showed `Draw` ← GSP ← SVC ← a dynarmic JIT frame, and the C++ exception died there (exit 0x20474343, MinGW's unhandled-exception code); JIT frames carry no SEH unwind data. Injection: `CTR_WORKER_VK_FAIL_ALLOC=N` fails the Nth Vulkan image/buffer allocation, `=file` reads N from `<root>/vk-fail-alloc`. Swept N = 1–14 on t03: every case reported `vulkan_out_of_memory` with exit 4. Before the failure handler existed, N = 1–2 (inside the rasterizer cache constructor) ended in 0xc0000409 rather than an exception; the cause was not established. Four sessions with one failing mid-scene: the other three kept advancing and capturing. AZAHAR carries the same change (`4f441bcdb`) and passes both checks: first allocation fails at load as `vulkan_out_of_memory`, and mid-scene session A fails on `present frame 400x240` with its report while three siblings advance 194 → 317 frames and capture (verified emulator, both workers). Status reports `gpu_memory` (VMA heap budgets, `VK_EXT_memory_budget` or labelled `vma_estimate`, live and high-water device-memory bytes, failed allocations) and the host admits new Vulkan sessions on that headroom (docs/23). See the [packaged sweep and controlled external load](#46-packaged-vulkan-worker-scaling).
 - #25 non-blocking Vulkan preview (CITnLO `58e00ed1`, AZAHAR `ed51b869`, Lotus `9f39e16`). A running preview never waits for the GPU: three staging slots per screen, the newest finished one is copied, a request that finds none ready repeats the last slot (`new_frame: false`). Only the selected session is previewed. `preview_acceptance` asserts `gpu_waits` does not move over 120 running previews (both workers, `runs/preview-wait-*-01`); max lag 2 frames.
 - #28 card copies (`995e988`): a secondary created together with its card's primary waits up to 30 s for the primary to commit, instead of failing with "still being mounted".
 - #26 event delivery, with proposal #33 (CITnLO `0cef6413`, AZAHAR `9016f8ab`). Workers wrote each reply and notification on the thread that produced it, so emulation stopped when the host stopped reading, and every PICA, SVC and log event was built as JSON and written whether or not anyone used it. Now a `ControlWriter` thread (`transport.h`, both branches) writes every frame. Replies and `stopped` keep their order and are never dropped. Other notifications are best effort: at most 1024 queued, the oldest dropped first, counted in `notifications_dropped` and `status.transport`. CITnLO groups events into the categories `stopped`, `log`, `native_log`, `svc`, `ipc` and `pica`. hello `subscriptions` and `events_configure` (`notify`, `history`; accepted before load) choose which categories are pushed and which are kept for `events`/`logs`, and producers skip any category nobody wants. `stop_reason.sequence` ties `status.stop` to its notification. Lotus subscribes to `stopped` only, because the GDB server is the only consumer of pushed events. The protocol refuses a `notify` set without `stopped`. Fixture mode 8 floods svcOutputDebugString at a `log_mask` rate; `tools/event_flood.py` drives it.
@@ -156,6 +156,57 @@ fixture memory and screen hashes against the pinned worker
 `676e395` was rejected by the source pin check before deserialization
 (`runs/r32-format-final`). The 0.1.0 CITnLO package uses `c3422b0a`.
 Queue depth configuration requires the newer experimental worker.
+
+### #46 Packaged Vulkan worker scaling
+
+Verified emulator on Windows 11 with the Ryzen 5 3600 and Radeon RX 9060 XT
+(driver 32.0.32029.2010). The Lotus 0.1.0 package ran unthrottled Old 3DS t03
+through the batch MCP host with rewind off, a five-second warm-up and one
+20-second sample per row. The package's worker build manifests record
+CITnLO `c3422b0a` and AZAHAR `b04d8a6`. Both are WinLibs GNU Release
+builds with Vulkan and software enabled, Qt, SDL2, OpenGL, Libretro and LTO
+disabled. Host CPU load was 3.6% before and 7.7% after the sweep.
+
+| Workers | CITnLO aggregate fps | AZAHAR aggregate fps |
+| --- | ---: | ---: |
+| 1 | 1817 | 1837 |
+| 2 | 3484 | 3435 |
+| 4 | 5475 | 5603 |
+| 8 | 7721 | 7332 |
+| 16 | 9194 | 9098 |
+
+All ten trials used Vulkan and had zero command, input or allocation
+failures. Each worker reached 32 MiB of device-local VMA blocks. The
+packaged workers reported 15,301 MiB of budget headroom at every count.
+See `runs/r46-packaged-sweep-02/report.json` for binary hashes and per-session
+throughput, latency and memory.
+
+The same Radeon driver kept reporting 15,301 MiB of Vulkan headroom while an
+independent D3D12 process held 2 GiB of dedicated allocations. Querying
+`VK_EXT_memory_budget` directly gave the same value as the packaged worker's
+VMA cache (`runs/r46-pressure-live-01`, `runs/r46-pressure-live-02`).
+CITnLO `9e6d051` also samples WDDM's `GPU Adapter Memory` dedicated usage on
+the Vulkan adapter's LUID, at most twice a second per worker. Lotus uses the
+smaller of that estimate and Vulkan's. The counter is optional. See
+[host admission](23-local-mcp.md).
+
+With four existing Vulkan sessions, the 2 GiB load reduced estimated headroom
+from 15,074 to 13,000 MiB, below the test reserve of 14,700 MiB. Lotus refused a
+new explicit Vulkan session and started a Vulkan-preferred session on software
+before guest load in a separate run. The four existing sessions accepted input,
+advanced frames and returned both screen artifacts in both runs. New Vulkan
+sessions were admitted again after the load was released
+(`runs/r46-pressure-live-03`, repeated with the committed harness in
+`runs/r46-pressure-citnlo`, verified emulator).
+
+The regression uses the Windows SDK/WinLibs and the same t03 fixture.
+Choose a reserve between the test adapter's idle and loaded headroom.
+
+```powershell
+g++ -std=c++20 -O2 -static tools/wddm_pressure.cpp -o runs/wddm-pressure.exe -ld3d12 -ldxgi -ldxguid
+python tools/vulkan_pressure_acceptance.py --server <lotus-mcp.exe> --worker <ctr-worker.exe> `
+  --allocator runs/wddm-pressure.exe --rom C:\abs\t03.3dsx --reserve-mib 14700 --output runs/r46-pressure
+```
 
 ## Quiet-machine timing runs
 

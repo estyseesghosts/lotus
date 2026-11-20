@@ -106,14 +106,15 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
   is the next item.
 - `gpu_admission`, `gpu_reserve_mib` (#46): a new Vulkan session needs
   device-local headroom of at least the largest running session's device-local
-  high-water mark plus `gpu_reserve_mib`. Headroom is `budget - usage` of the
-  largest device-local heap from each Vulkan session's `telemetry.gpu_memory`,
-  smallest over sessions. Only `VK_EXT_memory_budget` budgets are used: they are
-  the driver's figure for this process given every other process on the device,
-  so other GPU consumers count. Without the extension the worker reports
-  `budget_source: "vma_estimate"` (VMA's 80 % of the heap from its own usage,
-  blind to other processes); it is shown but never refuses. With no Vulkan
-  session running nothing is measured and nothing is refused. Under pressure a
+  high-water mark plus `gpu_reserve_mib`. The host takes the smallest headroom
+  estimate from the running Vulkan sessions. On the largest device-local heap
+  it uses `budget - usage` from `VK_EXT_memory_budget` when present. On Windows,
+  a supported single-node discrete Vulkan adapter also reports WDDM dedicated
+  usage across processes, matched by adapter LUID. The host subtracts that
+  usage from heap size and uses the lower estimate.
+  `headroom_source` identifies the estimate in use. If neither source is
+  available, admission has no measured headroom and VMA's estimate is displayed
+  as telemetry. Measuring starts with the first Vulkan session. Under pressure a
   session that only prefers Vulkan (`prefer_vulkan`, no `graphics_api` in the
   profile) is created on software before load, with the reason in
   `telemetry.renderer_fallback`; a profile with `graphics_api: 2` is refused
@@ -124,7 +125,7 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
 
 `lotus_status.policy` lists limits, holders, slots in use and queued, refusals
 memory (available, reserve, estimate, pressure) and `gpu_memory`
-(`budget_source`, `headroom_mib`, `estimate_mib`, `reserve_mib`,
+(`budget_source`, `headroom_source`, `headroom_mib`, `estimate_mib`, `reserve_mib`,
 `allocation_failures`, `pressure`); a session's
 `telemetry.policy_note` holds its last refusal or wait. The desktop previews only
 the selected session (`desktop_controller.rs` `preview_loop`), so hidden sessions

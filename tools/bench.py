@@ -275,6 +275,9 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
 
 
 def manifest(worker):
+    packaged = worker.with_name("build-manifest.json")
+    if packaged.is_file():
+        return json.loads(packaged.read_text(encoding="utf-8"))
     for parent in worker.parents:
         candidate = parent / "lotus-build-manifest.json"
         if candidate.is_file():

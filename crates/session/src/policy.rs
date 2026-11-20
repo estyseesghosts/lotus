@@ -429,18 +429,17 @@ impl Memory {
 /// Device-local GPU memory as seen by admission of a new Vulkan session (lotus#46), from the
 /// running sessions' `status.gpu_memory` (CITnLO `ctr_worker/control.h` `GpuMemory`).
 ///
-/// The headroom is `budget - usage` of the largest device-local heap. With
-/// `VK_EXT_memory_budget` the budget is what the driver lets this process allocate given every
-/// other process on the device (Vulkan specification, `VkPhysicalDeviceMemoryBudgetPropertiesEXT`),
-/// so it covers other GPU consumers; the smallest headroom over sessions is used. Without the
-/// extension VMA estimates the budget as 80 % of the heap from this process's own usage, which
-/// does not see other sessions or processes, so it is reported but never used to refuse.
+/// Headroom is the smallest measured value across sessions. On the largest device-local heap,
+/// `VK_EXT_memory_budget` supplies a per-process headroom estimate. A supported Windows discrete
+/// adapter also reports WDDM dedicated usage across all processes, giving a second estimate
+/// when the Vulkan budget is unchanged by other applications. VMA's own estimate is for telemetry.
 /// With no Vulkan session running there is nothing to measure and nothing is refused.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct GpuMemory {
     /// `VK_EXT_memory_budget`, `vma_estimate`, or null with no Vulkan session.
     pub budget_source: Option<String>,
     pub headroom_mib: Option<u64>,
+    pub headroom_source: Option<&'static str>,
     /// Largest device-local high-water mark of one running session.
     pub estimate_mib: Option<u64>,
     pub reserve_mib: u64,
@@ -462,7 +461,6 @@ impl GpuMemory {
             reserve_mib,
             ..Self::default()
         };
-        let mut measured = false;
         for status in sessions {
             let source = status["budget_source"].as_str().unwrap_or("");
             gpu.allocation_failures += status["allocation_failures"].as_u64().unwrap_or(0);
@@ -487,22 +485,32 @@ impl GpuMemory {
             let largest = heaps
                 .iter()
                 .max_by_key(|heap| heap["size"].as_u64().unwrap_or(0));
-            if let (true, Some(heap)) = (extension, largest) {
-                let headroom = heap["budget"]
+            if let Some(heap) = largest {
+                let vulkan = heap["budget"]
                     .as_u64()
-                    .unwrap_or(0)
-                    .saturating_sub(heap["usage"].as_u64().unwrap_or(0))
-                    >> 20;
-                gpu.headroom_mib = Some(gpu.headroom_mib.map_or(headroom, |h| h.min(headroom)));
-                measured = true;
+                    .zip(heap["usage"].as_u64())
+                    .filter(|_| extension)
+                    .map(|(budget, usage)| (budget.saturating_sub(usage), "VK_EXT_memory_budget"));
+                let wddm = heap["size"]
+                    .as_u64()
+                    .zip(status["adapter_dedicated_usage_bytes"].as_u64())
+                    .map(|(size, usage)| (size.saturating_sub(usage), "WDDM dedicated usage"));
+                if let Some((bytes, source)) = vulkan.into_iter().chain(wddm).min_by_key(|p| p.0) {
+                    let headroom = bytes >> 20;
+                    if gpu.headroom_mib.is_none_or(|current| headroom < current) {
+                        gpu.headroom_mib = Some(headroom);
+                        gpu.headroom_source = Some(source);
+                    }
+                }
             }
         }
         gpu.pressure = enabled
-            && measured
             && gpu
                 .headroom_mib
                 .zip(gpu.estimate_mib)
-                .is_some_and(|(headroom, estimate)| headroom < estimate + reserve_mib);
+                .is_some_and(|(headroom, estimate)| {
+                    headroom < estimate.saturating_add(reserve_mib)
+                });
         gpu
     }
 
@@ -511,9 +519,10 @@ impl GpuMemory {
     pub fn refusal(&self) -> Option<String> {
         self.pressure.then(|| {
             format!(
-                "GPU memory: {} MiB device-local headroom (VK_EXT_memory_budget), a Vulkan session \
+                "GPU memory: {} MiB device-local headroom ({}), a Vulkan session \
                  reached up to {} MiB and policy keeps {} MiB free (policy.gpu_reserve_mib)",
                 self.headroom_mib.unwrap_or(0),
+                self.headroom_source.unwrap_or("unknown"),
                 self.estimate_mib.unwrap_or(0),
                 self.reserve_mib
             )
@@ -762,6 +771,22 @@ mod tests {
         assert!(!gpu.pressure);
         let none = GpuMemory::measure(true, 0, []);
         assert!(none.budget_source.is_none() && !none.pressure);
+    }
+
+    #[test]
+    fn gpu_admission_uses_adapter_usage_when_the_vulkan_budget_stays_high() {
+        let mut session = gpu_status("VK_EXT_memory_budget", 16_000, 300, 500);
+        assert!(!GpuMemory::measure(true, 0, [&session]).pressure);
+        session["adapter_dedicated_usage_bytes"] = (16_000u64 << 20).into();
+        let gpu = GpuMemory::measure(true, 0, [&session]);
+        assert_eq!(gpu.headroom_mib, Some(384));
+        assert_eq!(gpu.headroom_source, Some("WDDM dedicated usage"));
+        assert!(gpu.refusal().unwrap().contains("WDDM dedicated usage"));
+        session["adapter_dedicated_usage_bytes"] = (18_000u64 << 20).into();
+        assert_eq!(
+            GpuMemory::measure(true, 0, [&session]).headroom_mib,
+            Some(0)
+        );
     }
 
     #[test]
