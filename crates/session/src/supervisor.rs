@@ -1222,6 +1222,7 @@ impl Supervisor {
             policy.gpu_reserve_mib,
             summaries
                 .iter()
+                .filter(|summary| summary.telemetry.state.is_active())
                 .filter_map(|summary| summary.telemetry.gpu_memory.as_ref()),
         )
     }
