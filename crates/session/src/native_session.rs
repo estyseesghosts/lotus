@@ -555,13 +555,26 @@ impl NativeSession {
     /// ([`Self::preview_metrics`] `fresh` is then false) or, right after a load or reset,
     /// with no frames yet (an empty list).
     pub async fn preview(&mut self) -> io::Result<(Vec<Frame>, Option<u64>)> {
+        self.preview_with_policy(false).await
+    }
+
+    /// During continuous playback, request a nonblocking preview even between bounded runs.
+    pub(crate) async fn preview_with_policy(
+        &mut self,
+        nonblocking: bool,
+    ) -> io::Result<(Vec<Frame>, Option<u64>)> {
         if !self.shared_preview {
             // An explicit capture is always a new, exact frame.
             let frames = self.capture().await?;
             self.preview_metrics.fresh = true;
             return Ok((frames, None));
         }
-        let data = self.operation(Method::Preview, Value::Null).await?;
+        let params = if nonblocking {
+            serde_json::json!({"nonblocking": true})
+        } else {
+            Value::Null
+        };
+        let data = self.operation(Method::Preview, params).await?;
         let reply: crate::preview_ring::PreviewReply =
             serde_json::from_value(data).map_err(io::Error::other)?;
         self.preview_metrics.observe(&reply);

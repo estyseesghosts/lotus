@@ -10,9 +10,10 @@ The desktop gets an isolated preferences file (no Discord presence, default layo
 host profile; at 100 both frontends normally sit at the guest's 59.83 Hz and only a frontend
 that cannot keep up shows a difference.
 
-Reported per renderer and frontend: median and spread of guest fps, worker working set, and
-the desktop/headless fps ratio. Host metadata and CPU load come from tools/bench.py; a
-busy host (> 15 %) marks the report as not comparable, `--require-idle` refuses to start.
+Reported per renderer and frontend: median and spread of guest fps, worker working set,
+desktop/headless fps ratio, and fresh previews during the measurement.
+Host metadata and CPU load come from tools/bench.py. A busy host (> 15 %) marks
+the report as not comparable. `--require-idle` refuses to start under that load.
 
     python tools/bench_frontends.py --mcp target/release/lotus-mcp.exe \
         --desktop target/release/lotus-desktop.exe --worker <ctr-worker.exe> --rom <abs .3dsx> \
@@ -33,7 +34,7 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench import BUSY, host_metadata, manifest, system_load  # noqa: E402
+from bench import BUSY, INIT_CLOCK_FIXED, host_metadata, manifest, system_load  # noqa: E402
 from desktop_shots import user32, window_of  # noqa: E402
 
 WM_CLOSE = 0x0010
@@ -102,7 +103,8 @@ def trial(kind, exe, worker, rom, renderer, root, warmup, seconds, frame_limit):
     config.write_text(json.dumps({"worker": str(worker), "storage_root": str(root / "storage"),
                                   "allow_control": True, "assets": {"rom": str(rom)},
                                   "prefer_vulkan": renderer == "vulkan",
-                                  "profile": {"frame_limit": frame_limit}}))
+                                  "profile": {"graphics_api": 2 if renderer == "vulkan" else 0,
+                                              "init_clock": INIT_CLOCK_FIXED, "frame_limit": frame_limit}}))
     env = dict(os.environ, LOTUS_DESKTOP_PREFERENCES=str(root / "desktop.json"))
     command = [str(exe), "--mcp", str(config)] if kind == "desktop" else [str(exe), str(config)]
     frontend = Frontend(command, env, root / "mcp.jsonl")
@@ -117,19 +119,34 @@ def trial(kind, exe, worker, rom, renderer, root, warmup, seconds, frame_limit):
         frontend.tool("lotus_focus_session", {"session": session})
         frontend.tool("lotus_control", {"session": session, "operation": "run"})
         time.sleep(warmup)
-        first = frontend.session(session)
+        first = frontend.session(session)["telemetry"]
         start = time.perf_counter()
         time.sleep(seconds)
-        last = frontend.session(session)
+        last = frontend.session(session)["telemetry"]
         elapsed = time.perf_counter() - start
-        telemetry = last["telemetry"]
-        assert telemetry["state"] == "running", telemetry
-        result = dict(fps=(telemetry["frames"] - first["telemetry"]["frames"]) / elapsed,
-                      seconds=elapsed, renderer=telemetry.get("renderer"),
-                      renderer_fallback=telemetry.get("renderer_fallback"),
-                      memory_bytes=telemetry.get("memory_bytes"),
-                      backend_name=telemetry.get("backend_name"),
-                      window_visible=bool(hwnd and user32.IsWindowVisible(hwnd)) if kind == "desktop" else None)
+        for sample in (first, last):
+            # A running session can be at its bounded frame target when sampled.
+            assert sample["playing"] and not sample.get("failure"), sample
+            assert sample["renderer"] == renderer, sample
+        frames = last["frames"] - first["frames"]
+        assert frames > 0, last
+        preview = {name: last["preview"][name] - first["preview"][name]
+                   for name in ("requests", "new_frames", "reused")}
+        assert preview["requests"] == preview["new_frames"] + preview["reused"], preview
+        visible = None
+        if kind == "desktop":
+            visible = bool(user32.IsWindowVisible(hwnd) and not user32.IsIconic(hwnd))
+            assert visible and preview["new_frames"] > 0, (visible, preview)
+            before = first["preview"]["worker"] or {}
+            after = last["preview"]["worker"]
+            if after is not None:
+                preview["gpu_waits"] = after["gpu_waits"] - before.get("gpu_waits", 0)
+        else:
+            assert preview["requests"] == 0, preview
+        result = dict(fps=frames / elapsed, mean_frame_ms=1000 * elapsed / frames,
+                      frames=frames, seconds=elapsed, renderer=last["renderer"],
+                      memory_bytes=last.get("memory_bytes"), backend_name=last.get("backend_name"),
+                      window_visible=visible, preview=preview)
         frontend.tool("lotus_control", {"session": session, "operation": "stop"})
         return result
     finally:
@@ -148,6 +165,8 @@ def main():
     parser.add_argument("--warmup-seconds", type=float, default=5)
     parser.add_argument("--seconds", type=float, default=20)
     parser.add_argument("--require-idle", action="store_true")
+    parser.add_argument("--require-nonblocking", action="store_true",
+                        help="require zero Vulkan GPU waits during visible playback")
     parser.add_argument("--frame-limit", type=float, default=0, help="percent; 0 = unthrottled")
     args = parser.parse_args()
     out = args.output.resolve()
@@ -166,7 +185,7 @@ def main():
                              for k, v in exes.items()},
                   rom=dict(sha256=hashlib.sha256(rom.read_bytes()).hexdigest()),
                   fixed=dict(repeats=args.repeats, warmup_seconds=args.warmup_seconds, seconds=args.seconds,
-                             frame_limit=args.frame_limit),
+                             frame_limit=args.frame_limit, init_clock=INIT_CLOCK_FIXED),
                   results={})
     for renderer in args.renderer or ["vulkan", "software"]:
         runs = {"headless": [], "desktop": []}
@@ -175,15 +194,17 @@ def main():
             for kind in order:
                 result = trial(kind, exes[kind], worker, rom, renderer, out / renderer / kind / str(index),
                                args.warmup_seconds, args.seconds, args.frame_limit)
-                if result["renderer"] != renderer:
-                    raise SystemExit(f"{kind} ran {result['renderer']} ({result['renderer_fallback']}), "
-                                     f"not {renderer}; not comparable")
+                if args.require_nonblocking and kind == "desktop" and renderer == "vulkan":
+                    assert result["preview"].get("gpu_waits") == 0, result
                 runs[kind].append(result)
                 print(renderer, kind, index, json.dumps(result), flush=True)
         entry = {}
         for kind, results in runs.items():
             fps = [r["fps"] for r in results]
+            preview_fps = [r["preview"]["new_frames"] / r["seconds"] for r in results]
             entry[kind] = dict(median_fps=statistics.median(fps), min_fps=min(fps), max_fps=max(fps),
+                               median_mean_frame_ms=statistics.median(r["mean_frame_ms"] for r in results),
+                               median_preview_fps=statistics.median(preview_fps),
                                median_memory_bytes=statistics.median(r["memory_bytes"] or 0 for r in results),
                                trials=results)
         entry["desktop_vs_headless"] = round(entry["desktop"]["median_fps"] / entry["headless"]["median_fps"], 3)
@@ -201,13 +222,13 @@ def main():
               f"Worker sha256 {report['worker']['sha256'][:16]}, ROM {report['rom']['sha256'][:16]}, "
               f"{args.repeats} x {args.seconds:g} s after {args.warmup_seconds:g} s warm-up, "
               f"frame limit {args.frame_limit:g} % (0 = unthrottled)", "",
-              "| renderer | frontend | median fps | spread | worker MB | desktop / headless |",
-              "| --- | --- | --- | --- | --- | --- |"]
+              "| renderer | frontend | median guest fps | spread | fresh previews/s | worker MiB | desktop / headless |",
+              "| --- | --- | --- | --- | --- | --- | --- |"]
     for renderer, entry in report["results"].items():
         for kind in ("headless", "desktop"):
             e = entry[kind]
             lines.append(f"| {renderer} | {kind} | {e['median_fps']:.1f} | {e['min_fps']:.1f}-{e['max_fps']:.1f} | "
-                         f"{e['median_memory_bytes'] / 2**20:.0f} | "
+                         f"{e['median_preview_fps']:.1f} | {e['median_memory_bytes'] / 2**20:.0f} | "
                          f"{entry['desktop_vs_headless'] if kind == 'desktop' else ''} |")
     (out / "summary.md").write_text("\n".join(lines) + "\n")
     print((out / "summary.md").read_text())

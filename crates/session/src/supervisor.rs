@@ -1862,15 +1862,15 @@ impl Supervisor {
         if !matches!(native.state(), SessionState::Running | SessionState::Paused) || frames == 0 {
             return None;
         }
-        // A paused guest presents nothing new until it runs or its epoch changes (load,
-        // reset, state restore, replay). Re-capturing would rewrite both screen files, stall
-        // Vulkan on its readback and make the window rebuild identical images ~30 times/s.
+        // Between bounded runs, keep polling for completed readbacks without a GPU wait.
+        // A manual stop needs one exact frame until its frame or epoch changes.
         let key = (epoch, frames);
-        let paused = native.state() == SessionState::Paused;
+        let playing = handle.is_playing();
+        let paused = !playing && native.state() == SessionState::Paused;
         if paused && *lock(&handle.previewed) == Some(key) {
             return None;
         }
-        let preview = native.preview().await;
+        let preview = native.preview_with_policy(playing).await;
         handle.telemetry().preview = native.preview_metrics().clone();
         let (captured, _) = preview.ok()?;
         *lock(&handle.previewed) = paused.then_some(key);

@@ -35,7 +35,7 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
 - #3 fixed: desktop calls `ShowWindow(SW_SHOWNORMAL)` once when started hidden. `tests/test_window_visible.py`.
 - #4 resolved: the PICA debug context is installed only while GPU tools are enabled. `tools/pica_path_acceptance.py` asserts it per renderer on CITnLO (`runs/pica-path-01`, verified emulator). `fast_path_commands` advances while passive (22,454 then 35,876), freezes while capture is on (8 draws recorded), and resumes after capture is turned off (48,626). Guest ticks match a run that never enabled capture (672,177,568). Screens are only reported because of the divergence described above.
 - #5 implemented: supervisor prefers Vulkan (`prefer_vulkan`, default true) and replaces the worker with a software one if Vulkan load is unsupported, recording `renderer_fallback`. `tests/test_renderer_default.py` passes on both backends.
-- #6 resolved: previews use a shared-memory ring and asynchronous Vulkan readback in both workers ([21](21-native-control.md#ownership-and-budgets)). Paused previews skip work when (epoch, frames) is unchanged. `tools/preview_acceptance.py` passes on CITnLO and AZAHAR (`runs/preview-shm-01`, `runs/preview-shm-azahar-01`, verified emulator). Paused previews equal `capture`. Running previews have matching epochs and monotonic frames, lagging 0 frames under software and at most 3 (one request) under Vulkan. Capture files are untouched and pipe writes are about 660 bytes per preview. After a reset the epoch is new and the preview equals `capture`. `crates/session/tests/native_process.rs` `shared_previews_match_capture_per_worker_and_epoch` covers the Rust side. Preview fps on a quiet host was not measured here; use `tools/bench_frontends.py` (below).
+- #6 previews use a shared-memory ring and asynchronous Vulkan readback in both workers ([21](21-native-control.md#ownership-and-budgets)). Paused previews skip work when (epoch, frames) is unchanged. `tools/preview_acceptance.py` passes on CITnLO and AZAHAR (`runs/preview-shm-01`, `runs/preview-shm-azahar-01`, verified emulator). Paused previews equal `capture`. Running previews have matching epochs and monotonic frames, lagging 0 frames under software and at most 3 (one request) under Vulkan. Capture files are untouched and pipe writes are about 660 bytes per preview. After a reset the epoch is new and the preview equals `capture`. `crates/session/tests/native_process.rs` `shared_previews_match_capture_per_worker_and_epoch` covers the Rust side. See [visible desktop playback](#6-visible-desktop-playback) for the matched quiet-host benchmark and the follow-up fix to pauses between run batches.
 - #7 the worker loop used to build the JSON input snapshot on every `RunLoop` iteration, even with rewind off. A standalone harness reproduced the call shape (`SnapshotInput` in `src/ctr_worker/input.h`) with a counting `operator new`, built with the same nlohmann json and winlibs GCC -O2. It measured 75 heap allocations per call (verified compiled, not counted inside the emulator). `RunLoop` runs at least 4 times per frame (`MAX_SLICE_LENGTH = BASE_CLOCK_RATE_ARM11 / 234`, `core_timing.h:184`), so that is at least 300 allocations per frame. The snapshot is now built only when `WantsFrameCheckpoint` is true (`src/ctr_worker/debug.h:386`). That gives 0 allocations with rewind off and one snapshot per stored checkpoint with rewind on.
 - #8 execute breakpoints stay in the JIT (`PreCodeReadHook` block split). Watchpoints and pc/memory predicates still single-step: Dynarmic's memory-abort path re-executes the instruction after writeback (`load_store.cpp` 61-62, `a32_emit_x64_memory.cpp` 253-255), so it cannot report a write watchpoint correctly.
 - #9 checkpoint interval (`interval_frames`, 1..60). Input changes force a checkpoint. Testing intervals above 1 exposed a reverse-continue bug that predates this work. When the breakpoint set changed after the newest checkpoint, hits were counted against that older checkpoint. The replay then counted executions from before the change as hits and landed on the wrong one. Interval 20 landed about 430,000 counter values early (`runs/perf-rev-interval-01`). With interval 1 the same bug needed a mid-frame breakpoint change. Fix: `ForgetHits` now forces a checkpoint and leaves hits uncounted until one is stored. History entries also keep the resume-from-breakpoint skip state, because `RestoreHistory` used to clear it, so a checkpoint taken at a breakpoint PC no longer replays an extra hit. `tools/reverse_acceptance.py --interval-frames N` has an `armed_mid_window` check. It passes at N = 1, 5 and 20 on Old and New 3DS (`runs/perf-rev-int{1,5,20}-02`, verified emulator). `debugger_acceptance` and `gdb_acceptance` pass on the same worker (`runs/perf-dbg-02`, `runs/perf-gdb-02`).
@@ -85,6 +85,39 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
   Cost, unthrottled, 5 trials each, CITnLO (dev host, not acceptance timing; `runs/bench-async29-{churn,t03}`): churn software 0.177 s against 0.178 s for 300 frames, Vulkan 0.063 against 0.068 s (spreads 0.060–0.073 and 0.059–0.091 overlap); t03 software 50.8 against 51.9 s (spreads overlap), Vulkan 0.150 against 0.152 s. The guest result differs, as intended: in the same 360 frames the churn guest completed 1473 writes with host async and 1479 with deterministic async, because host async adds the host's completion time to the emulated delay.
   AZAHAR built with both value-initialization fixes (`794b84ca3`), t03 Vulkan, 5 trials (`runs/bench-async29-integration-794b`; before: `runs/bench-async29-integration`, `b4b9f0c`): deterministic async ends on 1 screen out of 5, as before; host async on 3 (before 4). Guest ticks were identical within each config both times, so the host-async spread is in what the guest drew, consistent with the async wake timing above.
   Decision: CITnLO's `DefaultProfile` turns `deterministic_async_operations` on; `settings_set` before `load` turns it off for a session (it is a boot setting). AZAHAR keeps the upstream default under ADR-010. **Proposed ADR-012** (owner decision): make it the default for both workers, so AZAHAR control runs in matrix comparisons are repeatable too; the cost above is the evidence. Not covered: games whose FS or AM operations take long on the host (large reads, CIA installs), where deterministic async stalls the emulation thread for the host duration instead of overlapping it.
+
+### #6 Visible desktop playback
+
+The 0.1.0 Windows release frontends and CITnLO `c3422b0a` ran the same Old
+3DS t03 fixture unthrottled with a fixed guest clock. On Windows 11, a Ryzen
+5 3600 and a Radeon RX 9060 XT (driver 32.0.32029.2010), each combination ran
+three 20-second trials after five seconds of warm-up. Headless and visible
+desktop alternated order. CPU load was 2% before and 3% after
+(`runs/r06-frontends-quiet-01/report.json`, verified emulator).
+
+| Renderer | Headless guest fps | Visible desktop guest fps | Mean ms per guest frame, headless / desktop | Desktop fresh previews/s |
+| --- | ---: | ---: | ---: | ---: |
+| Vulkan | 1819.2 | 1731.1 | 0.550 / 0.578 | 25.1 |
+| Software | 5.9 | 5.6 | 169.5 / 178.6 | 4.5 |
+
+These are trial medians. Frame time is wall time divided by guest frames
+advanced during each trial. The Vulkan desktop recorded 21, 17 and 20 GPU
+waits, one for each request that required a blocking readback in those
+windows. The host continually issues 600-frame runs and the worker can
+service a preview while paused at a batch boundary. Lotus now asks for
+nonblocking previews when playback is set to continue, including across that
+boundary. A manual pause still requests an exact preview.
+
+`tools/preview_acceptance.py --require-nonblocking` reproduced the added
+Vulkan wait at a bounded run stop on the packaged worker
+(`runs/r06-native-before.log`). On CITnLO `a3994c1` and AZAHAR `5ecbd98`
+the wait count stayed unchanged at that stop and during 120 running
+previews. The next exact preview matched the capture bytes. Capture files
+were untouched during live playback, lag peaked at one guest frame on
+CITnLO and two on AZAHAR, and neither worker returned a preview from a
+previous epoch (`runs/r06-native-citnlo`, `runs/r06-native-azahar`, verified
+emulator). Both native builds used the WinLibs UCRT GNU Release configuration
+with Vulkan and software enabled and Qt, SDL2, OpenGL, Libretro and LTO disabled.
 
 ### #32 Async rewind compression
 

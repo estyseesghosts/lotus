@@ -123,7 +123,11 @@ are in flight (`skipped_busy`). Both screens of one request share one GPU tick,
 so a published pair is one frame. With nothing newer the reply repeats the
 last slot with `new_frame: false`; early in a new epoch it has no frames. The
 host keeps showing its last image in both cases (`Supervisor::preview` returns
-nothing). A paused worker may wait and always shows the current frame. Each
+nothing). While the host is playing continuously it sends
+`preview {"nonblocking": true}` so the worker also avoids waiting between
+bounded runs. Without this option a paused worker may wait and shows the
+current frame. Workers predating the option still accept the request and use
+the worker's running or paused state. Each
 reply carries `stats` (requests, reused, readbacks, skipped_busy, gpu_waits,
 gpu_wait_ns, copied_bytes), surfaced as `telemetry.preview` with the shown
 frame's age. `tools/preview_acceptance.py` asserts that `gpu_waits` does not

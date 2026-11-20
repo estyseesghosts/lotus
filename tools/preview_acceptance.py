@@ -15,6 +15,9 @@ Per renderer, against one worker:
   counter (GetProcessIoCounters, which also counts the reply pipe) grows by under 4 KiB per
   preview, against 691,200 bytes of files per explicit capture.
 
+With `--require-nonblocking`, a preview at a bounded run stop must also leave the
+GPU-wait count unchanged. The following exact preview must still match capture.
+
     python tools/preview_acceptance.py <ctr-worker.exe> <rom.3dsx> <fresh output dir>
 """
 import argparse
@@ -57,6 +60,8 @@ def main():
     parser.add_argument("worker", type=Path)
     parser.add_argument("rom", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--require-nonblocking", action="store_true",
+                        help="also verify preview can avoid a GPU wait at a bounded run stop")
     args = parser.parse_args()
     report = {}
     for renderer, api in RENDERERS.items():
@@ -75,15 +80,33 @@ def main():
                 reply = peer.call("preview")
                 assert reply["frame"] == reply["current_frame"], reply
                 assert ring.read(reply) == captured(peer, root), "paused preview differs from capture"
+            bounded_stop = None
+            if args.require_nonblocking:
+                before_stop = reply
+                peer.call("run_until", {"frames": 10})
+                assert peer.state == "paused", peer.state
+                preview = peer.call("preview", {"nonblocking": True})
+                assert preview["current_frame"] > before_stop["current_frame"]
+                waits = preview["stats"]["gpu_waits"] - before_stop["stats"]["gpu_waits"]
+                assert waits == 0, (before_stop["stats"], preview["stats"])
+                assert all(lease["epoch"] == peer.epoch for lease in preview["frames"])
+                assert ring.read(preview).keys() == {"top", "bottom"}, preview
+                bounded_stop = dict(frame=preview["frame"], current_frame=preview["current_frame"],
+                                    gpu_waits=waits)
+                exact = peer.call("preview")
+                assert exact["frame"] == exact["current_frame"], exact
+                assert ring.read(exact) == captured(peer, root), (
+                    "exact preview after nonblocking request differs")
             # Running: the current frame or the previous request's, labelled.
             peer.call("run", {"frames": 600})
             lags, last = [], None
             files = {path: path.stat().st_mtime_ns for path in (root / "frames").glob("*.bgra")}
             before = process_usage(peer.process)
-            stats_before = peer.call("preview").get("stats")
+            preview_params = {"nonblocking": True} if args.require_nonblocking else None
+            stats_before = peer.call("preview", preview_params).get("stats")
             fresh = 0
             for _ in range(120):
-                reply = peer.call("preview")
+                reply = peer.call("preview", preview_params)
                 ring.read(reply)
                 lag = reply["current_frame"] - reply["frame"]
                 assert lag >= 0 and (last is None or reply["frame"] >= last), reply
@@ -114,6 +137,8 @@ def main():
             ring.view and ring.view.close()
             peer.close()
         report[renderer] = dict(previews=len(lags), max_lag_frames=max(lags),
+                                bounded_stop=bounded_stop,
+                                backend=hello.get("backend_name"), source=hello.get("source"),
                                 lagged_previews=sum(1 for lag in lags if lag), io_write_bytes=written,
                                 new_frames=fresh, worker_stats=stats,
                                 running_stats_delta=None if not (stats_before and stats) else
