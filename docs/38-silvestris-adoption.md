@@ -8,13 +8,13 @@ use the corresponding Aqua Light default.
 
 ## Build and rollback
 
-`vendor/silvestris` is an exact Git tree from the independent Silvestris
-workspace. `config/pins.toml` records the source commit and tree. The
-packagers check the vendored tree and record both IDs in the release
-manifest. A clean Lotus checkout and the corresponding-source archive
-contain the snapshot. Updating it is a deliberate import from a committed
-Silvestris revision, with the pin and lockfile checked in the same change.
-The standalone project is still maintained separately.
+`vendor/silvestris` comes from the independent Silvestris workspace.
+`config/pins.toml` records the source commit and the tree shipped with Lotus.
+The tree includes a local inspector fix for #141. The shell lets printable
+keystrokes reach GPUI’s focused text field while retaining its handling of
+navigation and its isolation from guest input.
+The packagers verify the tree and record both IDs in the release manifest.
+The corresponding-source archive contains the shipped tree.
 
 On Windows GNU:
 

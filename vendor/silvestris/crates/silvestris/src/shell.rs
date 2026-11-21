@@ -356,6 +356,15 @@ impl RenderOnce for Shell {
                         .on_mouse_move(|_, _, cx| cx.stop_propagation())
                         .on_scroll(|_, _, cx| cx.stop_propagation())
                         .on_key_down(move |event, w, cx| {
+                            // GPUI delivers text input after key propagation. A focused
+                            // TextField needs printable keys to reach its input handler.
+                            if event.keystroke.key_char.is_some()
+                                && w.context_stack().iter().any(|context| {
+                                    context.contains(crate::controls::text_field::KEY_CONTEXT)
+                                })
+                            {
+                                return;
+                            }
                             if inspector_key.as_ref().is_some_and(|f| f(event, w, cx)) {
                                 cx.stop_propagation();
                                 return;

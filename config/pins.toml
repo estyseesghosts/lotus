@@ -37,7 +37,7 @@ channel = "1.98.1"
 host = "x86_64-pc-windows-gnu"
 
 [silvestris]
-# Exact source snapshot in the Lotus checkout and corresponding-source archive.
+# Source revision and packaged tree, including the inspector text-input fix.
 path = "vendor/silvestris"
 rev = "d1db8f0c6cbe80e80fb1dfebbb5c78990d2b9265"
-tree = "e343bcc80a18534a932997a49b60b04b2fbbefd4"
+tree = "8aa317fd47a115541751ad777e68269732d7633f"
