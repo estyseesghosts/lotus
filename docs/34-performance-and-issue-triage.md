@@ -429,6 +429,11 @@ python tools/vulkan_pressure_acceptance.py --server <lotus-mcp.exe> --worker <ct
 Use a Release build ([27](27-build-and-run.md) §4) on an otherwise idle host; `--require-idle` refuses to start above 15 % CPU load. ROM paths must be absolute. `<w>` is `build/native-<branch>/bin/Release/ctr-worker.exe`, or `runtimes/<backend>/ctr-worker.exe` in an unpacked portable ZIP.
 
 ```powershell
+# Suite (#10): stock software, both native workers, and headless vs visible desktop
+./scripts/build-azahar.ps1 -Branch stock -Oracle -AzaharRoot C:/abs/pinned-stock -BuildDirectory build/native-stock
+python tools/bench_suite.py --stock-oracle build/native-stock/lotus-stock-oracle.exe `
+  --integration <integration w> --citnlo <experimental w> --mcp target/release/lotus-mcp.exe `
+  --desktop target/release/lotus-desktop.exe --rom C:\abs\t03.3dsx --output runs/suite-quiet-01 --require-idle
 # Backends, PICA events and rewind (#4, #9, #10)
 python tools/bench.py --worker azahar=<integration w> --worker citnlo=<experimental w> --rom C:\abs\t03.3dsx `
   --output runs/bench-quiet-01 --renderer vulkan --renderer software --config off --config pica_events `
@@ -467,5 +472,25 @@ python tools/bench_frontends.py --mcp target/release/lotus-mcp.exe --desktop tar
 # LTO (#11), about two clean native builds
 ./scripts/lto-ab.ps1 -Branch experimental -AzaharRoot C:/abs/pinned-experimental -Rom C:/abs/t03.3dsx -Output runs/lto-ab-01 -RequireIdle
 ```
+
+`bench_suite.py` combines cold native software and Vulkan trials, warm Vulkan trials, and paired
+software and Vulkan frontend trials in one `report.json` and `summary.md`. It uses unthrottled
+playback and deterministic HLE async scheduling in all phases. The stock oracle runs the unmodified
+software core directly with a null audio sink. Its report lists observed profile differences and
+compares ticks and pixels against the worker runs. The desktop phase reports preview readback waits
+and wait time separately from frame throughput.
+
+The Windows t03 smoke comparison used 20 warmup frames and 19 measured frames. Stock Azahar
+matched the integration and experimental workers' guest ticks and both software framebuffer
+hashes. The reported core settings matched apart from the audio sink. This smoke run establishes
+functional parity on that fixture. The longer idle-host run and allocation counts are pending.
+
+On WinLibs GCC 16.2.0 the original CITnLO Release worker linked in 4.396 s (87,111,364 bytes).
+The IPO variant reached the final link, with IPO in the worker and Azahar libraries but outside
+bundled Crypto++ and Dynarmic. GNU ld rejected Crypto++ link-once symbols. Enabling IPO for
+Crypto++ removed those errors, but two Boost exception thunks still failed to link. A single
+GCC LTO partition failed with an internal compiler error while reading `LTO_section_decls`.
+These builds yielded no runtime comparison. The A/B script now preserves the failed phase's
+log and report, and production builds retain `ENABLE_LTO=OFF`.
 
 `reverse_acceptance` writes `checkpoint_serialize_ns`, `checkpoint_compress_ns`, `checkpoint_serialized_bytes`, `checkpoint_stored_bytes` and `restore_ns` with `checkpoints` and `restores` counts in the `rewind_status` objects of `acceptance.json`; divide for per-checkpoint figures. v0.0.1 workers do not report these counters, so the release comparison uses `bench.py` wall time. Build the debugger fixture with `python tools/build-debug-fixture.py C:\abs\debugger.3dsx`.

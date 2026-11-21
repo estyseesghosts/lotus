@@ -22,8 +22,9 @@ Shader cache: `--shader-cache cold` (default) boots each Vulkan trial with an em
 `warm` first primes one root per worker and copies its `shaders/` into every trial before load.
 Warm-up frames warm the in-process pipeline cache either way. Software has no shader cache.
 
-Not covered here (stated in the report): Qt Azahar (no headless frontend with matching
-settings), allocation counts, GPU wait time. `--capture-every N` models a live preview by
+Use `--stock-oracle` for an unmodified Azahar software-rendering comparison. Its frontend
+has no worker RPC, preview, or audio buffering. Qt Azahar, allocation counts, and GPU
+wait time are outside this runner. `--capture-every N` models a live preview by
 capturing both screens every N frames; tools/bench_frontends.py measures the real headless
 and desktop frontends.
 
@@ -51,10 +52,14 @@ from native_debug_probe import Peer  # noqa: E402
 
 INIT_CLOCK_FIXED = 1  # Settings::InitClock::FixedTime; init_time keeps its default
 RENDERERS = {"software": 0, "vulkan": 2}  # Settings::GraphicsAPI values used by settings_set
-PROFILE_KEYS = ("graphics_api", "resolution_factor", "use_hw_shader", "use_disk_shader_cache",
+PROFILE_KEYS = ("graphics_api", "physical_device", "resolution_factor", "use_hw_shader", "use_shader_jit",
+                "use_disk_shader_cache", "async_shader_compilation", "use_vsync", "texture_filter",
                 "is_new_3ds", "use_cpu_jit", "cpu_clock_percentage", "deterministic_async_operations",
-                "audio_emulation", "output_type", "volume", "frame_limit", "init_clock",
+                "audio_emulation", "input_type", "output_type", "volume", "frame_limit", "init_clock",
                 "init_ticks_type", "init_ticks_override", "init_time")
+STOCK_PROFILE_KEYS = ("graphics_api", "is_new_3ds", "deterministic_async_operations", "init_clock",
+                      "init_time", "init_ticks_type", "init_ticks_override", "frame_limit",
+                      "resolution_factor", "use_cpu_jit", "cpu_clock_percentage", "input_type", "output_type")
 UNHIT = 0x0F000000  # execute breakpoints here are never reached by 3DSX homebrew (outside its code)
 # Memory::PROCESS_IMAGE_VADDR (src/core/memory.h), where the 3DSX loader puts .text; never written,
 # but an armed watchpoint switches CITnLO to instruction stepping ("execution_mode").
@@ -342,6 +347,45 @@ def manifest(worker):
     return None
 
 
+def stock_trial(oracle, rom, root, args, console, deterministic_async):
+    root.mkdir(parents=True)
+    for name in IDENTITY:
+        shutil.copytree(console / name, root / name)
+    with (root / "oracle.log").open("w", encoding="utf-8") as log:
+        with subprocess.Popen([str(oracle), str(rom), str(root), "--benchmark",
+                               str(args.warmup), str(args.frames),
+                               str(100 if args.frame_limit is None else args.frame_limit),
+                               str(int(args.new_3ds)), str(int(deterministic_async))],
+                              stdout=log, stderr=subprocess.STDOUT) as process:
+            try:
+                code = process.wait(timeout=400)
+            except subprocess.TimeoutExpired as error:
+                process.kill()
+                process.wait()
+                raise SystemExit(f"stock oracle timed out; see {root / 'oracle.log'}") from error
+            lifetime_usage = process_usage(process)
+    if code != 0:
+        raise SystemExit(f"stock oracle exited {code}; see {root / 'oracle.log'}")
+    output = (root / "benchmark.txt").read_text(encoding="utf-8")
+    stats = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+    if int(stats["frames"]) != args.frames:
+        raise SystemExit(f"unexpected stock benchmark frame count in {root}")
+    screens = {}
+    for name, width in (("top", 400), ("bottom", 320)):
+        data = bytearray((root / f"{name}.rgba").read_bytes())
+        if len(data) != width * 240 * 4:
+            raise SystemExit(f"unexpected stock {name} framebuffer size in {root}")
+        # The worker benchmark hashes BGRA, while the test oracle saves raw RGBA.
+        data[0::4], data[2::4] = data[2::4], data[0::4]
+        screens[name] = hashlib.sha256(data).hexdigest()
+    return dict(status="ok", guest_ticks=int(stats["guest_ticks"]), screens=screens, guest={},
+                usage=None, lifetime_usage=lifetime_usage, host_seconds=float(stats["host_seconds"]),
+                load_seconds=float(stats["load_seconds"]), system_fps=float(stats["headless_system_fps"]),
+                core_seconds_per_frame={name: float(stats[f"{name}_seconds_per_frame"])
+                                        for name in ("gpu", "svc", "ipc", "swap")},
+                profile={key: int(stats[key]) for key in STOCK_PROFILE_KEYS})
+
+
 def summarize(runs):
     timed = [r["host_seconds"] for r in runs if r["status"] == "ok"]
     entry = dict(trials=len(runs), completed=len(timed))
@@ -435,6 +479,7 @@ def compare(results, workers):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--worker", action="append", required=True, help="NAME=path to ctr-worker.exe")
+    parser.add_argument("--stock-oracle", type=Path, help="pinned lotus-stock-oracle executable for software/off")
     parser.add_argument("--rom", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--renderer", action="append", choices=sorted(RENDERERS))
@@ -474,10 +519,22 @@ def main():
         table = symbols(rom.with_suffix(".elf"))
         pokes = [(table[name], int(value, 0)) for name, value in (p.split("=", 1) for p in args.poke)]
         reads = [(name, table[name]) for name in args.read]
-    out = args.output.resolve()
-    out.mkdir(parents=True, exist_ok=False)
     renderers = args.renderer or ["software", "vulkan"]
     configs = args.config or list(CONFIGS)  # boot configs only when named
+    oracle = args.stock_oracle.resolve() if args.stock_oracle else None
+    if oracle and ("software" not in renderers or "off" not in configs or args.capture_every or
+                   args.poke or args.read or common_settings.keys() - {"deterministic_async_operations"}):
+        parser.error("stock oracle needs software/off and only supports the deterministic async setting override")
+    deterministic_async = common_settings.get("deterministic_async_operations", True)
+    if oracle and not isinstance(deterministic_async, bool):
+        parser.error("stock oracle needs a boolean deterministic_async_operations value")
+    if oracle and (args.warmup > 6000 or args.frames > 6000 or
+                   (args.frame_limit is not None and not 0 <= args.frame_limit <= 1000)):
+        parser.error("stock oracle supports up to 6000 warmup and measurement frames and a 0-1000% frame limit")
+    if oracle:
+        common_settings["deterministic_async_operations"] = deterministic_async
+    out = args.output.resolve()
+    out.mkdir(parents=True, exist_ok=False)
     load_before = system_load()
     if args.require_idle and load_before is not None and load_before > BUSY:
         raise SystemExit(f"host CPU load {load_before:.0%} > {BUSY:.0%}; refusing (--require-idle)")
@@ -498,10 +555,11 @@ def main():
                    profile="worker DefaultProfile plus graphics_api/is_new_3ds/init_clock=FixedTime via settings_set; "
                            "sysdata and nand copied from one template boot (same MAC and console ID)"),
         workers=workers_meta,
-        not_covered=["Qt Azahar frontend", "allocation counts", "GPU wait time",
+        not_covered=["Qt Azahar frontend", "stock Vulkan", "allocation counts", "GPU wait time",
                      "frontends (tools/bench_frontends.py)"],
         results={})
     console = identity_template(workers[0][1], rom, out / "identity", args.new_3ds)
+    stock_runs = []
     primed = {}
     if args.shader_cache == "warm" and "vulkan" in renderers:
         for name, worker in workers:
@@ -516,9 +574,14 @@ def main():
             boot = common_settings | dict(BOOT_CONFIGS.get(config, ()))
             runs_by_worker = {name: [] for name, _ in workers}
             skipped_by_worker = {}
+            participants = [*workers, (None, oracle)] if oracle and renderer == "software" and config == "off" else workers
             for index in range(args.repeats):
-                start = index % len(workers)
-                for name, worker in workers[start:] + workers[:start]:
+                start = index % len(participants)
+                for name, worker in participants[start:] + participants[:start]:
+                    if name is None:
+                        stock_runs.append(stock_trial(worker, rom, out / "stock" / str(index),
+                                                      args, console, deterministic_async))
+                        continue
                     if name in skipped_by_worker:
                         continue
                     root = out / renderer / name / config / str(index)
@@ -556,6 +619,26 @@ def main():
             for entry in by_config.values():
                 entry.setdefault("runs_detail", [])
     compare(report["results"], workers)
+    if stock_runs:
+        stock = summarize(stock_runs)
+        stock_identity = identity(stock_runs)
+        stock.update(path=str(oracle), sha256=hashlib.sha256(oracle.read_bytes()).hexdigest(),
+                     build_manifest=manifest(oracle), guest_repeatable=stock_identity is not None,
+                     trials_detail=stock_runs,
+                     frontend_differences=["software only", "null audio sink", "direct core loop without worker RPC"])
+        stock["guest_identical_to_workers"] = {
+            name: None if stock_identity is None or identity(by_config["off"]) is None else
+            stock_identity == identity(by_config["off"])
+            for name, by_config in detail["software"].items()
+        }
+        stock_profile = stock["effective_profile"] or {}
+        stock["profile_differences"] = {
+            name: {key: {"stock": value, name: worker_profile.get(key)}
+                   for key, value in stock_profile.items() if worker_profile.get(key) != value}
+            for name, by_config in report["results"]["software"].items()
+            if (worker_profile := by_config["off"].get("effective_profile")) is not None
+        }
+        report["stock_oracle"] = stock
     report["host"]["cpu_load_after"] = system_load()
     loads = [v for v in (report["host"]["cpu_load_before"], report["host"]["cpu_load_after"]) if v is not None]
     report["host_busy"] = any(v > BUSY for v in loads)
@@ -588,6 +671,11 @@ def main():
                      if "profile_differences" in e or "profile_comparison" in e]
     if profile_notes:
         lines += ["", "Effective settings prevented a cross-worker ratio for these rows:", *profile_notes]
+    if stock_runs:
+        lines += ["", f"Stock software oracle: median {stock['median_host_seconds']:.3f} s "
+                  f"({args.frames / stock['median_host_seconds']:.1f} fps). Direct core loop and null audio. "
+                  f"Matching guest ticks and pixels: {stock['guest_identical_to_workers']}.",
+                  f"Stock settings differences: {stock['profile_differences']}."]
     reference = workers[0][0]
     lines += ["", f"Shader cache: {args.shader_cache} (Vulkan only). A CITnLO worker's `off` has the "
                   "debugger attached with every feature disabled (the passive-debugger case).", "",

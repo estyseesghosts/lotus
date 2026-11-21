@@ -63,46 +63,56 @@ function Get-IpoEvidence([string]$Directory, [bool]$Expected) {
         if ($flags -notin $entry.flags) { $entry.flags += $flags }
     }
     foreach ($name in 'ctr-worker', 'worker_link', 'citra_common', 'citra_core', 'video_core',
-        'audio_core', 'input_common', 'network') {
+        'audio_core', 'input_common', 'network', 'cryptopp') {
         $entry = $targets[$name]
-        if (-not $entry -or ($Expected -and $entry.ipo_rules -ne $entry.rules) -or
-            (-not $Expected -and $entry.ipo_rules -ne 0)) {
-            throw "Unexpected IPO coverage for $name in $Directory (expected=$Expected)"
+        $expectTarget = $Expected -and $name -ne 'cryptopp'
+        if (-not $entry -or ($expectTarget -and $entry.ipo_rules -ne $entry.rules) -or
+            (-not $expectTarget -and $entry.ipo_rules -ne 0)) {
+            throw "Unexpected IPO coverage for $name in $Directory (expected=$expectTarget)"
         }
     }
     return $targets
 }
 
 $builds = [ordered]@{}
+$report = [ordered]@{ tool = 'scripts/lto-ab.ps1'; branch = $Branch; builds = $builds }
+$reportPath = Join-Path $Output 'lto-ab.json'
 foreach ($mode in 'default', 'lto') {
     $dir = Join-Path $Output "build-$mode"
     $buildArgs = @{ Branch = $Branch; Profile = 'Release'; BuildDirectory = $dir; Parallel = $Parallel }
     if ($AzaharRoot) { $buildArgs.AzaharRoot = $AzaharRoot }
     if ($mode -eq 'lto') { $buildArgs.Lto = $true }
+    $log = Join-Path $Output "build-$mode.log"
+    $entry = [ordered]@{ directory = $dir; log = $log; status = 'building' }
+    $builds[$mode] = $entry
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
-    & (Join-Path $PSScriptRoot 'build-azahar.ps1') @buildArgs
-    $seconds = $clock.Elapsed.TotalSeconds
-    $exe = Join-Path $dir 'bin/Release/ctr-worker.exe'
-    if (-not (Test-Path -LiteralPath $exe)) { throw "No worker at $exe" }
-    $ipo = Get-IpoEvidence $dir ($mode -eq 'lto')
-    $link = Get-Content -LiteralPath (Join-Path $dir '.ninja_log') |
-        Where-Object { ($_ -split "`t")[3] -eq 'bin/Release/ctr-worker.exe' } | Select-Object -Last 1
-    if (-not $link) { throw "No worker link entry in $dir/.ninja_log" }
-    $linkTimes = $link -split "`t"
-    $cache = Get-Content -LiteralPath (Join-Path $dir 'CMakeCache.txt')
-    $builds[$mode] = [ordered]@{
-        directory = $dir; build_seconds = [math]::Round($seconds, 1); worker = $exe
-        bytes = (Get-Item -LiteralPath $exe).Length
-        sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower()
-        worker_link_seconds = ([long]$linkTimes[1] - [long]$linkTimes[0]) / 1000.0
-        ipo_targets = $ipo
-        enable_lto_cache = ($cache | Select-String '^ENABLE_LTO:BOOL=(.*)$').Matches[0].Groups[1].Value
-        manifest = Get-Content -LiteralPath (Join-Path $dir 'lotus-build-manifest.json') -Raw | ConvertFrom-Json
+    try {
+        & (Join-Path $PSScriptRoot 'build-azahar.ps1') @buildArgs *>&1 | Tee-Object -FilePath $log
+        $clock.Stop()
+        $exe = Join-Path $dir 'bin/Release/ctr-worker.exe'
+        if (-not (Test-Path -LiteralPath $exe)) { throw "No worker at $exe" }
+        $entry.ipo_targets = Get-IpoEvidence $dir ($mode -eq 'lto')
+        $link = Get-Content -LiteralPath (Join-Path $dir '.ninja_log') |
+            Where-Object { ($_ -split "`t")[3] -eq 'bin/Release/ctr-worker.exe' } | Select-Object -Last 1
+        if (-not $link) { throw "No worker link entry in $dir/.ninja_log" }
+        $linkTimes = $link -split "`t"
+        $cache = Get-Content -LiteralPath (Join-Path $dir 'CMakeCache.txt')
+        $entry.worker = $exe
+        $entry.bytes = (Get-Item -LiteralPath $exe).Length
+        $entry.sha256 = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash.ToLower()
+        $entry.worker_link_seconds = ([long]$linkTimes[1] - [long]$linkTimes[0]) / 1000.0
+        $entry.enable_lto_cache = ($cache | Select-String '^ENABLE_LTO:BOOL=(.*)$').Matches[0].Groups[1].Value
+        $entry.manifest = Get-Content -LiteralPath (Join-Path $dir 'lotus-build-manifest.json') -Raw | ConvertFrom-Json
+        $entry.status = 'complete'
+    } catch {
+        $entry.status = 'failed'
+        $entry.error = $_.Exception.Message
+        throw
+    } finally {
+        $entry.build_seconds = [math]::Round($clock.Elapsed.TotalSeconds, 1)
+        $report | ConvertTo-Json -Depth 8 | Set-Content $reportPath
     }
 }
-$report = [ordered]@{ tool = 'scripts/lto-ab.ps1'; branch = $Branch; builds = $builds }
-$reportPath = Join-Path $Output 'lto-ab.json'
-$report | ConvertTo-Json -Depth 8 | Set-Content $reportPath
 if (-not $SkipBench) {
     $bench = Join-Path $Output 'bench'
     $benchArgs = @((Join-Path $root 'tools/bench.py'),

@@ -61,7 +61,10 @@ if ($Oracle) {
 if ($LASTEXITCODE -ne 0) { throw 'Native configuration failed' }
 & cmake --build $BuildDirectory --target $target --parallel $Parallel
 if ($LASTEXITCODE -ne 0) { throw 'Native build failed' }
+$compilerEntry = Select-String -LiteralPath $cache -Pattern '^CMAKE_CXX_COMPILER:FILEPATH=(.*)$'
+$compilerPath = $compilerEntry.Matches[0].Groups[1].Value
 @{ source = $actual; branch = $Branch; source_root = $AzaharRoot; target = $target;
-   cmake_flags = $flags; compiler = (& g++ --version | Select-Object -First 1);
+   cmake_flags = $flags; compiler_path = $compilerPath;
+   compiler = (& $compilerPath --version | Select-Object -First 1);
    host = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
 } | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $BuildDirectory 'lotus-build-manifest.json')

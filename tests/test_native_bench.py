@@ -1,10 +1,12 @@
 """Validate the native benchmark's timing and comparison gates."""
 
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import bench
@@ -48,6 +50,38 @@ class NativeBenchTest(unittest.TestCase):
         self.assertEqual(candidate["profile_differences"], {"frame_limit": {"default": 0, "candidate": 100}})
         self.assertTrue(candidate["guest_identical_to_default"])
         self.assertNotIn("ratio_vs_default", candidate)
+
+    def test_stock_oracle_hashes_the_same_pixel_order_as_native(self):
+        process = MagicMock()
+        process.__enter__.return_value = process
+        process.wait.return_value = 0
+        args = SimpleNamespace(warmup=20, frames=10, frame_limit=0, new_3ds=False)
+
+        def run(command, *, stdout, stderr):
+            self.assertEqual(command[3:], ["--benchmark", "20", "10", "0", "0", "1"])
+            root = Path(command[2])
+            self.assertTrue((root / "sysdata").is_dir())
+            for name, width in (("top", 400), ("bottom", 320)):
+                (root / f"{name}.rgba").write_bytes(bytes((1, 2, 3, 255)) * width * 240)
+            stock_profile = {key: 0 for key in bench.STOCK_PROFILE_KEYS} | {"output_type": 1}
+            (root / "benchmark.txt").write_text(
+                "frames=10\nguest_ticks=500\nhost_seconds=0.01\nload_seconds=1.0\nheadless_system_fps=1000\n"
+                "gpu_seconds_per_frame=0\nsvc_seconds_per_frame=0\n"
+                "ipc_seconds_per_frame=0\nswap_seconds_per_frame=0\n" +
+                "".join(f"{key}={value}\n" for key, value in stock_profile.items()), encoding="utf-8")
+            return process
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            console = root / "identity"
+            for name in bench.IDENTITY:
+                (console / name).mkdir(parents=True)
+            with patch.object(bench.subprocess, "Popen", side_effect=run), \
+                    patch.object(bench, "process_usage", return_value=None):
+                row = bench.stock_trial(Path("oracle"), Path("guest"), root / "stock", args, console, True)
+        self.assertEqual(row["guest_ticks"], 500)
+        self.assertEqual(row["screens"]["top"], hashlib.sha256(bytes((3, 2, 1, 255)) * 400 * 240).hexdigest())
+        self.assertEqual(row["profile"]["output_type"], 1)
 
 
 if __name__ == "__main__":

@@ -34,7 +34,7 @@ import threading
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench import BUSY, INIT_CLOCK_FIXED, host_metadata, manifest, system_load  # noqa: E402
+from bench import BUSY, INIT_CLOCK_FIXED, PROFILE_KEYS, host_metadata, manifest, system_load  # noqa: E402
 from desktop_shots import user32, window_of  # noqa: E402
 
 WM_CLOSE = 0x0010
@@ -97,14 +97,13 @@ class Frontend:
             self.transcript.close()
 
 
-def trial(kind, exe, worker, rom, renderer, root, warmup, seconds, frame_limit):
+def trial(kind, exe, worker, rom, renderer, root, warmup, seconds, requested):
     root.mkdir(parents=True, exist_ok=False)
     config = root / "host.json"
     config.write_text(json.dumps({"worker": str(worker), "storage_root": str(root / "storage"),
                                   "allow_control": True, "assets": {"rom": str(rom)},
                                   "prefer_vulkan": renderer == "vulkan",
-                                  "profile": {"graphics_api": 2 if renderer == "vulkan" else 0,
-                                              "init_clock": INIT_CLOCK_FIXED, "frame_limit": frame_limit}}))
+                                  "profile": requested}))
     env = dict(os.environ, LOTUS_DESKTOP_PREFERENCES=str(root / "desktop.json"))
     command = [str(exe), "--mcp", str(config)] if kind == "desktop" else [str(exe), str(config)]
     frontend = Frontend(command, env, root / "mcp.jsonl")
@@ -117,6 +116,12 @@ def trial(kind, exe, worker, rom, renderer, root, warmup, seconds, frame_limit):
                 time.sleep(0.2)
         session = frontend.tool("lotus_create_session", {"kind": "secondary", "asset": "rom"})["session"]
         frontend.tool("lotus_focus_session", {"session": session})
+        settings = frontend.tool("lotus_settings", {"target": {"target": "session", "session": session}})["settings"]
+        profile = {name: entry["value"] for name, entry in settings.items() if name in PROFILE_KEYS}
+        mismatches = {name: {"requested": value, "effective": profile.get(name)}
+                      for name, value in requested.items() if profile.get(name) != value}
+        if mismatches:
+            raise RuntimeError(f"{kind} settings differ from the requested profile: {mismatches}")
         frontend.tool("lotus_control", {"session": session, "operation": "run"})
         time.sleep(warmup)
         first = frontend.session(session)["telemetry"]
@@ -140,13 +145,14 @@ def trial(kind, exe, worker, rom, renderer, root, warmup, seconds, frame_limit):
             before = first["preview"]["worker"] or {}
             after = last["preview"]["worker"]
             if after is not None:
-                preview["gpu_waits"] = after["gpu_waits"] - before.get("gpu_waits", 0)
+                for name in ("gpu_waits", "gpu_wait_ns", "readbacks", "skipped_busy", "copied_bytes"):
+                    preview[name] = after[name] - before.get(name, 0)
         else:
             assert preview["requests"] == 0, preview
         result = dict(fps=frames / elapsed, mean_frame_ms=1000 * elapsed / frames,
                       frames=frames, seconds=elapsed, renderer=last["renderer"],
                       memory_bytes=last.get("memory_bytes"), backend_name=last.get("backend_name"),
-                      window_visible=visible, preview=preview)
+                      window_visible=visible, preview=preview, effective_profile=profile)
         frontend.tool("lotus_control", {"session": session, "operation": "stop"})
         return result
     finally:
@@ -168,6 +174,8 @@ def main():
     parser.add_argument("--require-nonblocking", action="store_true",
                         help="require zero Vulkan GPU waits during visible playback")
     parser.add_argument("--frame-limit", type=float, default=0, help="percent; 0 = unthrottled")
+    parser.add_argument("--new-3ds", action="store_true")
+    parser.add_argument("--deterministic-async", action="store_true")
     args = parser.parse_args()
     out = args.output.resolve()
     out.mkdir(parents=True, exist_ok=False)
@@ -189,11 +197,15 @@ def main():
                   results={})
     for renderer in args.renderer or ["vulkan", "software"]:
         runs = {"headless": [], "desktop": []}
+        requested = dict(graphics_api=2 if renderer == "vulkan" else 0, init_clock=INIT_CLOCK_FIXED,
+                         frame_limit=args.frame_limit, is_new_3ds=args.new_3ds)
+        if args.deterministic_async:
+            requested["deterministic_async_operations"] = True
         for index in range(args.repeats):
             order = ["headless", "desktop"] if index % 2 == 0 else ["desktop", "headless"]
             for kind in order:
                 result = trial(kind, exes[kind], worker, rom, renderer, out / renderer / kind / str(index),
-                               args.warmup_seconds, args.seconds, args.frame_limit)
+                               args.warmup_seconds, args.seconds, requested)
                 if args.require_nonblocking and kind == "desktop" and renderer == "vulkan":
                     assert result["preview"].get("gpu_waits") == 0, result
                 runs[kind].append(result)
@@ -202,12 +214,19 @@ def main():
         for kind, results in runs.items():
             fps = [r["fps"] for r in results]
             preview_fps = [r["preview"]["new_frames"] / r["seconds"] for r in results]
+            waits = [r["preview"]["gpu_waits"] for r in results if "gpu_waits" in r["preview"]]
+            wait_ns = [r["preview"]["gpu_wait_ns"] for r in results if "gpu_wait_ns" in r["preview"]]
             entry[kind] = dict(median_fps=statistics.median(fps), min_fps=min(fps), max_fps=max(fps),
                                median_mean_frame_ms=statistics.median(r["mean_frame_ms"] for r in results),
                                median_preview_fps=statistics.median(preview_fps),
                                median_memory_bytes=statistics.median(r["memory_bytes"] or 0 for r in results),
+                               median_preview_gpu_waits=statistics.median(waits) if waits else None,
+                               median_preview_gpu_wait_ms=statistics.median(wait_ns) / 1e6 if wait_ns else None,
                                trials=results)
-        entry["desktop_vs_headless"] = round(entry["desktop"]["median_fps"] / entry["headless"]["median_fps"], 3)
+        profiles = [r["effective_profile"] for trials in runs.values() for r in trials]
+        entry["profiles_match"] = all(profile == profiles[0] for profile in profiles)
+        entry["desktop_vs_headless"] = (round(entry["desktop"]["median_fps"] / entry["headless"]["median_fps"], 3)
+                                        if entry["profiles_match"] else None)
         report["results"][renderer] = entry
     report["host"]["cpu_load_after"] = system_load()
     loads = [v for v in (load_before, report["host"]["cpu_load_after"]) if v is not None]
@@ -222,16 +241,18 @@ def main():
               f"Worker sha256 {report['worker']['sha256'][:16]}, ROM {report['rom']['sha256'][:16]}, "
               f"{args.repeats} x {args.seconds:g} s after {args.warmup_seconds:g} s warm-up, "
               f"frame limit {args.frame_limit:g} % (0 = unthrottled)", "",
-              "| renderer | frontend | median guest fps | spread | fresh previews/s | worker MiB | desktop / headless |",
-              "| --- | --- | --- | --- | --- | --- | --- |"]
+              "| renderer | frontend | median guest fps | spread | fresh previews/s | preview GPU waits (ms) | worker MiB | desktop / headless |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- |"]
     for renderer, entry in report["results"].items():
         for kind in ("headless", "desktop"):
             e = entry[kind]
+            wait_text = (f"{e['median_preview_gpu_waits']:g} ({e['median_preview_gpu_wait_ms']:.3f})"
+                         if e["median_preview_gpu_waits"] is not None else "—")
             lines.append(f"| {renderer} | {kind} | {e['median_fps']:.1f} | {e['min_fps']:.1f}-{e['max_fps']:.1f} | "
-                         f"{e['median_preview_fps']:.1f} | {e['median_memory_bytes'] / 2**20:.0f} | "
-                         f"{entry['desktop_vs_headless'] if kind == 'desktop' else ''} |")
-    (out / "summary.md").write_text("\n".join(lines) + "\n")
-    print((out / "summary.md").read_text())
+                         f"{e['median_preview_fps']:.1f} | {wait_text} | {e['median_memory_bytes'] / 2**20:.0f} | "
+                         f"{(entry['desktop_vs_headless'] or 'settings differ') if kind == 'desktop' else ''} |")
+    (out / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
 
 
 if __name__ == "__main__":
