@@ -10,7 +10,7 @@
 //! scratch copy, discarded on end); see [`crate::card_store`].
 use std::collections::BTreeMap;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -27,6 +27,98 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 mod experiments;
 mod supervision;
+
+/// Cancellation is serialized with the transition from waiting for admission to
+/// dispatch. Once dispatch starts, the worker exchange must drain to its reply.
+#[derive(Clone, Debug)]
+pub struct DebugCancellation(tokio::sync::watch::Sender<DebugPhase>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DebugPhase {
+    Waiting,
+    Dispatched,
+    Cancelled,
+    Discarded,
+}
+
+impl Default for DebugCancellation {
+    fn default() -> Self {
+        Self(tokio::sync::watch::Sender::new(DebugPhase::Waiting))
+    }
+}
+
+impl DebugCancellation {
+    /// Returns whether the operation crossed its dispatch boundary.
+    pub fn cancel(&self) -> bool {
+        let mut dispatched = false;
+        self.0.send_if_modified(|phase| match *phase {
+            DebugPhase::Waiting => {
+                *phase = DebugPhase::Cancelled;
+                true
+            }
+            DebugPhase::Dispatched => {
+                dispatched = true;
+                *phase = DebugPhase::Discarded;
+                true
+            }
+            DebugPhase::Cancelled => false,
+            DebugPhase::Discarded => {
+                dispatched = true;
+                false
+            }
+        });
+        dispatched
+    }
+
+    pub fn check(&self) -> io::Result<()> {
+        match *self.0.borrow() {
+            DebugPhase::Cancelled | DebugPhase::Discarded => Err(debug_cancelled()),
+            DebugPhase::Waiting | DebugPhase::Dispatched => Ok(()),
+        }
+    }
+
+    fn dispatch(&self) -> io::Result<()> {
+        let changed = self.0.send_if_modified(|phase| {
+            if *phase != DebugPhase::Waiting {
+                return false;
+            }
+            *phase = DebugPhase::Dispatched;
+            true
+        });
+        if changed {
+            Ok(())
+        } else {
+            Err(debug_cancelled())
+        }
+    }
+}
+
+fn debug_cancelled() -> io::Error {
+    io::Error::new(io::ErrorKind::Interrupted, "debugger request cancelled")
+}
+
+#[derive(Default)]
+struct DebugScope<'a> {
+    target: Option<(u64, u64)>,
+    cancellation: Option<&'a DebugCancellation>,
+}
+
+impl DebugScope<'_> {
+    fn dispatch(&self) -> io::Result<()> {
+        self.cancellation
+            .map_or(Ok(()), DebugCancellation::dispatch)
+    }
+}
+
+/// Host policy covers audio controls as well as guest writes.
+pub fn debug_requires_control(command: &lotus_protocol::debug::DebugCommand) -> bool {
+    use lotus_protocol::debug::DebugCommand;
+    command.mutates()
+        || matches!(
+            command,
+            DebugCommand::AudioFocus { .. } | DebugCommand::AudioCapture { .. }
+        )
+}
 
 /// Sessions per host unless the configuration raises it; four is the tested load.
 pub const DEFAULT_MAX_SESSIONS: usize = 4;
@@ -1673,9 +1765,34 @@ impl Supervisor {
             id,
             command,
             actor_client(actor),
-            Some((created_unix_ms, epoch)),
+            DebugScope {
+                target: Some((created_unix_ms, epoch)),
+                cancellation: None,
+            },
         )
         .await
+    }
+
+    /// Cancel queued desktop work, or drain a dispatched operation before
+    /// releasing its worker lock. The caller keeps polling this future until it returns.
+    pub async fn debug_at_cancellable(
+        &self,
+        id: &str,
+        expected: (u64, u64),
+        command: &lotus_protocol::debug::DebugCommand,
+        actor: Actor,
+        cancellation: &DebugCancellation,
+    ) -> io::Result<serde_json::Value> {
+        let scope = DebugScope {
+            target: Some(expected),
+            cancellation: Some(cancellation),
+        };
+        let mut phase = cancellation.0.subscribe();
+        tokio::select! {
+            biased;
+            _ = phase.wait_for(|phase| *phase == DebugPhase::Cancelled) => Err(debug_cancelled()),
+            result = self.debug_as_checked(id, command, actor_client(actor), scope) => result,
+        }
     }
 
     pub async fn subscribe(
@@ -1692,7 +1809,8 @@ impl Supervisor {
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
     ) -> io::Result<serde_json::Value> {
-        self.debug_as_checked(id, command, client, None).await
+        self.debug_as_checked(id, command, client, DebugScope::default())
+            .await
     }
 
     async fn debug_as_checked(
@@ -1700,11 +1818,14 @@ impl Supervisor {
         id: &str,
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
-        expected: Option<(u64, u64)>,
+        scope: DebugScope<'_>,
     ) -> io::Result<serde_json::Value> {
         use crate::policy::Tool;
         use lotus_protocol::debug::{DebugCommand, GpuCapture};
         command.validate().map_err(io::Error::other)?;
+        if debug_requires_control(command) {
+            self.require_control()?;
+        }
         let handle = self.handle(id)?;
         // Host-wide budgets (crate::policy). Session-long tools take a permit before any
         // await and record it after the worker accepted; one-shot full-state work holds a slot.
@@ -1756,9 +1877,7 @@ impl Supervisor {
             }
             _ => None,
         };
-        let mut result = self
-            .debug_inner(id, command, client, expected, permit)
-            .await?;
+        let mut result = self.debug_inner(id, command, client, scope, permit).await?;
         drop(slot);
         handle.native.lock().await.decorate(&mut result);
         Ok(result)
@@ -1769,22 +1888,14 @@ impl Supervisor {
         id: &str,
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
-        expected: Option<(u64, u64)>,
+        scope: DebugScope<'_>,
         permit: Option<(crate::policy::ToolPermit<'_>, bool)>,
     ) -> io::Result<serde_json::Value> {
         use lotus_protocol::debug::DebugCommand;
-        if command.mutates()
-            || matches!(
-                command,
-                DebugCommand::AudioFocus { .. } | DebugCommand::AudioCapture { .. }
-            )
-        {
-            self.require_control()?;
-        }
         let handle = self.handle(id)?;
         // Host presentation and orchestration operations own their own
         // lock lifetimes. Check their scoped target before routing them.
-        if expected.is_some()
+        if scope.target.is_some()
             && matches!(
                 command,
                 DebugCommand::AudioFocus { .. }
@@ -1793,7 +1904,8 @@ impl Supervisor {
             )
         {
             let native = handle.native.lock().await;
-            check_debug_target(expected, handle.info().created_unix_ms, native.epoch())?;
+            check_debug_target(scope.target, handle.info().created_unix_ms, native.epoch())?;
+            scope.dispatch()?;
         }
         if let DebugCommand::AudioFocus { enabled } = command {
             return self.focus_audio(id, *enabled).await;
@@ -1816,15 +1928,20 @@ impl Supervisor {
         if matches!(command, DebugCommand::Stop) {
             let metadata = {
                 let native = handle.native.lock().await;
-                check_debug_target(expected, handle.info().created_unix_ms, native.epoch())?;
+                check_debug_target(scope.target, handle.info().created_unix_ms, native.epoch())?;
                 check_lease(&handle, client)?;
+                scope.dispatch()?;
                 native.metadata()
             };
             self.stop(id, Actor::Host).await?;
             return Ok(serde_json::json!({"state":"stopped","metadata":metadata}));
         }
         let mut native = handle.native.lock().await;
-        check_debug_target(expected, handle.info().created_unix_ms, native.epoch())?;
+        check_debug_target(scope.target, handle.info().created_unix_ms, native.epoch())?;
+        if let Some(feature) = command.required_feature() {
+            native.require(feature)?;
+        }
+        scope.dispatch()?;
         if let DebugCommand::StorageBrowse {
             area,
             path,
@@ -1955,6 +2072,9 @@ impl Supervisor {
                     length: *length,
                 })
                 .await?;
+            if let Some(cancellation) = scope.cancellation {
+                cancellation.check()?;
+            }
             let bytes: Vec<u8> =
                 serde_json::from_value(result["bytes"].clone()).map_err(io::Error::other)?;
             let text = crate::disassembly::decode(&handle.root, *address, &bytes, *thumb).await?;
@@ -2313,6 +2433,40 @@ impl Supervisor {
         })?;
         if data.len() != artifact.bytes || format!("{:x}", Sha256::digest(&data)) != artifact.sha256
         {
+            return Err(io::Error::other("artifact identity mismatch"));
+        }
+        Ok(data)
+    }
+
+    /// Read bounded desktop captures with cancellation points between disk reads.
+    pub fn read_debug_artifact(
+        &self,
+        uri: &str,
+        limit: usize,
+        cancellation: &DebugCancellation,
+    ) -> io::Result<Vec<u8>> {
+        cancellation.check()?;
+        let (artifact, path) = lock(&self.artifacts).open_artifact(uri)?;
+        if artifact.bytes > limit {
+            return Err(io::Error::other("desktop artifact exceeds size limit"));
+        }
+        let mut file = fs::File::open(path)?;
+        let mut data = Vec::with_capacity(artifact.bytes);
+        let mut hash = Sha256::new();
+        let mut buffer = [0; 64 * 1024];
+        loop {
+            cancellation.check()?;
+            let read = file.read(&mut buffer)?;
+            if read == 0 {
+                break;
+            }
+            if read > artifact.bytes - data.len() {
+                return Err(io::Error::other("artifact identity mismatch"));
+            }
+            hash.update(&buffer[..read]);
+            data.extend_from_slice(&buffer[..read]);
+        }
+        if data.len() != artifact.bytes || format!("{:x}", hash.finalize()) != artifact.sha256 {
             return Err(io::Error::other("artifact identity mismatch"));
         }
         Ok(data)

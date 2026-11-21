@@ -4050,6 +4050,13 @@ impl LotusWindow {
                     ErrorKind::Unsupported => format!("Unsupported · {message}"),
                     _ => message.clone(),
                 },
+                DebugStatus::Cancelled { dispatched: false } => "Cancelled before dispatch".into(),
+                DebugStatus::Cancelled { dispatched: true } if request.requires_control => {
+                    "Cancelled display. The issued command may still change the session.".into()
+                }
+                DebugStatus::Cancelled { dispatched: true } => {
+                    "Cancelled display. The worker may still finish the command.".into()
+                }
                 DebugStatus::Expired => "Session or guest changed".into(),
             };
             let mut status = div()
@@ -4062,6 +4069,14 @@ impl LotusWindow {
                 .text_xs()
                 .text_color(theme.text_secondary)
                 .child(div().min_w_0().child(message));
+            if matches!(request.status, DebugStatus::Running) {
+                let id = request.id;
+                status = status.child(
+                    small_button(theme, "cancel-debug", "Cancel", Tone::Plain, true).on_click(
+                        cx.listener(move |view, _, _, _| view.send(Command::CancelDebug(id))),
+                    ),
+                );
+            }
             if current != Panel::Result && matches!(request.status, DebugStatus::Finished { .. }) {
                 let id = request.id;
                 let label = if self.hidden_debug_details.contains(&id) {

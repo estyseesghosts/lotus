@@ -119,6 +119,12 @@ preserves retained results for that session. Reset, reload, or replacement
 expires guest results and their surface images. Closing the window clears
 request history. The saved inspector panel is a window preference.
 
+**Cancel** removes a request waiting for the worker or a snapshot slot. An
+issued command drains to its worker reply and its result is discarded. Any
+effects of an issued mutation can still occur. Desktop capture reads check
+for cancellation between chunks. New inspector polls on that worker wait
+for explicit commands to finish.
+
 `wave3-native-inspector-01` covers both models through the controller, including
 100000-event import and closed manifests. `wave3-inspector-tests-03` and later
 checks cover the bounded view model. **Checked by screenshot**

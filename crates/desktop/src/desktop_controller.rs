@@ -26,7 +26,9 @@ use crate::ui_metrics::UiMetrics;
 use lotus_mcp::server::{Frontend, LotusServer};
 use lotus_protocol::debug::DebugCommand;
 use lotus_session::native_session::Frame;
-use lotus_session::supervisor::{HostConfig, SessionKind, SessionSummary, Supervisor};
+use lotus_session::supervisor::{
+    debug_requires_control, DebugCancellation, HostConfig, SessionKind, SessionSummary, Supervisor,
+};
 use lotus_session::telemetry::Actor;
 
 use crate::input_routing::InputRouting;
@@ -60,6 +62,7 @@ pub enum Command {
         panel: Panel,
         command: DebugCommand,
     },
+    CancelDebug(u64),
     OpenTrace {
         path: PathBuf,
     },
@@ -122,6 +125,7 @@ pub struct DebugRequest {
     pub panel: Panel,
     pub command: Arc<DebugCommand>,
     pub status: DebugStatus,
+    pub requires_control: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -134,6 +138,9 @@ pub enum DebugStatus {
     Failed {
         kind: io::ErrorKind,
         message: String,
+    },
+    Cancelled {
+        dispatched: bool,
     },
     Expired,
 }
@@ -330,7 +337,7 @@ impl DesktopController {
             inspection_selection: inspection_selection.clone(),
             previous_draw: Arc::default(),
             debug_sequence: Arc::default(),
-            debug_pending: Arc::default(),
+            active_debug: Arc::default(),
             result_generation: Arc::default(),
             shutdown: shutdown.clone(),
             pending: Arc::new(AtomicUsize::new(0)),
@@ -394,6 +401,8 @@ impl Drop for DesktopController {
     }
 }
 
+type ActiveDebug = BTreeMap<u64, (SessionTarget, DebugCancellation)>;
+
 #[derive(Clone)]
 struct Loops {
     host: Arc<Supervisor>,
@@ -405,7 +414,7 @@ struct Loops {
     inspection_selection: Arc<Mutex<(Panel, u32)>>,
     previous_draw: Arc<Mutex<Option<(SessionTarget, Value)>>>,
     debug_sequence: Arc<AtomicU64>,
-    debug_pending: Arc<AtomicUsize>,
+    active_debug: Arc<Mutex<ActiveDebug>>,
     result_generation: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
@@ -528,6 +537,11 @@ impl Loops {
                     .clone()
                     .unwrap_or_else(|| selected.clone());
                 update.retain_current_inspection();
+                for (target, cancellation) in lock(&self.active_debug).values() {
+                    if target.resolve(&update.sessions).is_none() {
+                        cancellation.cancel();
+                    }
+                }
                 update.inspected.clone()
             };
             self.inspected.send_if_modified(|current| {
@@ -556,6 +570,9 @@ impl Loops {
             }
             published_at = Some(now);
             ticker.tick().await;
+        }
+        for (_, cancellation) in lock(&self.active_debug).values() {
+            cancellation.cancel();
         }
         for task in background {
             task.abort();
@@ -738,6 +755,13 @@ impl Loops {
                 continue;
             }
             let selected = self.inspected.borrow().clone();
+            // New inspector polls yield to explicit commands on this worker.
+            if lock(&self.active_debug)
+                .values()
+                .any(|(target, _)| target.id == selected)
+            {
+                continue;
+            }
             let generation = self.generation.load(Ordering::Acquire);
             let Ok(summary) = self.host.summary(&selected) else {
                 continue;
@@ -966,6 +990,10 @@ impl Loops {
                 self.start_debug(target, panel, command);
                 continue;
             }
+            if let Command::CancelDebug(id) = command {
+                self.cancel_debug(id);
+                continue;
+            }
             let trace_generation = matches!(command, Command::OpenTrace { .. })
                 .then(|| self.result_generation.fetch_add(1, Ordering::AcqRel) + 1);
             self.pending.fetch_add(1, Ordering::AcqRel);
@@ -986,13 +1014,11 @@ impl Loops {
     fn start_debug(&self, target: SessionTarget, panel: Panel, command: DebugCommand) {
         let id = self.debug_sequence.fetch_add(1, Ordering::Relaxed);
         let mut update = lock(&self.published);
-        let allowed = self.debug_pending.load(Ordering::Acquire) < DEBUG_IN_FLIGHT
-            && update
-                .debug_requests
-                .iter()
-                .filter(|request| {
-                    request.target == target && matches!(request.status, DebugStatus::Running)
-                })
+        let mut active = lock(&self.active_debug);
+        let allowed = active.len() < DEBUG_IN_FLIGHT
+            && active
+                .values()
+                .filter(|(waiting, _)| waiting.id == target.id)
                 .count()
                 < DEBUG_PER_SESSION;
         let command = Arc::new(command);
@@ -1020,6 +1046,7 @@ impl Loops {
             target: target.clone(),
             panel,
             command: command.clone(),
+            requires_control: debug_requires_control(&command),
             status: if allowed {
                 DebugStatus::Running
             } else {
@@ -1032,11 +1059,13 @@ impl Loops {
         if !allowed {
             return;
         }
+        let cancellation = DebugCancellation::default();
+        active.insert(id, (target.clone(), cancellation.clone()));
+        drop(active);
         drop(update);
-        self.debug_pending.fetch_add(1, Ordering::AcqRel);
         let loops = self.clone();
         tokio::spawn(async move {
-            let status = loops.run_debug(&target, command).await;
+            let status = loops.run_debug(&target, command, cancellation).await;
             let mut update = lock(&loops.published);
             if let Some(request) = update
                 .debug_requests
@@ -1045,8 +1074,26 @@ impl Loops {
             {
                 request.status = status;
             }
-            loops.debug_pending.fetch_sub(1, Ordering::AcqRel);
+            lock(&loops.active_debug).remove(&id);
         });
+    }
+
+    fn cancel_debug(&self, id: u64) {
+        let mut update = lock(&self.published);
+        if let Some(request) = update
+            .debug_requests
+            .iter_mut()
+            .find(|request| request.id == id && matches!(request.status, DebugStatus::Running))
+        {
+            let mut active = lock(&self.active_debug);
+            if let Some((_, cancellation)) = active.get(&id) {
+                let dispatched = cancellation.cancel();
+                if !dispatched {
+                    active.remove(&id);
+                }
+                request.status = DebugStatus::Cancelled { dispatched };
+            }
+        }
     }
 
     async fn dispatch_debug(
@@ -1071,18 +1118,39 @@ impl Loops {
             .is_ok_and(|summary| target.resolve(std::slice::from_ref(&summary)).is_some())
     }
 
-    async fn run_debug(&self, target: &SessionTarget, command: Arc<DebugCommand>) -> DebugStatus {
+    async fn run_debug(
+        &self,
+        target: &SessionTarget,
+        command: Arc<DebugCommand>,
+        cancellation: DebugCancellation,
+    ) -> DebugStatus {
         if !self.target_exists(target) {
             return DebugStatus::Expired;
         }
-        let status = match self.dispatch_debug(target, &command).await {
-            Ok(value) if target.accepts_reply(&value) && self.target_exists(target) => {
+        let reply = self
+            .host
+            .debug_at_cancellable(
+                &target.id,
+                (target.created_unix_ms, target.epoch),
+                &command,
+                Actor::Desktop,
+                &cancellation,
+            )
+            .await;
+        let status = match reply {
+            Ok(value)
+                if cancellation.check().is_ok()
+                    && target.accepts_reply(&value)
+                    && self.target_exists(target) =>
+            {
                 let loops = self.clone();
                 let target = target.clone();
-                tokio::task::spawn_blocking(move || loops.format_debug(&target, &command, value))
-                    .await
-                    .map_err(io::Error::other)
-                    .and_then(|result| result)
+                tokio::task::spawn_blocking(move || {
+                    loops.format_debug(&target, &command, value, &cancellation)
+                })
+                .await
+                .map_err(io::Error::other)
+                .and_then(|result| result)
             }
             Ok(_) => return DebugStatus::Expired,
             Err(error) => Err(error),
@@ -1107,17 +1175,18 @@ impl Loops {
         target: &SessionTarget,
         command: &DebugCommand,
         mut value: Value,
+        cancellation: &DebugCancellation,
     ) -> io::Result<(Inspection, Option<DebugImage>)> {
+        cancellation.check()?;
         if matches!(
             command,
             DebugCommand::GpuDraw { .. } | DebugCommand::ShaderTrace { .. }
         ) {
             if let Some(uri) = value["artifacts"][0]["uri"].as_str() {
-                let bytes = self.host.read_artifact(uri)?;
-                if bytes.len() > 16 << 20 {
-                    return Err(io::Error::other("desktop GPU snapshot exceeds 16 MiB"));
-                }
+                let bytes = self.host.read_debug_artifact(uri, 16 << 20, cancellation)?;
+                cancellation.check()?;
                 let capture: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+                cancellation.check()?;
                 if matches!(command, DebugCommand::GpuDraw { .. }) {
                     let mut previous = lock(&self.previous_draw);
                     if let Some((_, before)) = previous.as_ref().filter(|(id, _)| id == target) {
@@ -1137,8 +1206,12 @@ impl Loops {
                 value["width"].as_u64(),
                 value["height"].as_u64(),
             ) {
-                let bytes = self.host.read_artifact(uri)?;
-                if width > 1024 || height > 1024 || bytes.len() != (width * height * 4) as usize {
+                if width > 1024 || height > 1024 {
+                    return Err(io::Error::other("invalid surface image bounds"));
+                }
+                let size = (width * height * 4) as usize;
+                let bytes = self.host.read_debug_artifact(uri, size, cancellation)?;
+                if bytes.len() != size {
                     return Err(io::Error::other("invalid surface image bounds"));
                 }
                 image = Some(DebugImage {
@@ -1149,6 +1222,7 @@ impl Loops {
                 });
             }
         }
+        cancellation.check()?;
         Ok((Inspection::from_value(&value, Panel::Result), image))
     }
 
@@ -1183,7 +1257,9 @@ impl Loops {
                 host.run(&session, actor).await?;
             }
             Command::Select(_) | Command::Inspect(_) => {}
-            Command::DebugAt { .. } => unreachable!("dispatched by drain_commands"),
+            Command::DebugAt { .. } | Command::CancelDebug(_) => {
+                unreachable!("dispatched by drain_commands")
+            }
             Command::OpenTrace { path } => {
                 let view = tokio::task::spawn_blocking(move || Inspection::load_trace(&path)).await;
                 let mut update = lock(&self.published);
@@ -1324,6 +1400,7 @@ mod tests {
             id: 1,
             target: target.clone(),
             panel: Panel::Gpu,
+            requires_control: true,
             command: Arc::new(DebugCommand::Surface {
                 address: 0,
                 width: 1,

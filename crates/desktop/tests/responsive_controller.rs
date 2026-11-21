@@ -217,6 +217,124 @@ fn root(base: &std::path::Path, id: &str) -> PathBuf {
         .join(id)
 }
 
+#[test]
+fn cancelling_a_debug_request_drains_issued_work_and_skips_queued_writes() {
+    use lotus_desktop::inspection::{Panel, SessionTarget};
+    use lotus_protocol::debug::{DebugCommand as D, SettingValue};
+
+    let base = std::env::temp_dir().join(format!("lotus-debug-cancel-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&base).unwrap();
+    let content = base.join("demo.3dsx");
+    std::fs::write(&content, b"3DSX").unwrap();
+    let mut config = HostConfig::new(mock_worker(), base.join("store"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("demo".into(), content)]);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    controller
+        .commands
+        .send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some("demo".into()),
+        })
+        .unwrap();
+    wait(&controller, "loaded worker", |update| {
+        update.sessions.iter().any(|s| s.telemetry.playing)
+    });
+    let summary = controller.latest.lock().unwrap().sessions[0].clone();
+    let target = SessionTarget {
+        id: summary.info.id,
+        created_unix_ms: summary.info.created_unix_ms,
+        epoch: summary.telemetry.epoch,
+    };
+    let stall = root(&base, &target.id).join("mock-stall-ms");
+    std::fs::write(&stall, "2000 debug").unwrap();
+    for (panel, value) in [(Panel::Settings, false), (Panel::Result, true)] {
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target: target.clone(),
+                panel,
+                command: D::SettingsSet {
+                    name: "use_hw_shader".into(),
+                    value: SettingValue::Boolean(value),
+                },
+            })
+            .unwrap();
+        if panel == Panel::Settings {
+            wait(&controller, "first write issued to worker", |_| {
+                !stall.exists()
+            });
+        }
+    }
+    wait(&controller, "two requests registered", |update| {
+        update
+            .debug_requests()
+            .filter(|request| matches!(request.status, DebugStatus::Running))
+            .count()
+            == 2
+    });
+    let [issued, queued]: [u64; 2] = controller
+        .latest
+        .lock()
+        .unwrap()
+        .debug_requests()
+        .map(|request| request.id)
+        .collect::<Vec<_>>()
+        .try_into()
+        .unwrap();
+    for id in [queued, issued] {
+        controller.commands.send(Command::CancelDebug(id)).unwrap();
+    }
+    wait(&controller, "both cancellation outcomes", |update| {
+        update.debug_requests().all(|request| {
+            matches!(
+                request.status,
+                DebugStatus::Cancelled { dispatched } if dispatched == (request.id == issued)
+            )
+        })
+    });
+    // A probe issued after cancellation can run once the first reply drains. The
+    // first write still took effect and the queued second write never reached the mock.
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target,
+            panel: Panel::Settings,
+            command: D::SettingsList {
+                offset: 0,
+                limit: 32,
+            },
+        })
+        .unwrap();
+    wait(&controller, "settings probe finished", |update| {
+        update
+            .debug_requests()
+            .any(|request| request.id > queued && !matches!(request.status, DebugStatus::Running))
+    });
+    {
+        let update = controller.latest.lock().unwrap();
+        let request = update.debug_requests().next_back().unwrap();
+        let DebugStatus::Finished { view, .. } = &request.status else {
+            panic!("settings probe: {:?}", request.status);
+        };
+        let setting = view
+            .rows
+            .iter()
+            .find(|row| row.key.ends_with(".name") && row.value == "\"use_hw_shader\"")
+            .expect("issued write survived");
+        let value_key = setting.key.strip_suffix(".name").unwrap().to_owned() + ".value";
+        assert!(
+            view.rows
+                .iter()
+                .any(|row| row.key == value_key && row.value == "false"),
+            "queued write must not change the value: {:?}",
+            view.rows
+        );
+    }
+    drop(controller);
+    let _ = std::fs::remove_dir_all(base);
+}
+
 /// Reset keeps the session ID but starts a new guest epoch. A cached static
 /// panel must disappear before the next request, rather than becoming new-guest data.
 #[test]
