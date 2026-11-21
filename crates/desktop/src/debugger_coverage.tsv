@@ -1,0 +1,117 @@
+# v1	surface, operation, desktop route, permission, extra feature, detail
+debug	advance	session controls	control	-	Current desktop controls expose a subset of arguments
+debug	asset_mount	palette	control	-	Planned in #141
+debug	audio_capture	inspector actions	control	-	-
+debug	audio_focus	inspector actions	control	-	-
+debug	backtrace	palette	read	-	Planned in #141
+debug	boot_home_menu	palette	control	-	Planned in #141
+debug	breakpoint_configure	palette	control	-	Planned in #141
+debug	breakpoint_remove	palette	control	-	Planned in #141
+debug	breakpoint_set	palette	control	-	Planned in #141
+debug	breakpoints	inspector polling	read	-	-
+debug	capture_scaled	palette	read	-	Planned in #141
+debug	cheat_add	palette	control	-	Planned in #141
+debug	cheat_enable	palette	control	-	Planned in #141
+debug	cheat_remove	palette	control	-	Planned in #141
+debug	cheats	palette	read	-	Planned in #141
+debug	citrace_replay	inspector actions	control	-	-
+debug	citrace_start	inspector actions	control	-	-
+debug	citrace_status	palette	read	-	Planned in #141
+debug	citrace_stop	inspector actions	control	-	-
+debug	content_transform	palette	control	-	Planned in #141
+debug	continue	session controls	control	-	Current desktop controls expose a subset of arguments
+debug	crash_report	palette	read	-	Planned in #141
+debug	deadlocks	palette	read	-	Planned in #141
+debug	disassemble	CPU inspector	read	-	-
+debug	dsp_inspect	inspector polling	read	-	-
+debug	dsp_load_firmware	palette	control	-	Planned in #141
+debug	events	inspector polling	read	-	-
+debug	events_configure	palette	control	event_subscriptions	Planned in #141
+debug	fork	palette	control	-	Planned in #141
+debug	gpu_configure	inspector actions	control	gpu_capture_levels when capture is set	-
+debug	gpu_draw	inspector rows	read	-	-
+debug	gpu_draws	inspector polling	read	-	-
+debug	handles	palette	read	-	Planned in #141
+debug	hio_forward	palette	control	-	Planned in #141
+debug	hio_reply	palette	control	-	Planned in #141
+debug	input_state	desktop input	control	-	Local input devices supply state through the input router
+debug	install_cia	palette	control	-	Planned in #141
+debug	lease_acquire	external only	control	-	Lease ownership belongs to the external controller
+debug	lease_release	external only	control	-	Lease ownership belongs to the external controller
+debug	load	session controls	control	-	Current desktop controls expose a subset of arguments
+debug	load_state	inspector rows	control	-	-
+debug	load_symbols	palette	control	-	Planned in #141
+debug	logs	inspector polling	read	-	-
+debug	matrix	palette	control	-	Planned in #141
+debug	memory_map	inspector polling	read	-	-
+debug	movie_play	palette	control	-	Planned in #141
+debug	movie_record	palette	control	-	Planned in #141
+debug	movie_status	palette	read	-	Planned in #141
+debug	movie_stop	palette	control	-	Planned in #141
+debug	nfc_remove	palette	control	-	Planned in #141
+debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments
+debug	perf	palette	read	-	Planned in #141
+debug	pointer_chain	palette	read	-	Planned in #141
+debug	processes	palette	read	-	Planned in #141
+debug	read_memory	palette	read	-	Planned in #141
+debug	registers	inspector polling	read	-	-
+debug	reset	session controls	control	-	Current desktop controls expose a subset of arguments
+debug	resolve_symbol	palette	read	-	Planned in #141
+debug	reverse_continue	inspector actions	control	-	-
+debug	reverse_step	inspector actions	control	-	-
+debug	rewind_configure	inspector actions	control	rewind_compression_queue when compression_queue is set	-
+debug	rewind_status	palette	read	-	Planned in #141
+debug	run_to	palette	control	-	Planned in #141
+debug	run_until	palette	control	-	Planned in #141
+debug	save_state	inspector actions	control	-	-
+debug	scan	palette	control	-	Planned in #141
+debug	scan_narrow	palette	control	-	Planned in #141
+debug	scan_results	palette	read	-	Planned in #141
+debug	settings_diff	palette	read	-	Planned in #141
+debug	settings_get	palette	read	-	Planned in #141
+debug	settings_list	inspector polling	read	-	-
+debug	settings_set	inspector rows	control	deterministic_async for deterministic_async_operations	-
+debug	shader_trace	inspector rows	control	-	-
+debug	state_hash	palette	control if dump is set	state_hash	Planned in #141
+debug	states	inspector polling	read	-	-
+debug	status	session status	read	-	Cached session summaries and gauges
+debug	step	inspector actions	control	-	-
+debug	step_out	inspector actions	control	-	-
+debug	step_over	inspector actions	control	-	-
+debug	stop	session controls	control	-	Current desktop controls expose a subset of arguments
+debug	storage_browse	palette	read	-	Planned in #141
+debug	surface	inspector rows	control	-	-
+debug	suspend	palette	control	-	Planned in #141
+debug	symbolize	palette	read	-	Planned in #141
+debug	system_regenerate	palette	control	-	Planned in #141
+debug	thread_registers	palette	read	-	Planned in #141
+debug	threads	inspector polling	read	-	-
+debug	titles	palette	read	-	Planned in #141
+debug	trace	inspector actions	control	-	-
+debug	write_memory	palette	control	-	Planned in #141
+debug	write_register	palette	control	-	Planned in #141
+debug	write_thread_register	palette	control	-	Planned in #141
+mcp-debug	lotus_capture	external only	read	-	Raw artifacts are exposed to external clients
+mcp-debug	lotus_capture_image	external only	read	-	Inline images are an MCP response format
+mcp	lotus_control	session controls	control	-	Run, pause, reset and stop
+mcp	lotus_create_session	session controls	control	-	Create or launch a card or secondary
+mcp-debug	lotus_debug	debug bridge	per operation	-	See the shared command inventory
+mcp	lotus_focus_session	workspace	presentation change	-	Select a session in the desktop
+mcp-debug	lotus_gdb	unavailable	control to start or stop	-	Dedicated lifecycle planned in #152
+mcp	lotus_input	desktop input	control	-	Device input through the desktop router
+mcp	lotus_input_presets	settings window	read or control by operation	-	Preset library and editor
+mcp	lotus_list_cards	session status	read	-	Card sidebar
+mcp	lotus_list_sessions	session status	read	-	Session sidebar
+mcp	lotus_load	session controls	control	-	Asset picker
+mcp	lotus_pin_artifact	external only	control	-	External artifact retention
+mcp-debug	lotus_read_memory	palette	read	-	Dedicated viewer planned in #145
+mcp-debug	lotus_registers	inspector polling	read	-	CPU inspector currently reads core 0
+mcp	lotus_release_artifacts	external only	control	-	External artifact retention
+mcp	lotus_run_until	session controls	control	-	Only single-frame advance in the desktop
+mcp	lotus_session_status	session status	read	-	Cached session summaries and gauges
+mcp	lotus_settings	settings window	read	-	Scoped settings view
+mcp	lotus_settings_change	settings window	control	-	Scope and application rules apply
+mcp	lotus_settings_schema	settings window	read	-	Settings registry drives the form
+mcp	lotus_status	session status	read	-	Desktop gauges show session status, not MCP server diagnostics
+mcp	lotus_validate_scenario	external only	read	-	Scenario authoring is currently external
+mcp	lotus_workspace	workspace	read or control by operation	-	Interactive tiling shares the workspace model

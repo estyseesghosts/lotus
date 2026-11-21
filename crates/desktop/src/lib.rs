@@ -4,6 +4,8 @@
 //! worker: it renders owned snapshots the controller publishes, and sends
 //! commands the same supervisor methods MCP uses.
 
+#[doc(hidden)]
+pub mod debugger_coverage;
 pub mod desktop_controller;
 pub mod gauges;
 pub mod icons;

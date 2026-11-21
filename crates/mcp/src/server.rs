@@ -107,6 +107,15 @@ impl LotusServer {
         }
     }
 
+    /// Names from the same router that serves MCP tools/list.
+    pub fn registered_tool_names(&self) -> Vec<String> {
+        self.tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect()
+    }
+
     #[must_use]
     pub fn host(&self) -> Option<&Arc<Supervisor>> {
         self.host.as_ref()
