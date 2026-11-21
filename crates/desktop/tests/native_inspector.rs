@@ -3,7 +3,7 @@ use lotus_desktop::{
     desktop_controller::{
         Command, DebugStatus, DesktopController, GdbAction, GdbFeedback, McpMode, Update,
     },
-    inspection::{InspectionSelection, Panel, SessionTarget},
+    inspection::{DrawArtifact, InspectionSelection, Panel, SessionTarget},
 };
 use lotus_mcp::tool_arguments::{DebugArgs, GdbArgs, GdbOperation};
 use lotus_protocol::{
@@ -38,6 +38,81 @@ fn wait(controller: &DesktopController, predicate: impl Fn(&Update) -> bool) {
         }
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+fn check_gpu_comparison(controller: &DesktopController, target: &SessionTarget) {
+    let send = |command| {
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target: target.clone(),
+                panel: Panel::Gpu,
+                command,
+            })
+            .unwrap()
+    };
+    send(D::GpuConfigure {
+        enabled: true,
+        stop_events: vec![],
+        capture: Some(GpuCapture::Draws),
+        draw_range: None,
+        max_draws: Some(4096),
+        resources: Some(false),
+    });
+    wait(controller, |update| {
+        target
+            .resolve(&update.sessions)
+            .and_then(|summary| summary.telemetry.gpu_capture.as_ref())
+            .is_some_and(|ack| ack.max_draws == 4096)
+    });
+    send(D::Advance { frames: 2 });
+    let snapshot_ids = |update: &Update| -> Vec<u64> {
+        update
+            .inspection
+            .as_ref()
+            .and_then(|snapshot| snapshot.view.draws.as_deref())
+            .into_iter()
+            .flatten()
+            .filter(|header| header.snapshot == Some(true))
+            .map(|header| header.draw)
+            .take(2)
+            .collect()
+    };
+    wait(controller, |update| snapshot_ids(update).len() == 2);
+    let ids = snapshot_ids(&controller.latest.lock().unwrap());
+    let load = |draw| -> DrawArtifact {
+        send(D::GpuDraw { draw });
+        let pick = |update: &Update| {
+            let request = update.debug_result(Panel::Gpu)?;
+            if !matches!(request.native_command(), Some(D::GpuDraw { draw: id }) if *id == draw) {
+                return None;
+            }
+            match &request.status {
+                DebugStatus::Finished { view, .. } => view.draw_artifact.clone(),
+                DebugStatus::Failed { message, .. } => {
+                    panic!("Draw {draw} capture failed: {message}")
+                }
+                _ => None,
+            }
+        };
+        wait(controller, |update| pick(update).is_some());
+        pick(&controller.latest.lock().unwrap()).unwrap()
+    };
+    let (a, b) = (load(ids[0]), load(ids[1]));
+    controller
+        .commands
+        .send(Command::CompareGpuDraws { a, b })
+        .unwrap();
+    let pair = format!("A {} → B {}", ids[0], ids[1]);
+    wait(controller, |update| {
+        update.debug_result(Panel::Gpu).is_some_and(|request| {
+            request.operation == "compare_draws"
+                && matches!(&request.status, DebugStatus::Finished { view, .. }
+                    if view.rows[0].key == pair
+                        && view.rows.iter().any(|row| row.key == "resources"
+                            && row.value == "Unavailable for A and B"))
+        })
+    });
 }
 
 fn gdb_packet(socket: &mut TcpStream, request: &str) -> Vec<u8> {
@@ -502,7 +577,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             .unwrap();
         wait(&controller, |update| {
             update.debug_result(Panel::Gpu).is_some_and(|request| {
-                matches!(request.command.as_ref(), D::GpuDraw { .. })
+                matches!(request.native_command(), Some(D::GpuDraw { .. }))
                     && matches!(&request.status, DebugStatus::Finished { view, .. }
                         if view.rows.iter().any(|row| row.key.starts_with(".capture.")))
             })
@@ -511,6 +586,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             controller.inspection_selection.lock().unwrap().panel,
             Panel::Gpu
         );
+        check_gpu_comparison(&controller, &target);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

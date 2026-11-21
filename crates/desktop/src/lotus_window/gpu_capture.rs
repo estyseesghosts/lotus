@@ -137,7 +137,7 @@ impl GpuPanel {
             .debug_requests()
             .rev()
             .find(|request| {
-                matches!(request.command.as_ref(), D::GpuConfigure { .. })
+                matches!(request.native_command(), Some(D::GpuConfigure { .. }))
                     && request
                         .target
                         .is_current(&update.inspected, &update.sessions)
@@ -514,14 +514,14 @@ impl LotusWindow {
             .as_ref()
             .filter(|request| &request.target == target)
         {
-            if let D::GpuConfigure {
+            if let Some(D::GpuConfigure {
                 enabled,
                 stop_events,
                 capture,
                 draw_range,
                 max_draws,
                 resources,
-            } = request.command.as_ref()
+            }) = request.native_command()
             {
                 let mode = Mode(enabled.then(|| capture.unwrap_or(GpuCapture::Full)));
                 let outcome = match &request.status {

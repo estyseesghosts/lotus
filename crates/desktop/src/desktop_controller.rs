@@ -21,7 +21,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::inspection::{
-    self, Inspection, InspectionSelection, InspectionSnapshot, Panel, SessionTarget,
+    self, DrawArtifact, Inspection, InspectionSelection, InspectionSnapshot, Panel, SessionTarget,
 };
 use crate::presence::{self, Presence};
 use crate::ui_metrics::UiMetrics;
@@ -63,6 +63,10 @@ pub enum Command {
         target: SessionTarget,
         panel: Panel,
         command: DebugCommand,
+    },
+    CompareGpuDraws {
+        a: DrawArtifact,
+        b: DrawArtifact,
     },
     CancelDebug(u64),
     Gdb {
@@ -155,10 +159,25 @@ pub struct DebugRequest {
     pub id: u64,
     pub target: SessionTarget,
     pub panel: Panel,
-    pub command: Arc<DebugCommand>,
+    pub action: Arc<DebugAction>,
     pub operation: String,
     pub status: DebugStatus,
     pub requires_control: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum DebugAction {
+    Native(DebugCommand),
+    CompareGpuDraws { a: DrawArtifact, b: DrawArtifact },
+}
+
+impl DebugRequest {
+    pub fn native_command(&self) -> Option<&DebugCommand> {
+        match &*self.action {
+            DebugAction::Native(command) => Some(command),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -378,7 +397,6 @@ impl DesktopController {
             published: latest.clone(),
             inspector: inspector.clone(),
             inspection_selection: inspection_selection.clone(),
-            previous_draw: Arc::default(),
             debug_sequence: Arc::default(),
             active_debug: Arc::default(),
             result_generation: Arc::default(),
@@ -462,7 +480,6 @@ struct Loops {
     published: Arc<Mutex<Update>>,
     inspector: Arc<AtomicBool>,
     inspection_selection: Arc<Mutex<InspectionSelection>>,
-    previous_draw: Arc<Mutex<Option<(SessionTarget, Value)>>>,
     debug_sequence: Arc<AtomicU64>,
     active_debug: Arc<Mutex<ActiveDebug>>,
     result_generation: Arc<AtomicU64>,
@@ -1066,7 +1083,15 @@ impl Loops {
                 command,
             } = command
             {
-                self.start_debug(target, panel, command);
+                self.start_debug(target, panel, DebugAction::Native(command));
+                continue;
+            }
+            if let Command::CompareGpuDraws { a, b } = command {
+                self.start_debug(
+                    b.target.clone(),
+                    Panel::Gpu,
+                    DebugAction::CompareGpuDraws { a, b },
+                );
                 continue;
             }
             if let Command::CancelDebug(id) = command {
@@ -1138,12 +1163,18 @@ impl Loops {
         });
     }
 
-    fn start_debug(&self, target: SessionTarget, panel: Panel, command: DebugCommand) {
+    fn start_debug(&self, target: SessionTarget, panel: Panel, action: DebugAction) {
         let id = self.debug_sequence.fetch_add(1, Ordering::Relaxed);
-        let operation = serde_json::to_value(&command)
-            .ok()
-            .and_then(|value| value["operation"].as_str().map(str::to_owned))
-            .unwrap_or_default();
+        let (operation, requires_control) = match &action {
+            DebugAction::Native(command) => (
+                serde_json::to_value(command)
+                    .ok()
+                    .and_then(|value| value["operation"].as_str().map(str::to_owned))
+                    .unwrap_or_default(),
+                debug_requires_control(command),
+            ),
+            DebugAction::CompareGpuDraws { .. } => ("compare_draws".into(), false),
+        };
         let mut update = lock(&self.published);
         let mut active = lock(&self.active_debug);
         let allowed = active.len() < DEBUG_IN_FLIGHT
@@ -1152,7 +1183,7 @@ impl Loops {
                 .filter(|(waiting, _)| waiting.id == target.id)
                 .count()
                 < DEBUG_PER_SESSION;
-        let command = Arc::new(command);
+        let action = Arc::new(action);
         if panel == Panel::Result {
             self.result_generation.fetch_add(1, Ordering::AcqRel);
             if update
@@ -1176,9 +1207,9 @@ impl Loops {
             id,
             target: target.clone(),
             panel,
-            command: command.clone(),
+            action: action.clone(),
             operation,
-            requires_control: debug_requires_control(&command),
+            requires_control,
             status: if allowed {
                 DebugStatus::Running
             } else {
@@ -1197,7 +1228,7 @@ impl Loops {
         drop(update);
         let loops = self.clone();
         tokio::spawn(async move {
-            let status = loops.run_debug(&target, command, cancellation).await;
+            let status = loops.run_debug(&target, action, cancellation).await;
             let mut update = lock(&loops.published);
             if let Some(request) = update
                 .debug_requests
@@ -1253,22 +1284,26 @@ impl Loops {
     async fn run_debug(
         &self,
         target: &SessionTarget,
-        command: Arc<DebugCommand>,
+        action: Arc<DebugAction>,
         cancellation: DebugCancellation,
     ) -> DebugStatus {
         if !self.target_exists(target) {
             return DebugStatus::Expired;
         }
-        let reply = self
-            .host
-            .debug_at_cancellable(
-                &target.id,
-                (target.created_unix_ms, target.epoch),
-                &command,
-                Actor::Desktop,
-                &cancellation,
-            )
-            .await;
+        let reply = match &*action {
+            DebugAction::Native(command) => {
+                self.host
+                    .debug_at_cancellable(
+                        &target.id,
+                        (target.created_unix_ms, target.epoch),
+                        command,
+                        Actor::Desktop,
+                        &cancellation,
+                    )
+                    .await
+            }
+            DebugAction::CompareGpuDraws { .. } => Ok(Value::Null),
+        };
         let status = match reply {
             Ok(value)
                 if cancellation.check().is_ok()
@@ -1277,8 +1312,27 @@ impl Loops {
             {
                 let loops = self.clone();
                 let target = target.clone();
-                tokio::task::spawn_blocking(move || {
-                    loops.format_debug(&target, &command, value, &cancellation)
+                tokio::task::spawn_blocking(move || match &*action {
+                    DebugAction::Native(command) => {
+                        loops.format_debug(&target, command, value, &cancellation)
+                    }
+                    DebugAction::CompareGpuDraws { a, b } => {
+                        if a.target != target || b.target != target || a.draw == b.draw {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "Choose two different snapshots from this guest",
+                            ));
+                        }
+                        let first = loops.load_draw_capture(a, &cancellation).map_err(|err| {
+                            io::Error::new(err.kind(), format!("Draw A ({}) · {err}", a.draw))
+                        })?;
+                        let second = loops.load_draw_capture(b, &cancellation).map_err(|err| {
+                            io::Error::new(err.kind(), format!("Draw B ({}) · {err}", b.draw))
+                        })?;
+                        let view = Inspection::compare_draws(&first, &second, target.epoch);
+                        cancellation.check()?;
+                        Ok((view, None))
+                    }
                 })
                 .await
                 .map_err(io::Error::other)
@@ -1302,6 +1356,28 @@ impl Loops {
         }
     }
 
+    fn load_draw_capture(
+        &self,
+        artifact: &DrawArtifact,
+        cancellation: &DebugCancellation,
+    ) -> io::Result<Value> {
+        let bytes = self.host.read_debug_artifact(
+            &artifact.target.id,
+            &artifact.uri,
+            16 << 20,
+            cancellation,
+        )?;
+        cancellation.check()?;
+        let capture: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+        cancellation.check()?;
+        if capture["draw"].as_u64() != Some(artifact.draw) {
+            return Err(io::Error::other(
+                "Capture artifact does not match the requested draw",
+            ));
+        }
+        Ok(capture)
+    }
+
     fn format_debug(
         &self,
         target: &SessionTarget,
@@ -1310,32 +1386,28 @@ impl Loops {
         cancellation: &DebugCancellation,
     ) -> io::Result<(Inspection, Option<DebugImage>)> {
         cancellation.check()?;
+        let mut draw_artifact = None;
         if let DebugCommand::GpuDraw { draw } | DebugCommand::ShaderTrace { draw, .. } = command {
             let artifact = &value["artifacts"][0];
             let uri = artifact["uri"]
                 .as_str()
                 .filter(|_| artifact["session"].as_str() == Some(&target.id))
                 .ok_or_else(|| io::Error::other("Capture artifact unavailable for this session"))?;
-            let bytes = self.host.read_debug_artifact(uri, 16 << 20, cancellation)?;
-            cancellation.check()?;
-            let capture: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-            cancellation.check()?;
-            if capture["draw"].as_u64() != Some(*draw)
-                || matches!(command, DebugCommand::ShaderTrace { vertex, .. }
+            let artifact = DrawArtifact {
+                target: target.clone(),
+                draw: *draw,
+                uri: uri.to_owned(),
+            };
+            let capture = self.load_draw_capture(&artifact, cancellation)?;
+            if matches!(command, DebugCommand::ShaderTrace { vertex, .. }
                     if capture["vertex"].as_u64() != Some(u64::from(*vertex)))
             {
                 return Err(io::Error::other(
-                    "Capture artifact does not match the requested draw or vertex",
+                    "Capture artifact does not match the requested vertex",
                 ));
             }
-            if matches!(command, DebugCommand::GpuDraw { .. }) {
-                let mut previous = lock(&self.previous_draw);
-                if let Some((_, before)) = previous.as_ref().filter(|(id, _)| id == target) {
-                    value["draw_changes"] =
-                        serde_json::to_value(Inspection::draw_diff(before, &capture))
-                            .map_err(io::Error::other)?;
-                }
-                *previous = Some((target.clone(), capture.clone()));
+            if matches!(command, DebugCommand::GpuDraw { .. }) && capture["registers"].is_array() {
+                draw_artifact = Some(artifact);
             }
             value["capture"] = capture;
         }
@@ -1350,7 +1422,9 @@ impl Loops {
                     return Err(io::Error::other("invalid surface image bounds"));
                 }
                 let size = (width * height * 4) as usize;
-                let bytes = self.host.read_debug_artifact(uri, size, cancellation)?;
+                let bytes = self
+                    .host
+                    .read_debug_artifact(&target.id, uri, size, cancellation)?;
                 if bytes.len() != size {
                     return Err(io::Error::other("invalid surface image bounds"));
                 }
@@ -1363,7 +1437,9 @@ impl Loops {
             }
         }
         cancellation.check()?;
-        Ok((Inspection::from_value(&value, Panel::Result), image))
+        let mut view = Inspection::from_value(&value, Panel::Result);
+        view.draw_artifact = draw_artifact;
+        Ok((view, image))
     }
 
     async fn execute(&self, command: Command, trace_generation: Option<u64>) -> io::Result<()> {
@@ -1397,7 +1473,10 @@ impl Loops {
                 host.run(&session, actor).await?;
             }
             Command::Select(_) | Command::Inspect(_) => {}
-            Command::DebugAt { .. } | Command::CancelDebug(_) | Command::Gdb { .. } => {
+            Command::DebugAt { .. }
+            | Command::CompareGpuDraws { .. }
+            | Command::CancelDebug(_)
+            | Command::Gdb { .. } => {
                 unreachable!("dispatched by drain_commands")
             }
             Command::OpenTrace { path } => {
@@ -1548,12 +1627,12 @@ mod tests {
             panel: Panel::Gpu,
             requires_control: true,
             operation: "surface".into(),
-            command: Arc::new(DebugCommand::Surface {
+            action: Arc::new(DebugAction::Native(DebugCommand::Surface {
                 address: 0,
                 width: 1,
                 height: 1,
                 format: 0,
-            }),
+            })),
             status: DebugStatus::Finished {
                 view: reply(target).view,
                 image: Some(Arc::new(image)),

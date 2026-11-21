@@ -2524,12 +2524,19 @@ impl Supervisor {
     /// Read bounded desktop captures with cancellation points between disk reads.
     pub fn read_debug_artifact(
         &self,
+        session: &str,
         uri: &str,
         limit: usize,
         cancellation: &DebugCancellation,
     ) -> io::Result<Vec<u8>> {
         cancellation.check()?;
         let (artifact, path) = lock(&self.artifacts).open_artifact(uri)?;
+        if artifact.session != session {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "capture artifact belongs to another session",
+            ));
+        }
         if artifact.bytes > limit {
             return Err(io::Error::other("desktop artifact exceeds size limit"));
         }

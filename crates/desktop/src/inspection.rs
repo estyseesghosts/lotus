@@ -316,6 +316,7 @@ pub(crate) struct PanelState {
     offset: u64,
     back: VecDeque<u64>,
     pub(crate) selected_draw: Option<u64>,
+    pub(crate) draw_a: Option<DrawArtifact>,
 }
 
 impl PanelState {
@@ -374,6 +375,15 @@ pub struct Inspection {
     pub error: Option<(io::ErrorKind, String)>,
     pub gpu: Option<GpuActivity>,
     pub draws: Option<Arc<Vec<DrawHeader>>>,
+    pub draw_artifact: Option<DrawArtifact>,
+}
+
+/// An immutable artifact from a completed GpuDraw request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrawArtifact {
+    pub(crate) target: SessionTarget,
+    pub(crate) draw: u64,
+    pub(crate) uri: String,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -651,6 +661,7 @@ impl Inspection {
                 None
             },
             draws: draw_headers,
+            draw_artifact: None,
         }
     }
 
@@ -663,6 +674,41 @@ impl Inspection {
             error: Some((error.kind(), error.to_string())),
             gpu: None,
             draws: None,
+            draw_artifact: None,
+        }
+    }
+    pub(crate) fn compare_draws(first: &Value, second: &Value, epoch: u64) -> Self {
+        let a = &first["draw"];
+        let b = &second["draw"];
+        let changes = Self::draw_diff(first, second);
+        let mut rows = vec![Row {
+            lane: "GPU",
+            key: format!("A {a} → B {b}"),
+            value: match changes.len() {
+                0 => "No differences in available captured state".into(),
+                128 => "Showing up to 128 changes and unavailable fields".into(),
+                _ => "Captured state differences and unavailable fields".into(),
+            },
+            action: None,
+        }];
+        rows.extend(changes.into_iter().map(|change| {
+            let (key, value) = change.split_once(": ").unwrap_or(("", &change));
+            Row {
+                lane: "diff",
+                key: key.into(),
+                value: value.into(),
+                action: None,
+            }
+        }));
+        Self {
+            rows: Arc::new(rows),
+            source: format!("Captured draws {a} and {b} · epoch {epoch}"),
+            next: None,
+            lost: 0,
+            error: None,
+            gpu: None,
+            draws: None,
+            draw_artifact: None,
         }
     }
     pub fn draw_diff(before: &Value, after: &Value) -> Vec<String> {
@@ -675,7 +721,9 @@ impl Inspection {
             "swizzle",
             "resources",
         ] {
-            if let (Some(a), Some(b)) = (before[key].as_array(), after[key].as_array()) {
+            let a = before[key].as_array();
+            let b = after[key].as_array();
+            if let (Some(a), Some(b)) = (a, b) {
                 for i in 0..a.len().max(b.len()) {
                     let same = if key == "resources" {
                         a.get(i).zip(b.get(i)).is_some_and(|(a, b)| {
@@ -705,6 +753,17 @@ impl Inspection {
                             return changes;
                         }
                     }
+                }
+            } else {
+                let missing = match (a, b) {
+                    (None, None) => "A and B",
+                    (None, Some(_)) => "A",
+                    (Some(_), None) => "B",
+                    (Some(_), Some(_)) => unreachable!(),
+                };
+                changes.push(format!("{key}: Unavailable for {missing}"));
+                if changes.len() == 128 {
+                    return changes;
                 }
             }
         }
@@ -759,6 +818,7 @@ impl Inspection {
             error: None,
             gpu: None,
             draws: None,
+            draw_artifact: None,
         })
     }
 }
@@ -878,7 +938,10 @@ mod tests {
         let a = serde_json::json!({"registers":[1,2],"resources":[{"address":16,"content_xxh3_64":5,"version":1}]});
         let b = serde_json::json!({"registers":[1,3],"resources":[{"address":16,"content_xxh3_64":5,"version":2}]});
         let changes = Inspection::draw_diff(&a, &b);
-        assert_eq!(changes.len(), 1);
         assert!(changes[0].starts_with("registers[1]"));
+        assert!(changes
+            .iter()
+            .any(|change| change == "swizzle: Unavailable for A and B"));
+        assert!(!changes.iter().any(|change| change.starts_with("resources")));
     }
 }

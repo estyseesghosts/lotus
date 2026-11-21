@@ -3542,8 +3542,8 @@ impl LotusWindow {
 
     fn debug_details_visible(&self, request: &DebugRequest) -> bool {
         let show_by_default = !matches!(
-            (request.panel, request.command.as_ref()),
-            (Panel::Gpu, D::GpuConfigure { .. })
+            (request.panel, request.native_command()),
+            (Panel::Gpu, Some(D::GpuConfigure { .. }))
         );
         show_by_default != self.toggled_debug_details.contains(&request.id)
     }
@@ -4227,6 +4227,13 @@ impl LotusWindow {
                     .is_none_or(|owner| Some(owner) == target.as_ref())
                 && snapshot.offset.is_none_or(|page| page == offset)
         });
+        if let Some(target) = target.as_ref().filter(|_| current == Panel::Gpu) {
+            panel = panel.children(self.render_draw_comparison_controls(
+                target,
+                snapshot.and_then(|snap| snap.view.draw_artifact.as_ref()),
+                cx,
+            ));
+        }
         if let Some(target) = target.as_ref().filter(|_| {
             current != Panel::Result && snapshot.is_none_or(|snapshot| snapshot.offset.is_some())
         }) {
@@ -4543,6 +4550,78 @@ impl LotusWindow {
                 .flex_1()
                 .min_h_0(),
             )
+    }
+
+    fn render_draw_comparison_controls(
+        &self,
+        target: &SessionTarget,
+        current: Option<&inspection::DrawArtifact>,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        let baseline = self
+            .inspector_state
+            .panel(target, Panel::Gpu)
+            .and_then(|state| state.draw_a.as_ref());
+        if baseline.is_none() && current.is_none() {
+            return None;
+        }
+        let theme = theme::palette(cx);
+        let mut bar = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap_1()
+            .px_2()
+            .py_1()
+            .text_xs()
+            .child(baseline.map_or_else(
+                || "Compare captured draws".into(),
+                |a| format!("A · draw {}", a.draw),
+            ));
+        if let Some(a) = baseline {
+            let a = a.clone();
+            bar = bar.child(
+                small_button(theme, "clear-draw-a", "Clear A", Tone::Plain, true).on_click(
+                    cx.listener(move |view, _, _, cx| {
+                        if view.inspection_target().as_ref() == Some(&a.target) {
+                            view.inspector_state.panel_mut(&a.target, Panel::Gpu).draw_a = None;
+                            cx.notify();
+                        }
+                    }),
+                ),
+            );
+        }
+        if let Some(b) = current.filter(|b| baseline.is_none_or(|a| a.draw != b.draw)) {
+            let selected = b.clone();
+            bar = bar.child(format!("Selected · draw {}", b.draw));
+            bar = bar.child(
+                small_button(theme, "set-draw-a", "Set as A", Tone::Plain, true).on_click(
+                    cx.listener(move |view, _, _, cx| {
+                        if view.inspection_target().as_ref() == Some(&selected.target) {
+                            view.inspector_state
+                                .panel_mut(&selected.target, Panel::Gpu)
+                                .draw_a = Some(selected.clone());
+                            cx.notify();
+                        }
+                    }),
+                ),
+            );
+            if let Some(a) = baseline {
+                let (a, b) = (a.clone(), b.clone());
+                bar = bar.child(
+                    small_button(theme, "compare-draws", "Compare as B", Tone::Primary, true)
+                        .on_click(cx.listener(move |view, _, _, _| {
+                            if view.inspection_target().as_ref() == Some(&b.target) {
+                                view.send(Command::CompareGpuDraws {
+                                    a: a.clone(),
+                                    b: b.clone(),
+                                });
+                            }
+                        })),
+                );
+            }
+        }
+        Some(bar)
     }
 
     /// Utilities that are not tied to the selected view.
