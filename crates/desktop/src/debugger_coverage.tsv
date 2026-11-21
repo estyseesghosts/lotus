@@ -28,7 +28,7 @@ debug	dsp_load_firmware	palette	control	-	-
 debug	events	inspector polling	read	-	-
 debug	events_configure	palette	control	event_subscriptions	-
 debug	fork	palette	control	-	-
-debug	gpu_configure	inspector actions	control	gpu_capture_levels when capture is set	-
+debug	gpu_configure	GPU capture form	control	gpu_capture_levels when capture is set	Named presets and all capture options (#147).
 debug	gpu_draw	inspector rows	read	-	-
 debug	gpu_draws	inspector polling	read	-	-
 debug	handles	palette	read	-	-

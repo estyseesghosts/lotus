@@ -409,6 +409,16 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         }
         *controller.inspection_selection.lock().unwrap() =
             InspectionSelection::first_page(Panel::Gpu);
+        wait(&controller, |update| {
+            update
+                .inspection
+                .as_ref()
+                .and_then(|snapshot| snapshot.view.gpu.as_ref())
+                .is_some_and(|gpu| gpu.command_path == "batched" && gpu.snapshots_taken == Some(0))
+                && target
+                    .resolve(&update.sessions)
+                    .is_some_and(|summary| summary.telemetry.gpu_capture.is_none())
+        });
         controller
             .commands
             .send(Command::DebugAt {
@@ -418,9 +428,9 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
                     enabled: true,
                     stop_events: vec![],
                     capture: Some(GpuCapture::Draws),
-                    draw_range: None,
+                    draw_range: Some([0, u64::MAX]),
                     max_draws: Some(8),
-                    resources: None,
+                    resources: Some(false),
                 },
             })
             .unwrap();
@@ -428,6 +438,17 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             update
                 .debug_result(Panel::Gpu)
                 .is_some_and(|request| matches!(&request.status, DebugStatus::Finished { .. }))
+                && target
+                    .resolve(&update.sessions)
+                    .and_then(|summary| summary.telemetry.gpu_capture.as_ref())
+                    .is_some_and(|ack| {
+                        ack.epoch == target.epoch
+                            && ack.enabled
+                            && ack.capture == GpuCapture::Draws
+                            && ack.draw_range == Some([0, u64::MAX])
+                            && ack.max_draws == 8
+                            && !ack.resources
+                    })
         });
         controller
             .commands
@@ -441,6 +462,11 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             update.inspection.as_ref().is_some_and(|snapshot| {
                 snapshot.panel == Panel::Gpu
                     && snapshot.view.rows.iter().any(|row| row.action.is_some())
+                    && snapshot.view.gpu.as_ref().is_some_and(|gpu| {
+                        gpu.command_path == "per_command"
+                            && gpu.snapshots_taken == Some(8)
+                            && gpu.snapshots_skipped_budget.is_some_and(|count| count > 0)
+                    })
             })
         });
         let command = {
@@ -475,6 +501,63 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             controller.inspection_selection.lock().unwrap().panel,
             Panel::Gpu
         );
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let server = controller.mcp_server();
+        let reply = tool_json(runtime.block_on(server.lotus_debug(Parameters(DebugArgs {
+            session: id.clone(),
+            command: D::GpuConfigure {
+                enabled: true,
+                stop_events: vec![2, 7],
+                capture: Some(GpuCapture::Draws),
+                draw_range: Some([10, 20]),
+                max_draws: Some(4096),
+                resources: Some(true),
+            },
+        }))));
+        wait(&controller, |update| {
+            target
+                .resolve(&update.sessions)
+                .and_then(|summary| summary.telemetry.gpu_capture.as_ref())
+                .is_some_and(|ack| {
+                    ack.enabled
+                        && ack.capture == GpuCapture::Draws
+                        && ack.stop_events == [2, 7]
+                        && ack.draw_range == Some([10, 20])
+                        && ack.max_draws == 4096
+                        && ack.resources
+                        && ack.epoch == target.epoch
+                })
+        });
+        assert_eq!(reply["stop_events"], serde_json::json!([2, 7]));
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target: target.clone(),
+                panel: Panel::Gpu,
+                command: D::GpuConfigure {
+                    enabled: false,
+                    stop_events: vec![],
+                    capture: Some(GpuCapture::Counters),
+                    draw_range: None,
+                    max_draws: None,
+                    resources: None,
+                },
+            })
+            .unwrap();
+        wait(&controller, |update| {
+            target
+                .resolve(&update.sessions)
+                .and_then(|summary| summary.telemetry.gpu_capture.as_ref())
+                .is_some_and(|ack| !ack.enabled && ack.stop_events.is_empty())
+                && update
+                    .inspection
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.view.gpu.as_ref())
+                    .is_some_and(|gpu| gpu.command_path == "batched")
+        });
         check_gdb_ownership(&controller, &target, pc);
         gdb_action(&controller, &target, GdbAction::Start { port: 0 });
         let before_reset = listener(&controller, &target);
@@ -582,6 +665,32 @@ fn gdb_reports_unsupported_on_azahar() {
         controller.latest.lock().unwrap().gdb_status[&target].address,
         None
     );
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: target.clone(),
+            panel: Panel::Gpu,
+            command: D::GpuConfigure {
+                enabled: true,
+                stop_events: vec![],
+                capture: Some(GpuCapture::Events),
+                draw_range: None,
+                max_draws: None,
+                resources: None,
+            },
+        })
+        .unwrap();
+    wait(&controller, |update| {
+        update.debug_result(Panel::Gpu).is_some_and(|request| {
+            matches!(
+                &request.status, DebugStatus::Failed { kind: ErrorKind::Unsupported, message }
+                if message.contains("gpu_capture_levels")
+            )
+        })
+    });
+    assert!(target
+        .resolve(&controller.latest.lock().unwrap().sessions)
+        .is_some_and(|summary| summary.telemetry.gpu_capture.is_none()));
     drop(controller);
     assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
     std::fs::remove_dir_all(root).unwrap();

@@ -1,5 +1,6 @@
 //! Owned inspector rows. Parsing, formatting and trace loading run off the GPUI thread.
 use lotus_protocol::debug::DebugCommand as D;
+use serde::Deserialize;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -371,6 +372,26 @@ pub struct Inspection {
     pub next: Option<u64>,
     pub lost: u64,
     pub error: Option<(io::ErrorKind, String)>,
+    pub gpu: Option<GpuActivity>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct GpuActivity {
+    pub command_path: String,
+    pub capture: lotus_protocol::debug::GpuCapture,
+    pub counters: Option<GpuCounters>,
+    pub lost_draws: Option<u64>,
+    pub lost_vertices: Option<u64>,
+    pub lost_resource_versions: Option<u64>,
+    pub snapshots_taken: Option<u64>,
+    pub snapshots_skipped_budget: Option<u64>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct GpuCounters {
+    pub fast_path_commands: u64,
+    pub command_lists: u64,
+    pub draw_calls: u64,
 }
 const ROW_CAP: usize = 100_000;
 const TEXT_BUDGET: usize = 32 << 20;
@@ -604,6 +625,11 @@ impl Inspection {
                 .unwrap_or(0)
                 .saturating_add(omitted),
             error: None,
+            gpu: if panel == Panel::Gpu {
+                GpuActivity::deserialize(value).ok()
+            } else {
+                None
+            },
         }
     }
 
@@ -614,6 +640,7 @@ impl Inspection {
             next: None,
             lost: 0,
             error: Some((error.kind(), error.to_string())),
+            gpu: None,
         }
     }
     pub fn draw_diff(before: &Value, after: &Value) -> Vec<String> {
@@ -708,6 +735,7 @@ impl Inspection {
             next: None,
             lost,
             error: None,
+            gpu: None,
         })
     }
 }

@@ -183,6 +183,20 @@ Desktop listeners survive an embedded MCP disconnect. Worker exit, session
 stop, or an external guest reset or replacement retires the listener. A rewind
 issued by the attached GDB client updates the listener to the new guest epoch.
 
+### GPU capture (#147)
+
+The CITnLO GPU inspector provides Counters, Events, Draws, Full and Disabled
+presets and a **Configure** form. Draws mode accepts an inclusive 64-bit draw
+ID range, a 1–4096 snapshot budget, and optional resource copies. Events,
+Draws and Full can pause at selected PICA events. Full takes snapshots with
+resources on every draw. Counters and Disabled use the batched command path.
+Opening the inspector reads status and existing draw headers.
+
+The desktop and `lotus_debug` use the same `gpu_configure` command. The
+inspector shows the last settings acknowledged by the worker alongside the
+live `gpu_draws` path, counts and losses. Capture budgets and mutation leases
+apply to requests from either frontend.
+
 **Verified emulator**: the opt-in `native_parity` test compares MCP screen bytes
 with the shared native API at frame 60, and checks read-only permission, asset,
 session and resource restrictions. Windows GNU AZAHAR at native pin

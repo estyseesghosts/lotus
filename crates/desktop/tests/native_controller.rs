@@ -8,8 +8,12 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use lotus_desktop::desktop_controller::{Command, DesktopController, McpMode, Update};
+use lotus_desktop::{
+    desktop_controller::{Command, DebugStatus, DesktopController, McpMode, Update},
+    inspection::{Panel, SessionTarget},
+};
 use lotus_mcp::tool_arguments::{AdvanceArgs, SessionArgs};
+use lotus_protocol::debug::{DebugCommand, GpuCapture};
 use lotus_protocol::envelope::SessionUuid;
 use lotus_session::supervisor::{HostConfig, SessionKind};
 use lotus_session::SessionState;
@@ -53,6 +57,7 @@ fn controller_runs_primary_and_secondary_sessions_shared_with_mcp() {
     let mut config = HostConfig::new(worker, root.clone());
     config.assets = BTreeMap::from([("fixture".into(), fixture)]);
     config.allow_control = true;
+    config.policy.gpu_capture_sessions = Some(1);
     let controller = DesktopController::start(config, McpMode::Off).expect("controller");
     let card = root.join("cards/dev");
 
@@ -114,6 +119,68 @@ fn controller_runs_primary_and_secondary_sessions_shared_with_mcp() {
     // MCP over the same supervisor sees both and drives the secondary.
     let server = controller.mcp_server();
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let capture = |enabled| DebugCommand::GpuConfigure {
+        enabled,
+        stop_events: vec![],
+        capture: Some(GpuCapture::Events),
+        draw_range: None,
+        max_draws: None,
+        resources: None,
+    };
+    runtime
+        .block_on(controller.host().debug(
+            &primary,
+            &capture(true),
+            lotus_session::telemetry::Actor::Host,
+        ))
+        .expect("first recording gets the host slot");
+    let secondary_target = {
+        let update = controller.latest.lock().unwrap();
+        let session = session(&update, &secondary).unwrap();
+        SessionTarget {
+            id: secondary.clone(),
+            created_unix_ms: session.info.created_unix_ms,
+            epoch: session.telemetry.epoch,
+        }
+    };
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: secondary_target,
+            panel: Panel::Gpu,
+            command: capture(true),
+        })
+        .unwrap();
+    wait(&controller, "capture budget refusal", |update| {
+        update.debug_result(Panel::Gpu).is_some_and(|request| matches!(
+            &request.status, DebugStatus::Failed { kind: std::io::ErrorKind::ResourceBusy, message }
+            if message.contains(&primary)
+        ))
+    });
+    let frames = controller
+        .host()
+        .summary(&secondary)
+        .unwrap()
+        .telemetry
+        .frames;
+    wait(
+        &controller,
+        "sibling runs after capture refusal",
+        |update| {
+            session(update, &secondary).is_some_and(|session| session.telemetry.frames > frames)
+        },
+    );
+    runtime
+        .block_on(controller.host().debug(
+            &primary,
+            &capture(false),
+            lotus_session::telemetry::Actor::Host,
+        ))
+        .expect("release recording slot");
+    controller
+        .commands
+        .send(Command::Play(primary.clone()))
+        .unwrap();
     runtime.block_on(async {
         let status = server.lotus_status().await;
         assert!(status.contains("\"frontend\":\"windowed\""));

@@ -39,6 +39,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "debug bridge" if section == 1 => None,
             "palette" => Some("lotus_window/command_palette.rs"),
             "GDB inspector" => Some("lotus_window/gdb_panel.rs"),
+            "GPU capture form" => Some("lotus_window/gpu_capture.rs"),
             "external only" | "unavailable" if *detail != "-" => None,
             _ => {
                 return Err(format!(

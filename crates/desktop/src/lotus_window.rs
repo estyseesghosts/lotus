@@ -54,6 +54,8 @@ mod command_palette;
 #[cfg(feature = "silvestris-ui")]
 mod gdb_panel;
 #[cfg(feature = "silvestris-ui")]
+mod gpu_capture;
+#[cfg(feature = "silvestris-ui")]
 mod shared_commands;
 #[cfg(feature = "silvestris-ui")]
 mod shared_navigation;
@@ -201,6 +203,8 @@ pub struct LotusWindow {
     command_palettes: BTreeMap<SessionTarget, command_palette::CommandPalette>,
     #[cfg(feature = "silvestris-ui")]
     gdb_panel: gdb_panel::GdbPanel,
+    #[cfg(feature = "silvestris-ui")]
+    gpu_capture: gpu_capture::GpuPanel,
     #[cfg(feature = "silvestris-ui")]
     navigation: crate::navigation::Navigation,
     #[cfg(feature = "silvestris-ui")]
@@ -380,6 +384,8 @@ impl LotusWindow {
             command_palettes: BTreeMap::new(),
             #[cfg(feature = "silvestris-ui")]
             gdb_panel: gdb_panel::GdbPanel::default(),
+            #[cfg(feature = "silvestris-ui")]
+            gpu_capture: gpu_capture::GpuPanel::default(),
             #[cfg(feature = "silvestris-ui")]
             navigation: crate::navigation::Navigation::default(),
             #[cfg(feature = "silvestris-ui")]
@@ -697,6 +703,8 @@ impl LotusWindow {
             self.registers = update.registers.clone();
             #[cfg(feature = "silvestris-ui")]
             self.gdb_panel.refresh(&update);
+            #[cfg(feature = "silvestris-ui")]
+            self.gpu_capture.refresh(&update);
 
             self.workspace.clone_from(&update.workspace);
             if update.inspected != self.inspected {
@@ -3909,6 +3917,7 @@ impl LotusWindow {
     fn panel_commands(panel: Panel) -> Vec<(&'static str, D, bool)> {
         // `draws` snapshots registers and shader state of the next 8 draws without resource
         // copies; `full` copies every draw's resources (lotus#24).
+        #[cfg(not(feature = "silvestris-ui"))]
         let gpu = |enabled, capture| D::GpuConfigure {
             enabled,
             stop_events: vec![],
@@ -3947,9 +3956,13 @@ impl LotusWindow {
                 ("Reverse stop", D::ReverseContinue, true),
             ],
             Panel::Gpu => vec![
+                #[cfg(not(feature = "silvestris-ui"))]
                 ("Count draws", gpu(true, GpuCapture::Counters), false),
+                #[cfg(not(feature = "silvestris-ui"))]
                 ("Capture 8 draws", gpu(true, GpuCapture::Draws), false),
+                #[cfg(not(feature = "silvestris-ui"))]
                 ("Full capture", gpu(true, GpuCapture::Full), false),
+                #[cfg(not(feature = "silvestris-ui"))]
                 ("Disable capture", gpu(false, GpuCapture::Counters), false),
                 ("Record CiTrace", D::CitraceStart, false),
                 ("Finish trace", D::CitraceStop, false),
@@ -4093,6 +4106,15 @@ impl LotusWindow {
         #[cfg(feature = "silvestris-ui")]
         if current == Panel::Gdb {
             panel = panel.child(self.render_gdb_panel(target.as_ref(), cx));
+        }
+        #[cfg(feature = "silvestris-ui")]
+        if current == Panel::Gpu {
+            if let Some(target) = &target {
+                if let Some(form) = self.render_gpu_capture_form(target, cx) {
+                    return panel.child(form);
+                }
+                panel = panel.child(self.render_gpu_capture(target, cx));
+            }
         }
         if !commands.is_empty() {
             let mut actions = div()

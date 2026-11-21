@@ -40,7 +40,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `events` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - |
 | `events_configure` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | event_subscriptions | - |
 | `fork` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
-| `gpu_configure` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | gpu_capture_levels when capture is set | - |
+| `gpu_configure` | [GPU capture form](../crates/desktop/src/lotus_window/gpu_capture.rs) | control | gpu_capture_levels when capture is set | Named presets and all capture options (#147). |
 | `gpu_draw` | [inspector rows](../crates/desktop/src/inspection.rs) | read | - | - |
 | `gpu_draws` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - |
 | `handles` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |

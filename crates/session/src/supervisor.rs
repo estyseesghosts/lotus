@@ -2226,7 +2226,20 @@ impl Supervisor {
             DebugCommand::Advance { frames } => native.advance(*frames).await,
             _ => {
                 let mut result = native.debug(command).await?;
-                handle.telemetry().epoch = native.epoch();
+                {
+                    let mut telemetry = handle.telemetry();
+                    telemetry.epoch = native.epoch();
+                    if matches!(command, DebugCommand::GpuConfigure { .. }) {
+                        telemetry.gpu_capture =
+                            crate::telemetry::AcceptedGpuCapture::deserialize(&result)
+                                .ok()
+                                .filter(|accepted| {
+                                    accepted.epoch == native.epoch()
+                                        && accepted.stop_events.len() <= 8
+                                })
+                                .map(Arc::new);
+                    }
+                }
                 // Keep the ledger in worker command order even when another
                 // request acquires this session's native lock immediately.
                 if let Some((permit, active)) = permit {

@@ -8,7 +8,8 @@ use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use lotus_protocol::debug::GpuCapture;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::SessionState;
@@ -28,6 +29,19 @@ pub enum Actor {
     Host,
     Desktop,
     Mcp,
+}
+
+/// Acknowledged GPU capture settings from a native `gpu_configure` reply.
+/// Current activity is reported separately by `gpu_draws`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AcceptedGpuCapture {
+    pub epoch: u64,
+    pub enabled: bool,
+    pub capture: GpuCapture,
+    pub stop_events: Vec<u32>,
+    pub draw_range: Option<[u64; 2]>,
+    pub max_draws: u32,
+    pub resources: bool,
 }
 
 /// Latest gauges for one session; cheap to clone for UI and MCP readers.
@@ -59,6 +73,8 @@ pub struct Telemetry {
     /// Negotiated worker features, shared cheaply with in-process frontends.
     #[serde(skip)]
     pub worker_features: Arc<BTreeSet<String>>,
+    #[serde(skip)]
+    pub gpu_capture: Option<Arc<AcceptedGpuCapture>>,
     /// A connection other than the desktop owns the debugger mutation lease.
     #[serde(skip)]
     pub desktop_debug_lease_blocked: bool,
@@ -120,6 +136,7 @@ impl Telemetry {
             failure: None,
             backend_name: String::new(),
             worker_features: Arc::default(),
+            gpu_capture: None,
             desktop_debug_lease_blocked: false,
             renderer: String::new(),
             renderer_fallback: String::new(),
