@@ -86,6 +86,28 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
   AZAHAR built with both value-initialization fixes (`794b84ca3`), t03 Vulkan, 5 trials (`runs/bench-async29-integration-794b`; before: `runs/bench-async29-integration`, `b4b9f0c`): deterministic async ends on 1 screen out of 5, as before; host async on 3 (before 4). Guest ticks were identical within each config both times, so the host-async spread is in what the guest drew, consistent with the async wake timing above.
   Decision: CITnLO's `DefaultProfile` turns `deterministic_async_operations` on; `settings_set` before `load` turns it off for a session (it is a boot setting). AZAHAR keeps the upstream default under ADR-010. **Proposed ADR-012** (owner decision): make it the default for both workers, so AZAHAR control runs in matrix comparisons are repeatable too; the cost above is the evidence. Not covered: games whose FS or AM operations take long on the host (large reads, CIA installs), where deterministic async stalls the emulation thread for the host duration instead of overlapping it.
 
+### #4 Matched PICA command path
+
+`tools/pica_path_acceptance.py` with `--integration <AZAHAR worker>` compares
+capture off, on and off again in CITnLO with matching windows in two fresh
+processes (CITnLO capture always off and AZAHAR). The Windows t03 run used
+CITnLO `a3994c1` and AZAHAR `5ecbd98`, WinLibs UCRT GNU Release, deterministic
+async HLE, a fixed clock and no speed limiter.
+
+On both renderers, `fast_path_commands` rose from 25,148 to 38,522 while
+passive, stayed at 38,522 while capture recorded eight draws and rose to
+51,272 after disabling capture. The three processes ended at 672,177,568
+guest ticks and both screen SHA-256 hashes matched within each renderer.
+
+| Renderer | AZAHAR, capture window | CITnLO, always passive, same window | CITnLO, capture enabled |
+| --- | ---: | ---: | ---: |
+| Software | 5191 ms | 5192 ms | 5763 ms |
+| Vulkan | 14.4 ms | 15.2 ms | 293.2 ms |
+
+Times cover one 30-frame window per mode, including three control round
+trips (`runs/r04-matched/report.json`, verified emulator). They describe
+this fixture and run.
+
 ### #6 Visible desktop playback
 
 The 0.1.0 Windows release frontends and CITnLO `c3422b0a` ran the same Old
