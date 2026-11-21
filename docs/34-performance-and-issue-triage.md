@@ -302,8 +302,23 @@ and renderer allocations. The four-worker sums of process peak private
 commit were 4.92 GiB with rewind off, 7.52 GiB sync, 8.14 GiB queue 1,
 and 9.53 GiB queue 2. Individual lifetime peaks can occur at different
 times. Serialized sizes vary by guest and 3DS model. The interactive
-host policy still defaults to two rewind sessions. A host-wide byte
-budget and separate allocator, page-walk and GPU-wait timings remain open.
+host policy defaults to two rewind sessions and a 1536 MiB admission
+estimate for queued checkpoints and stored history. See [host policy](23-local-mcp.md).
+Separate allocator, page-walk and GPU-wait timings remain open.
+
+The Windows MCP test on CITnLO `a3994c1` admitted four workers at 384 MiB
+each, refused a queue expansion that would have raised the estimate to
+1856 MiB, and accepted it at 1472 MiB after a worker disabled rewind
+(`runs/r32-rewind-admission-01`, verified emulator).
+
+The fixed `bench.py` restore probe takes one forward instruction step after
+the timed frame window to create a core-specific checkpoint. For t03 Vulkan
+at interval 5, median host time for 40 frames was 702, 637 and 441 ms at queue
+depths 0, 1 and 2. The separately timed reverse step took 425, 384 and 382 ms.
+Both screen hashes matched across all six trials at guest tick 313,686,688
+before the instruction probe (`runs/r32-pinned-restore-cost-02`, verified
+emulator). These short single-worker trials used the pinned Windows
+CITnLO build and the same host as the sweep above.
 
 `tools/reverse_acceptance.py` passed intervals 1, 5 and 20 at depths 0, 1
 and 2 on both models, including watchpoints, breakpoint changes mid-window

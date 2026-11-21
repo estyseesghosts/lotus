@@ -1704,21 +1704,31 @@ impl Supervisor {
     ) -> io::Result<serde_json::Value> {
         use crate::policy::Tool;
         use lotus_protocol::debug::{DebugCommand, GpuCapture};
+        command.validate().map_err(io::Error::other)?;
         let handle = self.handle(id)?;
         // Host-wide budgets (crate::policy). Session-long tools take a permit before any
         // await and record it after the worker accepted; one-shot full-state work holds a slot.
-        let tool = match command {
-            DebugCommand::RewindConfigure { enabled, .. } => Some((Tool::Rewind, *enabled)),
+        let admission = match command {
+            DebugCommand::RewindConfigure {
+                enabled,
+                budget_mib,
+                compression_queue,
+                ..
+            } => Some((
+                self.budgets
+                    .reserve_rewind(id, *enabled, *budget_mib, *compression_queue),
+                *enabled,
+            )),
             DebugCommand::GpuConfigure {
                 enabled, capture, ..
-            } => Some((
-                Tool::GpuCapture,
-                *enabled && *capture != Some(GpuCapture::Counters),
-            )),
+            } => {
+                let active = *enabled && *capture != Some(GpuCapture::Counters);
+                Some((self.budgets.reserve(Tool::GpuCapture, id, active), active))
+            }
             _ => None,
         };
-        let permit = match tool {
-            Some((tool, enable)) => match self.budgets.reserve(tool, id, enable) {
+        let permit = match admission {
+            Some((reservation, enable)) => match reservation {
                 Ok(permit) => Some((permit, enable)),
                 Err(error) => {
                     handle.telemetry().policy_note = error.to_string();
@@ -1763,7 +1773,6 @@ impl Supervisor {
         permit: Option<(crate::policy::ToolPermit<'_>, bool)>,
     ) -> io::Result<serde_json::Value> {
         use lotus_protocol::debug::DebugCommand;
-        command.validate().map_err(io::Error::other)?;
         if command.mutates()
             || matches!(
                 command,

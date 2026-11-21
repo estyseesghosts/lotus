@@ -9,6 +9,8 @@
    exactly one is admitted, in five rounds.
 3. memory admission: a reserve larger than the host's memory refuses a new session with the
    numbers; reserve 0 disables the check.
+4. rewind memory admission: four workers can record within 1536 MiB of estimated allocations;
+   a queue-depth upgrade is refused until another worker releases its reservation.
 
 Usage: test_mcp_policy.py <abs lotus-mcp.exe> <abs CITnLO worker> <abs content.3dsx> <abs output>
 """
@@ -132,6 +134,30 @@ try:
     client = host("no-reserve", {"memory_reserve_mib": 0})
     clients.append(client)
     create(client)
+    client.close()
+    clients.pop()
+
+    client = host("rewind-memory", {"rewind_sessions": 4, "rewind_memory_mib": 1536})
+    clients.append(client)
+    sessions = [create(client) for _ in range(4)]
+    for session in sessions:
+        debug(client, session, "rewind_configure", enabled=True, capacity=8, budget_mib=64,
+              compression_queue=1)
+    policy = status(client)["policy"]["rewind"]
+    assert set(policy["memory_reserved_mib"].values()) == {384}, policy
+    assert sum(policy["memory_reserved_mib"].values()) == 1536, policy
+    denied = debug(client, sessions[0], "rewind_configure", True, enabled=True, capacity=8,
+                   budget_mib=64, compression_queue=2)
+    assert "rewind memory budget" in denied and "1856 MiB" in denied, denied
+    current = json.loads(debug(client, sessions[0], "rewind_status"))
+    assert current["compression_queue"] == 1 and current["enabled"], current
+    for session in sessions:
+        client.tool("lotus_run_until", {"session": session, "frames": 4})
+    rewind(client, sessions[3], False)
+    changed = json.loads(debug(client, sessions[0], "rewind_configure", enabled=True,
+                               capacity=8, budget_mib=64, compression_queue=2))
+    assert changed["compression_queue"] == 2, changed
+    report["rewind_memory"] = {"before": policy, "denied": denied, "after": status(client)["policy"]["rewind"]}
     client.close()
     clients.pop()
     (output / "acceptance.json").write_text(json.dumps(report, indent=2))

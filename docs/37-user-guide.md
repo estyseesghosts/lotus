@@ -247,11 +247,13 @@ are an error. Paths must exist except `asset_directories`.
 | `artifacts` | `{"max_count": 512, "max_bytes": 536870912, "lease_seconds": 60}` | capture storage quota |
 | `policy` | see below | budgets and admission |
 
-`policy` defaults: `{"workload": "interactive", "rewind_sessions": null,
+`policy` defaults: `{"workload": "interactive", "rewind_sessions": null, "rewind_memory_mib": null,
 "gpu_capture_sessions": null, "snapshot_slots": null, "snapshot_queue_limit": 16, "snapshot_wait_ms": 10000,
 "memory_reserve_mib": 1024, "gpu_admission": true, "gpu_reserve_mib": 0,
-"focus_priority": false}`. Unset budgets mean 2 under `interactive` and
-unlimited under `batch`; 0 is unlimited. A new session is refused when free
+"focus_priority": false}`. Interactive defaults allow two rewind sessions,
+two GPU captures and two snapshot operations. The rewind memory admission
+estimate defaults to 1536 MiB. Batch leaves these budgets unlimited unless
+explicitly set. A new session is refused when free
 memory is below `memory_reserve_mib` plus the largest running worker. Full
 meaning of each: [23](23-local-mcp.md).
 

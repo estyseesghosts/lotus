@@ -82,10 +82,11 @@ without the field advertises nothing.
 
 Policy (#23, `crates/session/src/policy.rs`), `"policy": {...}` in the host
 config, defaults shown:
-`{"workload": "interactive", "rewind_sessions": null, "gpu_capture_sessions": null,
+`{"workload": "interactive", "rewind_sessions": null, "rewind_memory_mib": null, "gpu_capture_sessions": null,
 "snapshot_slots": null, "snapshot_queue_limit": 16, "snapshot_wait_ms": 10000, "memory_reserve_mib": 1024,
-"gpu_admission": true, "gpu_reserve_mib": 0, "focus_priority": false}`. Unset budgets are 2 under `interactive` and unlimited
-under `batch`; 0 means unlimited. Normal emulation is never gated:
+"gpu_admission": true, "gpu_reserve_mib": 0, "focus_priority": false}`.
+Interactive defaults allow two rewind sessions, two GPU captures, and two
+snapshot operations. Batch leaves these budgets unlimited unless set explicitly.
 
 - `rewind_sessions`: sessions recording rewind checkpoints at once. Enabling a
   third is refused with `ResourceBusy` naming the holders; disabling or ending a
@@ -96,6 +97,16 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
   Depth 0 uses one serialized checkpoint at a time on the emulation thread.
   An explicit depth requires the worker's `rewind_compression_queue` feature.
   The stored history has its own `budget_mib` limit. See [#32](34-performance-and-issue-triage.md#32-async-rewind-compression).
+- `rewind_memory_mib` caps the estimated memory reserved for recording.
+  Lotus reserves `budget_mib` for stored history plus 320 MiB per serialized
+  buffer. Synchronous compression and the default queue each reserve one buffer.
+  Pending reconfiguration reserves the greater of its requested cost and the
+  active cost until the worker replies. `lotus_status.policy.rewind` reports
+  the limit and per-session reservations. The default is 1536 MiB in
+  interactive mode and unlimited in batch mode. Set 0 to remove the limit.
+  The estimate uses the measured New 3DS checkpoint size with headroom.
+  Actual process memory also includes guest memory, renderer allocations,
+  allocator capacity and zstd scratch.
 - `gpu_capture_sessions`: sessions with `gpu_configure` above `counters`.
   A worker exit releases both rewind and GPU-capture slots. The failed
   session and its report stay available. Reset and content load also release

@@ -15,7 +15,7 @@ fn host_descriptor_defaults_match_host_config() {
         .iter()
         .filter(|d| d.owner == Owner::Host)
         .collect();
-    assert_eq!(host.len(), 17);
+    assert_eq!(host.len(), 18);
     for descriptor in host {
         let path = descriptor.key.strip_prefix("lotus.host.").unwrap();
         let mut value = &config;

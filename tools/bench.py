@@ -283,9 +283,15 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
             # Checkpoint phase costs and memory, then one reverse replay (restore + replay to
             # the previous instruction), timed on the host. Taken after the screens are hashed.
             status = peer.debug("rewind_status")
+            # Frame checkpoints have no core. An instruction step records the
+            # checkpoint that reverse_step for this core needs.
+            peer.debug("step", core=0, count=1)
             stepping = time.perf_counter()
             peer.debug("reverse_step", core=0)
-            rewind = dict(status=status, reverse_step_seconds=time.perf_counter() - stepping)
+            reverse_step_seconds = time.perf_counter() - stepping
+            restored = peer.debug("rewind_status")
+            rewind = dict(status=status, reverse_step_seconds=reverse_step_seconds,
+                          restore_ns=restored.get("restore_ns", 0) - status.get("restore_ns", 0))
         return dict(status="ok", host_seconds=seconds, fps=frames / seconds, guest_ticks=ticks,
                     screens=screens, usage=usage, source=hello.get("source"),
                     backend_name=hello.get("backend_name"), startup_seconds=startup_seconds,
@@ -336,8 +342,7 @@ def summarize(runs):
                 median_stored_mib=statistics.median(per_checkpoint(r, "checkpoint_stored_bytes") / 2**20
                                                     for r in rewinds),
                 median_history_mib=statistics.median(r["status"]["bytes"] / 2**20 for r in rewinds),
-                median_restore_ms=statistics.median(r["status"].get("restore_ns", 0) / 1e6
-                                                    / max(1, r["status"].get("restores", 0)) for r in rewinds),
+                median_restore_ms=statistics.median(r["restore_ns"] / 1e6 for r in rewinds),
                 median_reverse_step_seconds=statistics.median(r["reverse_step_seconds"] for r in rewinds))
     else:
         entry["host_seconds_lower_bound"] = max(r["host_seconds_lower_bound"] for r in runs)

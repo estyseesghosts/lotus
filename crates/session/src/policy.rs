@@ -39,6 +39,10 @@ pub enum Workload {
 /// The default async queue keeps the same one-serialized-checkpoint limit per worker as
 /// synchronous compression (lotus#32). Larger worker queues increase that limit.
 const INTERACTIVE_BUDGET: usize = 2;
+/// New 3DS measured 274 MiB per serialized checkpoint (docs/34). Leave
+/// headroom for guest-dependent state and apply the same estimate to both models.
+const CHECKPOINT_ESTIMATE_MIB: usize = 320;
+const INTERACTIVE_REWIND_MEMORY_MIB: usize = 1536;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -46,6 +50,8 @@ pub struct Policy {
     pub workload: Workload,
     /// Sessions recording rewind checkpoints at once. Unset: 2 interactive, unlimited batch.
     pub rewind_sessions: Option<usize>,
+    /// Aggregate estimated checkpoint memory plus configured rewind history.
+    pub rewind_memory_mib: Option<usize>,
     /// Sessions with GPU capture above `counters` at once. Unset: 2 interactive, unlimited batch.
     pub gpu_capture_sessions: Option<usize>,
     /// One-shot full-state operations at once across the host. Unset: 2 interactive,
@@ -72,6 +78,7 @@ impl Default for Policy {
         Self {
             workload: Workload::Interactive,
             rewind_sessions: None,
+            rewind_memory_mib: None,
             gpu_capture_sessions: None,
             snapshot_slots: None,
             snapshot_wait_ms: 10_000,
@@ -96,6 +103,14 @@ impl Policy {
     #[must_use]
     pub fn rewind_limit(&self) -> Option<usize> {
         self.budget(self.rewind_sessions)
+    }
+
+    fn rewind_memory_limit(&self) -> Option<usize> {
+        match (self.rewind_memory_mib, self.workload) {
+            (Some(0), _) | (None, Workload::Batch) => None,
+            (Some(limit), _) => Some(limit),
+            (None, Workload::Interactive) => Some(INTERACTIVE_REWIND_MEMORY_MIB),
+        }
     }
 
     #[must_use]
@@ -128,9 +143,9 @@ impl Tool {
 /// Sessions using one session-long tool, and enables still waiting for their worker.
 #[derive(Debug, Default)]
 struct Holders {
-    active: BTreeSet<String>,
-    /// Session -> enable requests in flight.
-    pending: BTreeMap<String, usize>,
+    active: BTreeMap<String, usize>,
+    /// Session -> requested weights and their in-flight counts.
+    pending: BTreeMap<String, BTreeMap<usize, usize>>,
 }
 
 impl Holders {
@@ -138,15 +153,29 @@ impl Holders {
     fn live_pending<'a>(
         &'a self,
         ended: &'a BTreeSet<String>,
-    ) -> impl Iterator<Item = (&'a String, &'a usize)> {
+    ) -> impl Iterator<Item = (&'a String, &'a BTreeMap<usize, usize>)> {
         self.pending.iter().filter(|(id, _)| !ended.contains(*id))
     }
 
     /// Sessions that consume the budget: active or with an enable in flight.
-    fn occupied<'a>(&'a self, ended: &'a BTreeSet<String>) -> BTreeSet<&'a String> {
-        self.active
+    fn occupied<'a>(&'a self, ended: &'a BTreeSet<String>) -> BTreeMap<&'a str, usize> {
+        let mut occupied: BTreeMap<_, _> = self
+            .active
             .iter()
-            .chain(self.live_pending(ended).map(|(id, _)| id))
+            .map(|(id, &weight)| (id.as_str(), weight))
+            .collect();
+        for (id, weights) in self.live_pending(ended) {
+            if let Some((&weight, _)) = weights.last_key_value() {
+                let reserved = occupied.entry(id.as_str()).or_default();
+                *reserved = (*reserved).max(weight);
+            }
+        }
+        occupied
+    }
+
+    fn pending_counts<'a>(&'a self, ended: &'a BTreeSet<String>) -> BTreeMap<&'a String, usize> {
+        self.live_pending(ended)
+            .map(|(id, weights)| (id, weights.values().sum()))
             .collect()
     }
 }
@@ -191,7 +220,7 @@ pub struct ToolPermit<'a> {
     tool: Tool,
     session: String,
     /// Holds a pending enable slot.
-    pending: bool,
+    pending_weight: Option<usize>,
 }
 
 impl ToolPermit<'_> {
@@ -199,26 +228,32 @@ impl ToolPermit<'_> {
     pub fn commit(mut self, active: bool) {
         let mut ledger = self.budgets.ledger();
         let ended = ledger.ended.contains(&self.session);
+        let weight = self.pending_weight;
         self.finish(&mut ledger);
         if ended {
             return;
         }
         let holders = ledger.tool(self.tool);
-        if active {
-            holders.active.insert(self.session.clone());
+        if let Some(weight) = weight.filter(|_| active) {
+            holders.active.insert(self.session.clone(), weight);
         } else {
             holders.active.remove(&self.session);
         }
     }
 
     fn finish(&mut self, ledger: &mut Ledger) {
-        if !std::mem::take(&mut self.pending) {
+        let Some(weight) = self.pending_weight.take() else {
             return;
-        }
+        };
         let holders = ledger.tool(self.tool);
-        if let Some(count) = holders.pending.get_mut(&self.session) {
-            *count -= 1;
-            if *count == 0 {
+        if let Some(weights) = holders.pending.get_mut(&self.session) {
+            if let Some(count) = weights.get_mut(&weight) {
+                *count -= 1;
+                if *count == 0 {
+                    weights.remove(&weight);
+                }
+            }
+            if weights.is_empty() {
                 holders.pending.remove(&self.session);
             }
         }
@@ -230,7 +265,7 @@ impl ToolPermit<'_> {
 
 impl Drop for ToolPermit<'_> {
     fn drop(&mut self) {
-        if self.pending {
+        if self.pending_weight.is_some() {
             let budgets = self.budgets;
             self.finish(&mut budgets.ledger());
         }
@@ -288,29 +323,40 @@ impl Budgets {
     /// worker and [`ToolPermit::commit`] after it accepted. A session already using the tool may
     /// reconfigure it; a disable is never refused.
     pub fn reserve(&self, tool: Tool, session: &str, enable: bool) -> io::Result<ToolPermit<'_>> {
+        self.reserve_weighted(tool, session, enable.then_some(1))
+    }
+
+    pub fn reserve_rewind(
+        &self,
+        session: &str,
+        enable: bool,
+        history_mib: u32,
+        compression_queue: Option<u8>,
+    ) -> io::Result<ToolPermit<'_>> {
+        let buffers = compression_queue.unwrap_or(1).clamp(1, 4) as usize;
+        let estimated_mib = history_mib as usize + buffers * CHECKPOINT_ESTIMATE_MIB;
+        self.reserve_weighted(Tool::Rewind, session, enable.then_some(estimated_mib))
+    }
+
+    fn reserve_weighted(
+        &self,
+        tool: Tool,
+        session: &str,
+        weight: Option<usize>,
+    ) -> io::Result<ToolPermit<'_>> {
         let limit = match tool {
             Tool::Rewind => self.policy.rewind_limit(),
             Tool::GpuCapture => self.policy.gpu_capture_limit(),
         };
-        let permit = ToolPermit {
-            budgets: self,
-            tool,
-            session: session.to_string(),
-            pending: enable,
-        };
-        if !enable {
-            return Ok(permit);
-        }
         let mut ledger = self.ledger();
-        let holders = ledger.holders(tool);
-        let occupied = holders.occupied(&ledger.ended);
-        if let Some(limit) = limit {
-            if !occupied.contains(&session.to_string()) && occupied.len() >= limit {
-                let users: Vec<String> = occupied.into_iter().cloned().collect();
+        if let Some(weight) = weight {
+            let holders = ledger.holders(tool);
+            let mut occupied = holders.occupied(&ledger.ended);
+            if let Some(limit) =
+                limit.filter(|&limit| !occupied.contains_key(session) && occupied.len() >= limit)
+            {
+                let users: Vec<_> = occupied.keys().copied().collect();
                 let pending = holders.live_pending(&ledger.ended).next().is_some();
-                drop(ledger);
-                let mut permit = permit;
-                permit.pending = false;
                 self.refused
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 return Err(io::Error::new(
@@ -333,13 +379,34 @@ impl Budgets {
                     ),
                 ));
             }
+            let reserved = occupied.entry(session).or_default();
+            *reserved = (*reserved).max(weight);
+            let total: usize = occupied.values().sum();
+            if let Some(limit) = self
+                .policy
+                .rewind_memory_limit()
+                .filter(|&limit| tool == Tool::Rewind && total > limit)
+            {
+                self.refused
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                return Err(io::Error::new(io::ErrorKind::ResourceBusy, format!(
+                    "rewind memory budget: {total} MiB estimated with this request, limit {limit} MiB (policy.rewind_memory_mib)"
+                )));
+            }
+            *ledger
+                .tool(tool)
+                .pending
+                .entry(session.to_string())
+                .or_default()
+                .entry(weight)
+                .or_default() += 1;
         }
-        *ledger
-            .tool(tool)
-            .pending
-            .entry(session.to_string())
-            .or_default() += 1;
-        Ok(permit)
+        Ok(ToolPermit {
+            budgets: self,
+            tool,
+            session: session.to_string(),
+            pending_weight: weight,
+        })
     }
 
     /// A session ended: it holds nothing, and its permits still in flight cannot commit.
@@ -420,11 +487,13 @@ impl Budgets {
         };
         serde_json::json!({
             "workload": self.policy.workload,
-            "rewind": {"limit": self.policy.rewind_limit(), "sessions": ledger.rewind.active,
-                "pending": ledger.rewind.live_pending(&ledger.ended).collect::<BTreeMap<_, _>>()},
+            "rewind": {"limit": self.policy.rewind_limit(), "sessions": ledger.rewind.active.keys().collect::<Vec<_>>(),
+                "pending": ledger.rewind.pending_counts(&ledger.ended),
+                "memory_limit_mib": self.policy.rewind_memory_limit(),
+                "memory_reserved_mib": ledger.rewind.occupied(&ledger.ended)},
             "gpu_capture": {"limit": self.policy.gpu_capture_limit(),
-                "sessions": ledger.gpu.active,
-                "pending": ledger.gpu.live_pending(&ledger.ended).collect::<BTreeMap<_, _>>()},
+                "sessions": ledger.gpu.active.keys().collect::<Vec<_>>(),
+                "pending": ledger.gpu.pending_counts(&ledger.ended)},
             "snapshots": {"limit": self.policy.snapshot_limit(), "in_use": in_use,
                 "queue_limit": self.policy.snapshot_limit().map(|_| self.policy.snapshot_queue_limit),
                 "queued": self.queued.load(std::sync::atomic::Ordering::Relaxed)},
@@ -693,7 +762,7 @@ mod tests {
     }
 
     fn active(budgets: &Budgets, tool: Tool) -> Vec<String> {
-        budgets.ledger().tool(tool).active.iter().cloned().collect()
+        budgets.ledger().tool(tool).active.keys().cloned().collect()
     }
 
     #[test]
@@ -769,6 +838,32 @@ mod tests {
         assert!(active(&budgets, Tool::GpuCapture).is_empty());
         assert!(budgets.ledger().ended.is_empty(), "no leaked end markers");
         c.commit(true);
+    }
+
+    #[test]
+    fn rewind_memory_counts_pending_upgrades_and_retains_active_cost_until_commit() {
+        let budgets = Budgets::new(Policy {
+            rewind_sessions: Some(4),
+            rewind_memory_mib: Some(1300),
+            ..Policy::default()
+        });
+        let reserve = |id, depth| budgets.reserve_rewind(id, true, 64, Some(depth));
+        let status = || budgets.status(&Memory::default(), &GpuMemory::default());
+        reserve("a", 0).expect("sync").commit(true);
+        let upgrade = reserve("a", 3).expect("upgrade admitted");
+        assert_eq!(status()["rewind"]["memory_reserved_mib"]["a"], 1024);
+        assert!(reserve("b", 1).is_err(), "pending upgrade counts");
+        drop(upgrade);
+        assert_eq!(status()["rewind"]["memory_reserved_mib"]["a"], 384);
+        reserve("b", 2)
+            .expect("pending request released")
+            .commit(true);
+        let downgrade = reserve("b", 1).expect("downgrade admitted");
+        assert!(reserve("c", 1).is_err(), "active cost counts until commit");
+        downgrade.commit(true);
+        reserve("c", 1).expect("downgrade applied").commit(true);
+        budgets.clear_recordings("a");
+        assert!(status()["rewind"]["memory_reserved_mib"].get("a").is_none());
     }
 
     #[tokio::test]
