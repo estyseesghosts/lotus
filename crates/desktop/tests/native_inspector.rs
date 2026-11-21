@@ -3,9 +3,9 @@ use lotus_desktop::{
     desktop_controller::{
         Command, DebugStatus, DesktopController, GdbAction, GdbFeedback, McpMode, Update,
     },
-    inspection::{DrawArtifact, InspectionSelection, Panel, SessionTarget},
+    inspection::{DrawArtifact, Inspection, InspectionSelection, Panel, SessionTarget},
 };
-use lotus_mcp::tool_arguments::{DebugArgs, GdbArgs, GdbOperation};
+use lotus_mcp::tool_arguments::{DebugArgs, GdbArgs, GdbOperation, ReleaseArtifactsArgs};
 use lotus_protocol::{
     debug::{DebugCommand as D, GpuCapture},
     envelope::SessionUuid,
@@ -32,8 +32,10 @@ fn wait(controller: &DesktopController, predicate: impl Fn(&Update) -> bool) {
             }
             assert!(
                 Instant::now() < deadline,
-                "inspector deadline: {}",
-                value.error
+                "inspector deadline: {} · GDB status {:?} · requests {:?}",
+                value.error,
+                value.gdb_status,
+                value.gdb_feedback
             );
         }
         std::thread::sleep(Duration::from_millis(20));
@@ -111,6 +113,226 @@ fn check_gpu_comparison(controller: &DesktopController, target: &SessionTarget) 
                     if view.rows[0].key == pair
                         && view.rows.iter().any(|row| row.key == "resources"
                             && row.value == "Unavailable for A and B"))
+        })
+    });
+}
+
+fn check_gpu_saved_texture(controller: &DesktopController, target: &SessionTarget) {
+    let finish = |operation: &'static str| {
+        let prior = controller
+            .latest
+            .lock()
+            .unwrap()
+            .debug_result(Panel::Gpu)
+            .map(|item| item.id);
+        move |command: Command| {
+            controller.commands.send(command).unwrap();
+            wait(controller, |update| {
+                update.debug_result(Panel::Gpu).is_some_and(|request| {
+                    if request.operation != operation || Some(request.id) == prior {
+                        return false;
+                    }
+                    match &request.status {
+                        DebugStatus::Failed { message, .. } => {
+                            panic!("{operation} failed: {message}")
+                        }
+                        DebugStatus::Finished { .. } => true,
+                        _ => false,
+                    }
+                })
+            });
+            controller
+                .latest
+                .lock()
+                .unwrap()
+                .debug_result(Panel::Gpu)
+                .unwrap()
+                .status
+                .clone()
+        }
+    };
+    let run = |operation, command| {
+        finish(operation)(Command::DebugAt {
+            target: target.clone(),
+            panel: Panel::Gpu,
+            command,
+        })
+    };
+    run(
+        "gpu_configure",
+        D::GpuConfigure {
+            enabled: true,
+            stop_events: vec![2],
+            capture: Some(GpuCapture::Full),
+            draw_range: None,
+            max_draws: None,
+            resources: None,
+        },
+    );
+    let DebugStatus::Finished { view: stopped, .. } = run("advance", D::Advance { frames: 1 })
+    else {
+        unreachable!()
+    };
+    let draw = stopped
+        .rows
+        .iter()
+        .find(|row| row.key == ".stop.draw")
+        .expect("PICA draw stop")
+        .value
+        .parse::<u64>()
+        .unwrap();
+    let DebugStatus::Finished { view, .. } = run("gpu_draw", D::GpuDraw { draw }) else {
+        unreachable!()
+    };
+    let artifact = view.draw_artifact.clone().unwrap();
+    let resource = view
+        .rows
+        .iter()
+        .find_map(|row| {
+            if row.value != "\"texture\"" {
+                return None;
+            }
+            row.key
+                .strip_prefix(".capture.resources[")?
+                .strip_suffix("].kind")?
+                .parse::<usize>()
+                .ok()
+        })
+        .expect("fixture draw contains a frozen texture");
+    let field = |view: &Inspection, key: &str| -> u32 {
+        let path = format!(".capture.resources[{resource}].{key}");
+        view.rows
+            .iter()
+            .find(|row| row.key == path)
+            .unwrap()
+            .value
+            .parse()
+            .unwrap()
+    };
+    let (address, width, height, format) = (
+        field(&view, "address"),
+        field(&view, "width"),
+        field(&view, "height"),
+        field(&view, "format"),
+    );
+    let preview = || {
+        let DebugStatus::Finished {
+            image: Some(image), ..
+        } = finish("preview_saved_texture")(Command::PreviewGpuTexture {
+            draw: artifact.clone(),
+            resource,
+        })
+        else {
+            panic!("missing frozen image")
+        };
+        image.pixels.as_bytes(0).unwrap().to_vec()
+    };
+    let live = || {
+        let DebugStatus::Finished {
+            image: Some(image), ..
+        } = run(
+            "surface",
+            D::Surface {
+                address,
+                width,
+                height,
+                format,
+            },
+        )
+        else {
+            panic!("missing reference image")
+        };
+        image.pixels.as_bytes(0).unwrap().to_vec()
+    };
+    let saved = preview();
+    assert_eq!(saved.len(), (width * height * 4) as usize);
+    assert_eq!(saved, live());
+    let virtual_alias = field(&view, "virtual_aliases[0]");
+    let DebugStatus::Finished { view: memory, .. } = run(
+        "read_memory",
+        D::ReadMemory {
+            address: virtual_alias,
+            length: 4,
+        },
+    ) else {
+        unreachable!()
+    };
+    let original: Vec<u8> = (0..4)
+        .map(|index| {
+            memory
+                .rows
+                .iter()
+                .find(|row| row.key == format!(".bytes[{index}]"))
+                .unwrap()
+                .value
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    let changed = original.iter().map(|byte| !byte).collect();
+    run(
+        "write_memory",
+        D::WriteMemory {
+            address: virtual_alias,
+            bytes: changed,
+        },
+    );
+    assert_ne!(saved, live());
+    assert_eq!(saved, preview());
+    run(
+        "write_memory",
+        D::WriteMemory {
+            address: virtual_alias,
+            bytes: original,
+        },
+    );
+    let trace = view
+        .rows
+        .iter()
+        .find_map(|row| match row.action {
+            Some(D::ShaderTrace { draw, vertex: 1 }) => Some(D::ShaderTrace { draw, vertex: 1 }),
+            _ => None,
+        })
+        .expect("second captured vertex");
+    let DebugStatus::Finished { view: trace, .. } = run("shader_trace", trace) else {
+        unreachable!()
+    };
+    assert!(trace
+        .rows
+        .iter()
+        .any(|row| row.key == ".capture.vertex" && row.value == "1"));
+    let uri = serde_json::from_str(
+        &view
+            .rows
+            .iter()
+            .find(|row| row.key == ".artifacts[0].uri")
+            .unwrap()
+            .value,
+    )
+    .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let released = tool_json(
+        runtime.block_on(
+            controller
+                .mcp_server()
+                .lotus_release_artifacts(Parameters(ReleaseArtifactsArgs { uris: vec![uri] })),
+        ),
+    );
+    assert_eq!(released["released"], 1);
+    controller
+        .commands
+        .send(Command::PreviewGpuTexture {
+            draw: artifact,
+            resource,
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update.debug_result(Panel::Gpu).is_some_and(|request| {
+            request.operation == "preview_saved_texture"
+                && matches!(&request.status, DebugStatus::Failed { message, .. } if message.contains("expired"))
         })
     });
 }
@@ -358,6 +580,10 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             "is_new_3ds".into(),
             lotus_protocol::debug::SettingValue::Boolean(new),
         );
+        config.profile.insert(
+            "use_hw_shader".into(),
+            lotus_protocol::debug::SettingValue::Boolean(false),
+        );
         let controller = DesktopController::start(config, McpMode::Off).unwrap();
         controller
             .commands
@@ -587,6 +813,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             Panel::Gpu
         );
         check_gpu_comparison(&controller, &target);
+        check_gpu_saved_texture(&controller, &target);
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

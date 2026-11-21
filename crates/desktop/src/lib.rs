@@ -15,6 +15,7 @@ pub mod input_routing;
 pub mod inspection;
 pub mod layout;
 pub mod lotus_window;
+mod pica_texture;
 pub mod preferences;
 pub mod presence;
 pub mod screen_geometry;

@@ -68,6 +68,10 @@ pub enum Command {
         a: DrawArtifact,
         b: DrawArtifact,
     },
+    PreviewGpuTexture {
+        draw: DrawArtifact,
+        resource: usize,
+    },
     CancelDebug(u64),
     Gdb {
         target: SessionTarget,
@@ -144,9 +148,16 @@ pub struct Preview {
 #[derive(Debug)]
 pub struct DebugImage {
     pub target: SessionTarget,
-    pub width: u32,
-    pub height: u32,
-    pub bgra: Vec<u8>,
+    pub pixels: Arc<gpui::RenderImage>,
+}
+
+impl DebugImage {
+    fn new(target: &SessionTarget, pixels: image::RgbaImage) -> Self {
+        Self {
+            target: target.clone(),
+            pixels: Arc::new(gpui::RenderImage::new(vec![image::Frame::new(pixels)])),
+        }
+    }
 }
 
 const DEBUG_IN_FLIGHT: usize = 8;
@@ -169,6 +180,7 @@ pub struct DebugRequest {
 pub enum DebugAction {
     Native(DebugCommand),
     CompareGpuDraws { a: DrawArtifact, b: DrawArtifact },
+    PreviewGpuTexture { draw: DrawArtifact, resource: usize },
 }
 
 impl DebugRequest {
@@ -1094,6 +1106,14 @@ impl Loops {
                 );
                 continue;
             }
+            if let Command::PreviewGpuTexture { draw, resource } = command {
+                self.start_debug(
+                    draw.target.clone(),
+                    Panel::Gpu,
+                    DebugAction::PreviewGpuTexture { draw, resource },
+                );
+                continue;
+            }
             if let Command::CancelDebug(id) = command {
                 self.cancel_debug(id);
                 continue;
@@ -1174,6 +1194,7 @@ impl Loops {
                 debug_requires_control(command),
             ),
             DebugAction::CompareGpuDraws { .. } => ("compare_draws".into(), false),
+            DebugAction::PreviewGpuTexture { .. } => ("preview_saved_texture".into(), false),
         };
         let mut update = lock(&self.published);
         let mut active = lock(&self.active_debug);
@@ -1302,7 +1323,9 @@ impl Loops {
                     )
                     .await
             }
-            DebugAction::CompareGpuDraws { .. } => Ok(Value::Null),
+            DebugAction::CompareGpuDraws { .. } | DebugAction::PreviewGpuTexture { .. } => {
+                Ok(Value::Null)
+            }
         };
         let status = match reply {
             Ok(value)
@@ -1332,6 +1355,23 @@ impl Loops {
                         let view = Inspection::compare_draws(&first, &second, target.epoch);
                         cancellation.check()?;
                         Ok((view, None))
+                    }
+                    DebugAction::PreviewGpuTexture { draw, resource } => {
+                        let capture = loops.load_draw_capture(draw, &cancellation)?;
+                        let texture = &capture["resources"][*resource];
+                        let layout = crate::pica_texture::Layout::from_resource(texture)?;
+                        let pixels = layout.decode(texture, &cancellation)?;
+                        let mut view = Inspection::from_value(
+                            &serde_json::json!({"capture": capture}),
+                            Panel::Result,
+                        );
+                        view.source = format!(
+                            "Saved texture {} · draw {} · epoch {}",
+                            resource, draw.draw, target.epoch
+                        );
+                        view.draw_artifact = Some(draw.clone());
+                        cancellation.check()?;
+                        Ok((view, Some(DebugImage::new(&target, pixels))))
                     }
                 })
                 .await
@@ -1418,22 +1458,17 @@ impl Loops {
                 value["width"].as_u64(),
                 value["height"].as_u64(),
             ) {
-                if width > 1024 || height > 1024 {
+                if width == 0 || height == 0 || width > 1024 || height > 1024 {
                     return Err(io::Error::other("invalid surface image bounds"));
                 }
                 let size = (width * height * 4) as usize;
                 let bytes = self
                     .host
                     .read_debug_artifact(&target.id, uri, size, cancellation)?;
-                if bytes.len() != size {
-                    return Err(io::Error::other("invalid surface image bounds"));
-                }
-                image = Some(DebugImage {
-                    target: target.clone(),
-                    width: width as u32,
-                    height: height as u32,
-                    bgra: bytes,
-                });
+                let pixels = image::RgbaImage::from_raw(width as u32, height as u32, bytes)
+                    .filter(|pixels| pixels.as_raw().len() == size)
+                    .ok_or_else(|| io::Error::other("invalid surface image bounds"))?;
+                image = Some(DebugImage::new(target, pixels));
             }
         }
         cancellation.check()?;
@@ -1475,6 +1510,7 @@ impl Loops {
             Command::Select(_) | Command::Inspect(_) => {}
             Command::DebugAt { .. }
             | Command::CompareGpuDraws { .. }
+            | Command::PreviewGpuTexture { .. }
             | Command::CancelDebug(_)
             | Command::Gdb { .. } => {
                 unreachable!("dispatched by drain_commands")
@@ -1615,12 +1651,7 @@ mod tests {
         }
     }
     fn surface_request(target: &SessionTarget) -> DebugRequest {
-        let image = DebugImage {
-            target: target.clone(),
-            width: 1,
-            height: 1,
-            bgra: vec![0; 4],
-        };
+        let image = DebugImage::new(target, image::RgbaImage::new(1, 1));
         DebugRequest {
             id: 1,
             target: target.clone(),

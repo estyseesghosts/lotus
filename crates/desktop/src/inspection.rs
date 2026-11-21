@@ -376,6 +376,7 @@ pub struct Inspection {
     pub gpu: Option<GpuActivity>,
     pub draws: Option<Arc<Vec<DrawHeader>>>,
     pub draw_artifact: Option<DrawArtifact>,
+    pub(crate) draw_textures: Vec<DrawTexture>,
 }
 
 /// An immutable artifact from a completed GpuDraw request.
@@ -384,6 +385,13 @@ pub struct DrawArtifact {
     pub(crate) target: SessionTarget,
     pub(crate) draw: u64,
     pub(crate) uri: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct DrawTexture {
+    pub(crate) index: usize,
+    pub(crate) label: String,
+    pub(crate) unavailable: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -609,6 +617,64 @@ impl Inspection {
             // A captured address is metadata. Surface reads guest memory at the
             // time it runs, so a capture must never link to that operation.
             let capture = &value["capture"];
+            if let (Some(draw), Some(vertex)) =
+                (capture["draw"].as_u64(), capture["vertex"].as_u64())
+            {
+                let instruction_count = capture["instructions"].as_array().map_or(0, Vec::len);
+                let status = match capture["truncated"].as_bool() {
+                    Some(true) => "truncated by the worker",
+                    Some(false) => "worker trace complete",
+                    None => "completion unknown",
+                };
+                rows.push(Row {
+                    lane: "shader",
+                    key: format!("Draw {draw} · vertex {vertex}"),
+                    value: format!("{instruction_count} instructions · {status}"),
+                    action: None,
+                });
+            }
+            if let Some(draw) = capture["draw"]
+                .as_u64()
+                .filter(|_| capture.get("vertex").is_none())
+            {
+                let vertex_count = capture["vertex_count"].as_u64().map_or_else(
+                    || "Primitive vertex count unknown".into(),
+                    |count| format!("{count} primitive vertices"),
+                );
+                rows.push(Row {
+                    lane: "GPU",
+                    key: format!("Draw {draw}"),
+                    value: vertex_count,
+                    action: None,
+                });
+                for (name, field) in [
+                    ("Registers", "registers"),
+                    ("Float uniforms", "uniforms_f32_bits"),
+                    ("Boolean uniforms", "bool_uniforms"),
+                    ("Vertex program", "vertex_program"),
+                    ("Swizzle words", "swizzle"),
+                    ("Saved resources", "resources"),
+                ] {
+                    let value = capture[field].as_array().map_or_else(
+                        || "Unavailable in this capture".into(),
+                        |values| format!("{} entries", values.len()),
+                    );
+                    rows.push(Row {
+                        lane: "GPU",
+                        key: name.into(),
+                        value,
+                        action: None,
+                    });
+                }
+                if capture["resource_budget_exhausted"] == true {
+                    rows.push(Row {
+                        lane: "GPU",
+                        key: "Resources incomplete".into(),
+                        value: "The worker exhausted the resource capture budget".into(),
+                        action: None,
+                    });
+                }
+            }
             if let (Some(draw), Some(vertices)) =
                 (capture["draw"].as_u64(), capture["vertices"].as_array())
             {
@@ -626,7 +692,7 @@ impl Inspection {
                         });
                     }
                 }
-                if rows.is_empty() && capture["registers"].is_array() {
+                if !rows.iter().any(|row| row.action.is_some()) && capture["registers"].is_array() {
                     rows.push(Row {
                         lane: "shader",
                         key: "Vertex inputs".into(),
@@ -636,7 +702,43 @@ impl Inspection {
                 }
             }
             flatten(value, String::new(), &mut rows, &mut budget, 0);
+            if rows.len() == SNAPSHOT_ROW_CAP || budget < 2048 {
+                rows.insert(
+                    0,
+                    Row {
+                        lane: "state",
+                        key: "Display truncated".into(),
+                        value: "The inspector reached its display limit".into(),
+                        action: None,
+                    },
+                );
+            }
         }
+        let draw_textures = if value["capture"]["registers"].is_array() {
+            value["capture"]["resources"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .enumerate()
+                .take(32)
+                .filter(|(_, resource)| resource["kind"] == "texture")
+                .map(|(index, resource)| DrawTexture {
+                    index,
+                    label: format!(
+                        "Texture {} · {}×{}",
+                        crate::lotus_window::hex_string(&resource["address"]),
+                        resource["width"],
+                        resource["height"]
+                    ),
+                    unavailable: crate::pica_texture::Layout::from_resource(resource)
+                        .and_then(|layout| layout.checked_hex(resource))
+                        .err()
+                        .map(|err| err.to_string()),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
             rows: Arc::new(rows),
             source: format!(
@@ -662,6 +764,7 @@ impl Inspection {
             },
             draws: draw_headers,
             draw_artifact: None,
+            draw_textures,
         }
     }
 
@@ -675,6 +778,7 @@ impl Inspection {
             gpu: None,
             draws: None,
             draw_artifact: None,
+            draw_textures: Vec::new(),
         }
     }
     pub(crate) fn compare_draws(first: &Value, second: &Value, epoch: u64) -> Self {
@@ -709,6 +813,7 @@ impl Inspection {
             gpu: None,
             draws: None,
             draw_artifact: None,
+            draw_textures: Vec::new(),
         }
     }
     pub fn draw_diff(before: &Value, after: &Value) -> Vec<String> {
@@ -819,6 +924,7 @@ impl Inspection {
             gpu: None,
             draws: None,
             draw_artifact: None,
+            draw_textures: Vec::new(),
         })
     }
 }

@@ -804,12 +804,8 @@ impl LotusWindow {
             if let Some(old) = self.surface_image.take() {
                 cx.drop_image(old, None);
             }
-            if let Some(pixels) =
-                RgbaImage::from_raw(surface.width, surface.height, surface.bgra.clone())
-            {
-                self.surface_target = Some(surface.target.clone());
-                self.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(pixels)])));
-            }
+            self.surface_target = Some(surface.target.clone());
+            self.surface_image = Some(surface.pixels.clone());
         }
         let visible: Vec<String> = self
             .workspace
@@ -4201,7 +4197,11 @@ impl LotusWindow {
             if current != Panel::Result && matches!(request.status, DebugStatus::Finished { .. }) {
                 let id = request.id;
                 let label = if self.debug_details_visible(request) {
-                    "Show panel"
+                    if current == Panel::Gpu {
+                        "Show draws"
+                    } else {
+                        "Show panel"
+                    }
                 } else {
                     "Show result"
                 };
@@ -4233,6 +4233,9 @@ impl LotusWindow {
                 snapshot.and_then(|snap| snap.view.draw_artifact.as_ref()),
                 cx,
             ));
+            if let Some(snap) = snapshot {
+                panel = panel.children(self.render_saved_textures(&snap.view, cx));
+            }
         }
         if let Some(target) = target.as_ref().filter(|_| {
             current != Panel::Result && snapshot.is_none_or(|snapshot| snapshot.offset.is_some())
@@ -4510,6 +4513,7 @@ impl LotusWindow {
                             let weak = weak.clone();
                             div()
                                 .id(("gpu-draw", index))
+                                .debug_selector(move || format!("gpu-draw-{index}"))
                                 .h(px(28.0))
                                 .flex()
                                 .items_center()
@@ -4622,6 +4626,52 @@ impl LotusWindow {
             }
         }
         Some(bar)
+    }
+
+    fn render_saved_textures(
+        &self,
+        capture: &inspection::Inspection,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::Div> {
+        let draw = capture.draw_artifact.as_ref()?;
+        if capture.draw_textures.is_empty() {
+            return None;
+        }
+        let theme = theme::palette(cx);
+        let mut rows = div().px_2().py_1().text_xs();
+        for texture in &capture.draw_textures {
+            let mut row = div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .gap_2()
+                .child(texture.label.clone());
+            if let Some(reason) = &texture.unavailable {
+                row = row.child(div().text_color(theme.text_muted).child(reason.clone()));
+            } else {
+                let draw = draw.clone();
+                let resource = texture.index;
+                row = row.child(
+                    small_button(
+                        theme,
+                        format!("preview-saved-texture-{resource}"),
+                        "Preview",
+                        Tone::Plain,
+                        true,
+                    )
+                    .on_click(cx.listener(move |view, _, _, _| {
+                        if view.inspection_target().as_ref() == Some(&draw.target) {
+                            view.send(Command::PreviewGpuTexture {
+                                draw: draw.clone(),
+                                resource,
+                            });
+                        }
+                    })),
+                );
+            }
+            rows = rows.child(row);
+        }
+        Some(rows)
     }
 
     /// Utilities that are not tied to the selected view.
@@ -5746,6 +5796,71 @@ pub(crate) fn hex_string(value: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "silvestris-ui")]
+    #[test]
+    fn mounted_gpu_table_only_draws_the_visible_range() {
+        use lotus_session::{supervisor::SessionInfo, telemetry::Telemetry};
+
+        let mut app = gpui::TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(
+                silvestris::ThemePreference::explicit(silvestris::ThemeId::GEIST_DARK),
+                cx,
+            )
+        });
+        let headers: Vec<_> = (0..4096)
+            .map(|draw| {
+                serde_json::json!({
+                    "draw": draw, "command": draw + 10, "vertices": 8, "snapshot": true,
+                })
+            })
+            .collect();
+        let (entity, cx) = app.add_window_view(|window, cx| {
+            let mut view = LotusWindow::test_preview(window, cx);
+            let session = SessionSummary {
+                info: SessionInfo {
+                    id: "fixture".into(),
+                    kind: SessionKind::Secondary { parent: None },
+                    asset: Some("fixture.3dsx".into()),
+                    created_unix_ms: 1,
+                },
+                telemetry: Telemetry::new(),
+            };
+            let target = SessionTarget::from_summary(&session);
+            view.sessions = vec![session];
+            view.selected = target.id.clone();
+            view.inspected = target.id.clone();
+            view.show_panel(Panel::Gpu);
+            view.inspection = Some(InspectionSnapshot {
+                target: Some(target),
+                panel: Panel::Gpu,
+                offset: Some(0),
+                view: Arc::new(inspection::Inspection::from_value(
+                    &serde_json::json!({"draws": headers}),
+                    Panel::Gpu,
+                )),
+            });
+            view
+        });
+        cx.simulate_resize(gpui::size(px(1400.), px(900.)));
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("gpu-draw-4095").is_none());
+        let first = cx.debug_bounds("gpu-draw-0").expect("visible draw header");
+        cx.simulate_click(first.center(), gpui::Modifiers::default());
+        cx.update(|_, cx| {
+            let view = entity.read(cx);
+            let target = view.inspection_target().unwrap();
+            assert_eq!(
+                view.inspector_state
+                    .panel(&target, Panel::Gpu)
+                    .unwrap()
+                    .selected_draw,
+                Some(0)
+            );
+        });
+    }
 
     #[test]
     fn fit_uses_the_tighter_axis_and_never_collapses() {
