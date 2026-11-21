@@ -1,7 +1,7 @@
 //! Headless LOTUS: the MCP server over stdio, no window.
 //!
-//! Local only: no TCP listener is opened and no remote client can attach. When
-//! the client disconnects every session is stopped, so secondary data is
+//! Local only: MCP uses stdio and opt-in GDB listens on loopback. When the
+//! MCP client disconnects every session is stopped, so secondary data is
 //! discarded and primary cards are unlocked.
 
 use lotus_mcp::LotusServer;
@@ -37,8 +37,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Each session supervises itself (lotus_session::supervisor); there is no host pump.
     let host = server.host().cloned();
+    let gdb = server.gdb().cloned();
     let service = server.serve(rmcp::transport::stdio()).await?;
     let result = service.waiting().await;
+    if let Some(gdb) = gdb {
+        gdb.close().await;
+    }
     if let Some(host) = host {
         let outcomes = host.close().await;
         let failed: Vec<String> = outcomes

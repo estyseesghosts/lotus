@@ -238,6 +238,7 @@ pub struct DebugArgs {
 pub enum GdbOperation {
     Start,
     Stop,
+    Status,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

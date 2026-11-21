@@ -53,7 +53,7 @@ pub struct LotusServer {
     tool_router: ToolRouter<Self>,
     host: Option<Arc<Supervisor>>,
     frontend: Frontend,
-    gdb: Arc<tokio::sync::Mutex<BTreeMap<String, lotus_gdb::Server>>>,
+    gdb: Option<Arc<lotus_gdb::Manager>>,
     scenarios: BTreeMap<String, PathBuf>,
     screenshot_slots: Arc<tokio::sync::Semaphore>,
 }
@@ -71,7 +71,7 @@ impl LotusServer {
         Self {
             tool_router: Self::tool_router(),
             host: None,
-            gdb: Arc::default(),
+            gdb: None,
             frontend: Frontend::Headless,
             scenarios: BTreeMap::new(),
             screenshot_slots: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -97,10 +97,22 @@ impl LotusServer {
         frontend: Frontend,
         scenarios: BTreeMap<String, PathBuf>,
     ) -> Self {
+        let gdb = Arc::new(lotus_gdb::Manager::new(host.clone()));
+        Self::with_gdb(host, gdb, frontend, scenarios)
+    }
+
+    /// Desktop embedding supplies the same GDB service that its controller uses.
+    #[must_use]
+    pub fn with_gdb(
+        host: Arc<Supervisor>,
+        gdb: Arc<lotus_gdb::Manager>,
+        frontend: Frontend,
+        scenarios: BTreeMap<String, PathBuf>,
+    ) -> Self {
         Self {
             tool_router: Self::tool_router(),
             host: Some(host),
-            gdb: Arc::default(),
+            gdb: Some(gdb),
             frontend,
             scenarios,
             screenshot_slots: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -119,6 +131,11 @@ impl LotusServer {
     #[must_use]
     pub fn host(&self) -> Option<&Arc<Supervisor>> {
         self.host.as_ref()
+    }
+
+    #[must_use]
+    pub fn gdb(&self) -> Option<&Arc<lotus_gdb::Manager>> {
+        self.gdb.as_ref()
     }
 
     pub async fn resource_bytes(&self, uri: &str) -> io::Result<Vec<u8>> {
@@ -146,6 +163,19 @@ fn json<T: serde::Serialize>(value: &T) -> io::Result<Value> {
     serde_json::to_value(value).map_err(io::Error::other)
 }
 
+fn gdb_status(status: lotus_gdb::Status) -> Value {
+    serde_json::json!({
+        "state": status.state.name(),
+        "address": status.address.map(|address| address.to_string()),
+        "loopback_only": true,
+        "connected": status.leased,
+        "leased": status.leased,
+        "backend_supported": status.backend_support(),
+        "backend": status.backend,
+        "error": status.error,
+    })
+}
+
 fn resource(artifact: &Artifact) -> Resource {
     Resource::new(&artifact.uri, &artifact.screen)
         .with_mime_type(&artifact.mime_type)
@@ -159,33 +189,22 @@ fn resource(artifact: &Artifact) -> Resource {
 #[tool_router(router = tool_router)]
 impl LotusServer {
     #[tool(
-        description = "Start or stop an opt-in loopback GDB server for this session. Port 0 selects a free port. GDB exclusively leases mutation control while attached."
+        description = "Start, stop, or report the shared loopback GDB listener for this session. Port 0 selects a free port. GDB exclusively leases mutation control while attached."
     )]
-    async fn lotus_gdb(&self, Parameters(args): Parameters<GdbArgs>) -> CallToolResult {
+    pub async fn lotus_gdb(&self, Parameters(args): Parameters<GdbArgs>) -> CallToolResult {
         tool_result(
             async {
-                let host = self
-                    .host
-                    .clone()
-                    .ok_or_else(|| io::Error::other("native host is not configured"))?;
-                host.require_control()?;
-                host.summary(&args.session)?;
-                let mut servers = self.gdb.lock().await;
+                let host = self.require_host()?;
+                let gdb = self
+                    .gdb
+                    .as_ref()
+                    .ok_or_else(|| io::Error::other("GDB service is unavailable"))?;
+                let target = lotus_gdb::Target::resolve(host, &args.session)?;
                 match args.operation {
-                    GdbOperation::Start => {
-                        if servers.contains_key(&args.session) {
-                            return Err(io::Error::other(
-                                "GDB server already started for this session",
-                            ));
-                        }
-                        let server =
-                            lotus_gdb::Server::start(host, args.session.clone(), args.port).await?;
-                        let address = server.address.to_string();
-                        servers.insert(args.session, server);
-                        Ok(serde_json::json!({"address": address, "loopback_only": true}))
-                    }
+                    GdbOperation::Start => Ok(gdb_status(gdb.start(target, args.port).await?)),
+                    GdbOperation::Status => Ok(gdb_status(gdb.status(&target)?)),
                     GdbOperation::Stop => {
-                        servers.remove(&args.session);
+                        gdb.stop(&target).await?;
                         Ok(serde_json::json!({"stopped": true}))
                     }
                 }
@@ -441,7 +460,6 @@ impl LotusServer {
                 ControlOperation::Reset => host.reset(id, Actor::Mcp).await,
                 ControlOperation::Stop => {
                     host.stop(id, Actor::Mcp).await?;
-                    self.gdb.lock().await.remove(id);
                     Ok(serde_json::json!({"state": "stopped"}))
                 }
             }
@@ -472,14 +490,9 @@ impl LotusServer {
     )]
     pub async fn lotus_debug(&self, Parameters(args): Parameters<DebugArgs>) -> CallToolResult {
         let result = async {
-            let result = self
-                .require_host()?
+            self.require_host()?
                 .debug(&args.session, &args.command, Actor::Mcp)
-                .await?;
-            if matches!(args.command, lotus_protocol::debug::DebugCommand::Stop) {
-                self.gdb.lock().await.remove(&args.session);
-            }
-            Ok(result)
+                .await
         }
         .await;
         tool_result(result)

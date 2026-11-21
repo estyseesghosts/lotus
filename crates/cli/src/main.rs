@@ -188,7 +188,7 @@ fn main() -> Result<()> {
                     )
                     .await?;
                 println!("{}", serde_json::to_string(&info)?);
-                let _gdb = if args.get(3).is_some_and(|arg| arg == "--gdb") {
+                let gdb = if args.get(3).is_some_and(|arg| arg == "--gdb") {
                     let port = args
                         .get(4)
                         .context("--gdb requires port (0 selects a free port)")?
@@ -214,6 +214,11 @@ fn main() -> Result<()> {
                             Err(e) => serde_json::json!({"error": e.to_string()}),
                         };
                     println!("{reply}");
+                }
+                if let Some(gdb) = gdb {
+                    if let Err(error) = gdb.stop().await {
+                        eprintln!("GDB stop: {error}");
+                    }
                 }
                 host.close().await;
                 Ok::<(), anyhow::Error>(())

@@ -1,4 +1,7 @@
 //! Opt-in loopback RSP adapter. All target operations use the shared debug lease.
+mod manager;
+pub use manager::{Manager, State, Status};
+
 use lotus_protocol::{
     debug::{BreakpointKind, DebugCommand as D},
     envelope::SessionUuid,
@@ -15,168 +18,288 @@ const MAX_PACKET: usize = 16_384;
 
 pub struct Server {
     pub address: SocketAddr,
-    task: tokio::task::JoinHandle<()>,
+    shutdown: tokio::sync::watch::Sender<bool>,
+    done: tokio::sync::watch::Receiver<Option<Result<(), Failure>>>,
+    leased: Arc<std::sync::atomic::AtomicBool>,
 }
+
+#[derive(Clone)]
+struct Failure(io::ErrorKind, String);
+
 impl Server {
     pub async fn start(host: Arc<Supervisor>, session: String, port: u16) -> io::Result<Self> {
+        let target = Target::resolve(&host, &session)?;
+        Self::start_at(host, target, port).await
+    }
+
+    async fn start_at(host: Arc<Supervisor>, target: Target, port: u16) -> io::Result<Self> {
         host.require_control()?;
-        host.summary(&session)?;
-        // Every connection starts with HIO forwarding, stepping and breakpoints, which only
-        // CITnLO implements. AZAHAR answers "operation requires CITnLO experimental backend";
-        // refuse here instead of accepting a connection that closes on its first packet.
+        target.check(&host)?;
+        // The current workers do not advertise RSP separately. Probe the
+        // operation that distinguishes CITnLO from the stock backend.
         if let Err(error) = host
-            .debug(
-                &session,
+            .debug_at(
+                &target.session,
+                target.created_unix_ms,
+                target.epoch,
                 &D::HioForward { enabled: false },
                 lotus_session::telemetry::Actor::Host,
             )
             .await
         {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                format!("GDB remote requires the CITnLO backend: {error}"),
-            ));
+            return Err(if error.kind() == io::ErrorKind::Unsupported {
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("GDB remote requires the CITnLO backend: {error}"),
+                )
+            } else {
+                error
+            });
         }
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
         let address = listener.local_addr()?;
-        let task = tokio::spawn(async move {
-            loop {
-                if host.summary(&session).is_err() {
-                    break;
-                }
-                let accepted = tokio::select! {
-                    accepted = listener.accept() => accepted,
-                    _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => continue,
-                };
-                let Ok((socket, _)) = accepted else {
-                    break;
-                };
-                let owner = format!("gdb:{}", SessionUuid::generate());
-                if host
-                    .debug_as(
-                        &session,
-                        &D::LeaseAcquire {
-                            owner: owner.clone(),
-                        },
-                        &owner,
-                    )
-                    .await
-                    .is_err()
-                {
-                    drop(socket);
-                    continue;
-                }
-                let mut connection = Connection {
-                    socket,
-                    host: host.clone(),
-                    session: session.clone(),
-                    owner,
-                    no_ack: false,
-                    thread: None,
-                    core: 0,
-                    breakpoints: BTreeMap::new(),
-                    last_stop: "S05".into(),
-                    cleaned: false,
-                };
-                let watcher_host = host.clone();
-                let watcher_session = session.clone();
-                tokio::select! {
-                    _ = connection.serve() => {},
-                    _ = async {
-                        loop {
-                            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                            if watcher_host.summary(&watcher_session).is_err() { break; }
-                        }
-                    } => {},
-                }
-                connection.cleanup(false).await;
-                // Drop performs cleanup even if the server task was cancelled.
-            }
+        target.check(&host)?;
+        let (shutdown, stopping) = tokio::sync::watch::channel(false);
+        let (finished, done) = tokio::sync::watch::channel(None);
+        let leased = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lifetime = Lifetime {
+            host,
+            target,
+            stopping,
+        };
+        let connection_leased = leased.clone();
+        tokio::spawn(async move {
+            let result = listen(listener, lifetime, connection_leased).await;
+            finished.send_replace(Some(
+                result.map_err(|error| Failure(error.kind(), error.to_string())),
+            ));
         });
-        Ok(Self { address, task })
+        Ok(Self {
+            address,
+            shutdown,
+            done,
+            leased,
+        })
+    }
+
+    pub async fn stop(&self) -> io::Result<()> {
+        self.shutdown.send_replace(true);
+        self.done
+            .clone()
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|_| io::Error::other("GDB listener exited without reporting cleanup"))?
+            .as_ref()
+            .expect("completion was checked")
+            .clone()
+            .map_err(|Failure(kind, message)| io::Error::new(kind, message))
+    }
+
+    fn finished(&self) -> bool {
+        self.done.borrow().is_some() || self.done.has_changed().is_err()
+    }
+
+    fn failure(&self) -> Option<String> {
+        match &*self.done.borrow() {
+            Some(Err(Failure(_, message))) => Some(message.clone()),
+            None if self.done.has_changed().is_err() => {
+                Some("GDB listener exited without reporting cleanup".into())
+            }
+            _ => None,
+        }
+    }
+
+    fn leased(&self) -> bool {
+        self.leased.load(std::sync::atomic::Ordering::Acquire)
     }
 }
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.task.abort();
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Target {
+    pub session: String,
+    pub created_unix_ms: u64,
+    pub epoch: u64,
+}
+
+impl Target {
+    pub fn resolve(host: &Supervisor, session: &str) -> io::Result<Self> {
+        let summary = host.summary(session)?;
+        Ok(Self {
+            session: summary.info.id,
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        })
+    }
+
+    pub fn current(&self, host: &Supervisor) -> bool {
+        host.debug_target_current(&self.session, (self.created_unix_ms, self.epoch))
+    }
+
+    fn check(&self, host: &Supervisor) -> io::Result<()> {
+        if !self.current(host) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "GDB target changed or stopped",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct Lifetime {
+    host: Arc<Supervisor>,
+    target: Target,
+    stopping: tokio::sync::watch::Receiver<bool>,
+}
+
+impl Lifetime {
+    async fn ended(&mut self) {
+        let mut poll = tokio::time::interval(std::time::Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                _ = self.stopping.wait_for(|stopping| *stopping) => return,
+                _ = poll.tick() => {
+                    if !self.target.current(&self.host) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn debug(&self, command: D, owner: &str) -> io::Result<Value> {
+        self.host
+            .debug_as_at(
+                &self.target.session,
+                (self.target.created_unix_ms, self.target.epoch),
+                &command,
+                owner,
+            )
+            .await
+    }
+}
+
+async fn listen(
+    listener: TcpListener,
+    mut lifetime: Lifetime,
+    leased: Arc<std::sync::atomic::AtomicBool>,
+) -> io::Result<()> {
+    loop {
+        let (socket, _) = tokio::select! {
+            biased;
+            _ = lifetime.ended() => return Ok(()),
+            accepted = listener.accept() => accepted?,
+        };
+        let owner = format!("gdb:{}", SessionUuid::generate());
+        if lifetime
+            .debug(
+                D::LeaseAcquire {
+                    owner: owner.clone(),
+                },
+                &owner,
+            )
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        leased.store(true, std::sync::atomic::Ordering::Release);
+        let mut connection = Connection {
+            socket,
+            lifetime: lifetime.clone(),
+            owner,
+            no_ack: false,
+            thread: None,
+            core: 0,
+            breakpoints: BTreeMap::new(),
+            last_stop: "S05".into(),
+        };
+        let detach = connection.serve().await.ok().flatten();
+        let cleanup = connection.cleanup(detach.is_some()).await;
+        leased.store(false, std::sync::atomic::Ordering::Release);
+        if let Some(reply) = detach {
+            let _ = connection
+                .write(if cleanup.is_ok() { &reply } else { b"E01" })
+                .await;
+        }
+        cleanup?;
     }
 }
 
 struct Connection {
     socket: TcpStream,
-    host: Arc<Supervisor>,
-    session: String,
+    lifetime: Lifetime,
     owner: String,
     no_ack: bool,
     thread: Option<u32>,
     core: u32,
     breakpoints: BTreeMap<(u32, u32, u32), u64>,
     last_stop: String,
-    cleaned: bool,
 }
-impl Drop for Connection {
-    fn drop(&mut self) {
-        if self.cleaned {
-            return;
-        }
-        let host = self.host.clone();
-        let session = self.session.clone();
-        let owner = self.owner.clone();
-        let ids: Vec<_> = self.breakpoints.values().copied().collect();
-        tokio::spawn(async move {
-            let _ = host.debug_as(&session, &D::Pause, &owner).await;
-            for id in ids {
-                let _ = host
-                    .debug_as(&session, &D::BreakpointRemove { id }, &owner)
-                    .await;
-            }
-            let _ = host
-                .debug_as(&session, &D::HioForward { enabled: false }, &owner)
-                .await;
-            let _ = host
-                .debug_as(
-                    &session,
-                    &D::LeaseRelease {
-                        owner: owner.clone(),
-                    },
-                    &owner,
-                )
-                .await;
-        });
-    }
-}
+
 impl Connection {
-    async fn cleanup(&mut self, resume: bool) {
-        if self.cleaned {
-            return;
+    async fn cleanup(&mut self, resume: bool) -> io::Result<()> {
+        let mut result = Ok(());
+        if self.lifetime.target.current(&self.lifetime.host) {
+            result = self.debug(D::Pause).await.map(|_| ());
+            for id in self.breakpoints.values().copied() {
+                result = result.and(self.debug(D::BreakpointRemove { id }).await.map(|_| ()));
+            }
+            result = result.and(
+                self.debug(D::HioForward { enabled: false })
+                    .await
+                    .map(|_| ()),
+            );
+            if resume {
+                result = result.and(self.debug(D::Continue).await.map(|_| ()));
+            }
         }
-        let _ = self.debug(D::Pause).await;
-        let ids: Vec<_> = self.breakpoints.values().copied().collect();
-        for id in ids {
-            let _ = self.debug(D::BreakpointRemove { id }).await;
-        }
-        self.breakpoints.clear();
-        let _ = self.debug(D::HioForward { enabled: false }).await;
-        if resume {
-            let _ = self.debug(D::Continue).await;
-        }
-        let _ = self
-            .debug(D::LeaseRelease {
-                owner: self.owner.clone(),
-            })
+        let released = self
+            .lifetime
+            .host
+            .release_debug_lease_at(
+                &self.lifetime.target.session,
+                self.lifetime.target.created_unix_ms,
+                &self.owner,
+            )
             .await;
-        self.cleaned = true;
+        if self.lifetime.target.current(&self.lifetime.host) {
+            result.and(released)
+        } else {
+            Ok(())
+        }
     }
+
     async fn debug(&self, command: D) -> io::Result<Value> {
-        self.host
-            .debug_as(&self.session, &command, &self.owner)
-            .await
+        self.lifetime.debug(command, &self.owner).await
     }
-    async fn serve(&mut self) -> io::Result<()> {
+
+    // Only interrupt network/event waits. Dropping an issued worker exchange
+    // can leave replies queued in IPC ahead of the next command.
+    async fn read(&mut self) -> io::Result<Vec<u8>> {
+        self.lifetime.target.check(&self.lifetime.host)?;
+        tokio::select! {
+            biased;
+            _ = self.lifetime.ended() => Err(disconnected()),
+            packet = read_packet(&mut self.socket, self.no_ack) => packet,
+        }
+    }
+
+    async fn write(&mut self, reply: &[u8]) -> io::Result<()> {
+        self.lifetime.target.check(&self.lifetime.host)?;
+        tokio::select! {
+            biased;
+            _ = self.lifetime.ended() => Err(disconnected()),
+            sent = write_packet(&mut self.socket, reply) => sent,
+        }
+    }
+
+    async fn serve(&mut self) -> io::Result<Option<Vec<u8>>> {
         self.debug(D::Pause).await?;
         self.debug(D::HioForward { enabled: true }).await?;
         loop {
-            let packet = read_packet(&mut self.socket, self.no_ack).await?;
+            let packet = self.read().await?;
             let detach = packet == b"D" || packet.starts_with(b"D;");
             let kill = packet == b"k" || packet.starts_with(b"vKill;");
             let reply = self
@@ -184,24 +307,27 @@ impl Connection {
                 .await
                 .unwrap_or_else(|_| b"E01".to_vec());
             if kill {
-                let _ = self
-                    .host
-                    .stop(&self.session, lotus_session::telemetry::Actor::Host)
-                    .await;
+                let stopped = self.debug(D::Stop).await;
                 if packet.starts_with(b"vKill;") {
-                    write_packet(&mut self.socket, &reply).await?;
+                    let reply = if stopped.is_ok() {
+                        reply.as_slice()
+                    } else {
+                        b"E01"
+                    };
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(1),
+                        write_packet(&mut self.socket, reply),
+                    )
+                    .await??;
                 }
-                return Ok(());
+                return Ok(None);
             }
             if detach {
-                self.cleanup(true).await;
+                return Ok(Some(reply));
             }
-            write_packet(&mut self.socket, &reply).await?;
+            self.write(&reply).await?;
             if packet == b"QStartNoAckMode" {
                 self.no_ack = true;
-            }
-            if detach {
-                return Ok(());
             }
         }
     }
@@ -430,18 +556,15 @@ impl Connection {
                 "rewind status" => self.debug(D::RewindStatus).await?,
                 _ => return Err(bad()),
             };
-            write_packet(
-                &mut self.socket,
-                format!("O{}", hex(format!("{result}\n").as_bytes())).as_bytes(),
-            )
-            .await?;
+            self.write(format!("O{}", hex(format!("{result}\n").as_bytes())).as_bytes())
+                .await?;
             "OK".into()
         } else if p == "bs" {
             let result = self.debug(D::ReverseStep { core: self.core }).await?;
             self.last_stop = stop_reply(&result["stop"]);
             self.last_stop.clone()
         } else if p == "bc" {
-            let events = self.host.subscribe(&self.session).await?;
+            let events = self.subscribe().await?;
             let result = self.debug(D::ReverseContinue).await?;
             if result["resume_requested"] == true {
                 return self.wait_for_stop(events).await;
@@ -527,16 +650,26 @@ impl Connection {
         Ok(())
     }
     async fn continue_until_stop(&mut self) -> io::Result<Vec<u8>> {
-        let events = self.host.subscribe(&self.session).await?;
+        let events = self.subscribe().await?;
         self.debug(D::Continue).await?;
         self.wait_for_stop(events).await
     }
+
+    async fn subscribe(&self) -> io::Result<tokio::sync::broadcast::Receiver<Value>> {
+        self.lifetime
+            .host
+            .subscribe(&self.lifetime.target.session)
+            .await
+    }
+
     async fn wait_for_stop(
         &mut self,
         mut events: tokio::sync::broadcast::Receiver<Value>,
     ) -> io::Result<Vec<u8>> {
         loop {
             tokio::select! {
+                biased;
+                _ = self.lifetime.ended() => return Err(disconnected()),
                 event = events.recv() => {
                     let event = match event {
                         Ok(event) => event,
@@ -552,9 +685,9 @@ impl Connection {
                     let stop = &event["data"];
                     if stop["reason"] == "frame" { continue; }
                     if stop["reason"] == "hio" {
-                        write_packet(&mut self.socket, stop["packet"].as_str().ok_or_else(bad)?.as_bytes()).await?;
+                        self.write(stop["packet"].as_str().ok_or_else(bad)?.as_bytes()).await?;
                         loop {
-                            let request = read_packet(&mut self.socket, self.no_ack).await?;
+                            let request = self.read().await?;
                             if request.first() == Some(&b'F') {
                                 let s = std::str::from_utf8(&request[1..]).map_err(|_| bad())?;
                                 let mut fields = s.split(',');
@@ -565,7 +698,7 @@ impl Connection {
                                 break;
                             }
                             let reply = Box::pin(self.handle(&request)).await.unwrap_or_else(|_| b"E01".to_vec());
-                            write_packet(&mut self.socket, &reply).await?;
+                            self.write(&reply).await?;
                         }
                         self.debug(D::Continue).await?;
                         continue;
@@ -717,6 +850,12 @@ fn bad() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
         "invalid or unsupported RSP request",
+    )
+}
+fn disconnected() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::NotConnected,
+        "GDB listener stopped or target changed",
     )
 }
 fn hex(bytes: &[u8]) -> String {

@@ -573,6 +573,18 @@ impl Supervisor {
         })
     }
 
+    /// Check a debugger target against the latest published worker state without
+    /// waiting for its IPC lock. Scoped dispatch also checks the live epoch.
+    pub fn debug_target_current(&self, id: &str, expected: (u64, u64)) -> bool {
+        !self.is_closing()
+            && self.handle(id).is_ok_and(|handle| {
+                !handle.is_closed() && handle.info().created_unix_ms == expected.0 && {
+                    let telemetry = handle.telemetry();
+                    telemetry.state.is_active() && telemetry.epoch == expected.1
+                }
+            })
+    }
+
     /// Persistent card names.
     /// The host configuration this supervisor runs with (paths canonicalized).
     #[must_use]
@@ -797,6 +809,7 @@ impl Supervisor {
         let mut telemetry = Telemetry::new();
         telemetry.state = native.state();
         telemetry.epoch = native.epoch();
+        telemetry.backend_name = native.backend_name().to_owned();
         telemetry.pid = native.pid();
         telemetry.worker_features = Arc::new(native.features().clone());
         telemetry.startup_ms = launch.elapsed().as_secs_f64() * 1e3;
@@ -845,6 +858,7 @@ impl Supervisor {
         pause_if_running(&mut native).await?;
         handle.cancel_input(true);
         native.load(&content).await?;
+        handle.telemetry().epoch = native.epoch();
         self.budgets.clear_recordings(id);
         lock(&handle.info).asset = Some(asset.to_string());
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
@@ -1492,6 +1506,7 @@ impl Supervisor {
         handle.record(actor, "reset");
         handle.cancel_input(true);
         let result = native.reset().await?;
+        handle.telemetry().epoch = native.epoch();
         self.budgets.clear_recordings(id);
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
         Ok(result)
@@ -1572,6 +1587,15 @@ impl Supervisor {
         if !handle.close() {
             return Err(io::Error::other("session is already stopping"));
         }
+        self.stop_claimed(id, actor, handle).await
+    }
+
+    async fn stop_claimed(
+        &self,
+        id: &str,
+        actor: Actor,
+        handle: Arc<SessionHandle>,
+    ) -> io::Result<()> {
         handle.set_playing(false);
         handle.record(actor, "stop");
         let started = Instant::now();
@@ -1814,6 +1838,45 @@ impl Supervisor {
             .await
     }
 
+    /// A connection-specific actor whose debugger is bound to one guest epoch.
+    pub async fn debug_as_at(
+        &self,
+        id: &str,
+        expected: (u64, u64),
+        command: &lotus_protocol::debug::DebugCommand,
+        client: &str,
+    ) -> io::Result<serde_json::Value> {
+        self.debug_as_checked(
+            id,
+            command,
+            client,
+            DebugScope {
+                target: Some(expected),
+                cancellation: None,
+            },
+        )
+        .await
+    }
+
+    /// Release only this connection's lease on the original session. This must
+    /// work during teardown even when the original guest epoch has expired.
+    pub async fn release_debug_lease_at(
+        &self,
+        id: &str,
+        created_unix_ms: u64,
+        client: &str,
+    ) -> io::Result<()> {
+        let handle = self.handle(id)?;
+        let _native = handle.native.lock().await;
+        if handle.info().created_unix_ms != created_unix_ms {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "debug session changed",
+            ));
+        }
+        release_debug_lease(&handle, client, client)
+    }
+
     async fn debug_as_checked(
         &self,
         id: &str,
@@ -1932,13 +1995,22 @@ impl Supervisor {
                 check_debug_target(scope.target, handle.info().created_unix_ms, native.epoch())?;
                 check_lease(&handle, client)?;
                 scope.dispatch()?;
+                if !handle.close() {
+                    return Err(io::Error::other("session is already stopping"));
+                }
                 native.metadata()
             };
-            self.stop(id, Actor::Host).await?;
+            self.stop_claimed(id, Actor::Host, handle).await?;
             return Ok(serde_json::json!({"state":"stopped","metadata":metadata}));
         }
         let mut native = handle.native.lock().await;
         check_debug_target(scope.target, handle.info().created_unix_ms, native.epoch())?;
+        if scope.target.is_some() && (handle.is_closed() || !native.state().is_active()) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "debug session is stopping",
+            ));
+        }
         if let Some(feature) = command.required_feature() {
             native.require(feature)?;
         }
@@ -2052,15 +2124,7 @@ impl Supervisor {
             return native.debug(command).await;
         }
         if let DebugCommand::LeaseRelease { owner } = command {
-            let mut lease = lock(&handle.lease);
-            if owner != client || lease.as_deref() != Some(client) {
-                return Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    "debug lease is not owned by this client",
-                ));
-            }
-            *lease = None;
-            handle.telemetry().desktop_debug_lease_blocked = false;
+            release_debug_lease(&handle, owner, client)?;
             return Ok(serde_json::json!({"released": client}));
         }
         if let DebugCommand::Disassemble {
@@ -2140,12 +2204,14 @@ impl Supervisor {
             DebugCommand::Status => native.status().await,
             DebugCommand::Reset => {
                 let result = native.reset().await?;
+                handle.telemetry().epoch = native.epoch();
                 self.budgets.clear_recordings(id);
                 self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 Ok(result)
             }
             DebugCommand::Load { asset } => {
                 let result = native.load(&self.resolve_asset(asset)?).await?;
+                handle.telemetry().epoch = native.epoch();
                 self.budgets.clear_recordings(id);
                 lock(&handle.info).asset = Some(asset.clone());
                 self.settings_revision.fetch_add(1, Ordering::AcqRel);
@@ -2160,6 +2226,7 @@ impl Supervisor {
             DebugCommand::Advance { frames } => native.advance(*frames).await,
             _ => {
                 let mut result = native.debug(command).await?;
+                handle.telemetry().epoch = native.epoch();
                 // Keep the ledger in worker command order even when another
                 // request acquires this session's native lock immediately.
                 if let Some((permit, active)) = permit {
@@ -2975,6 +3042,19 @@ fn actor_client(actor: Actor) -> &'static str {
         Actor::Desktop => "desktop",
         Actor::Mcp => "mcp",
     }
+}
+
+fn release_debug_lease(handle: &SessionHandle, owner: &str, client: &str) -> io::Result<()> {
+    let mut lease = lock(&handle.lease);
+    if owner != client || lease.as_deref() != Some(client) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "debug lease is not owned by this client",
+        ));
+    }
+    *lease = None;
+    handle.telemetry().desktop_debug_lease_blocked = false;
+    Ok(())
 }
 
 fn check_lease(handle: &SessionHandle, client: &str) -> io::Result<()> {
