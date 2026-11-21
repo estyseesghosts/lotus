@@ -1,7 +1,7 @@
 //! Inspector/controller acceptance; no GUI input or screenshot access required.
 use lotus_desktop::{
     desktop_controller::{Command, DebugStatus, DesktopController, McpMode, Update},
-    inspection::{InspectionSelection, Panel},
+    inspection::{InspectionSelection, Panel, SessionTarget},
 };
 use lotus_protocol::{
     debug::{DebugCommand as D, GpuCapture},
@@ -10,6 +10,8 @@ use lotus_protocol::{
 use lotus_session::supervisor::{HostConfig, SessionKind};
 use std::{
     collections::BTreeMap,
+    io::{ErrorKind, Read, Write},
+    net::TcpStream,
     path::PathBuf,
     sync::atomic::Ordering,
     time::{Duration, Instant},
@@ -32,6 +34,102 @@ fn wait(controller: &DesktopController, predicate: impl Fn(&Update) -> bool) {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+fn gdb_packet(socket: &mut TcpStream, request: &str) -> Vec<u8> {
+    let checksum = request.bytes().fold(0, u8::wrapping_add);
+    write!(socket, "${request}#{checksum:02x}").unwrap();
+    let mut prefix = [0; 2];
+    socket.read_exact(&mut prefix).unwrap();
+    assert_eq!(&prefix, b"+$");
+    let mut reply = Vec::new();
+    loop {
+        let mut byte = [0];
+        socket.read_exact(&mut byte).unwrap();
+        if byte[0] == b'#' {
+            break;
+        }
+        assert!(reply.len() < 512, "unexpected RSP reply size");
+        reply.push(byte[0]);
+    }
+    let mut checksum = [0; 2];
+    socket.read_exact(&mut checksum).unwrap();
+    let sum = reply.iter().copied().fold(0, u8::wrapping_add);
+    assert_eq!(&checksum, format!("{sum:02x}").as_bytes());
+    socket.write_all(b"+").unwrap();
+    reply
+}
+
+fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, pc: u32) {
+    let gdb_runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .unwrap();
+    let gdb = gdb_runtime
+        .block_on(lotus_gdb::Server::start(
+            controller.host().clone(),
+            target.id.clone(),
+            0,
+        ))
+        .unwrap();
+    let mut socket = TcpStream::connect(gdb.address).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    assert!(gdb_packet(&mut socket, "qSupported").starts_with(b"PacketSize="));
+
+    *controller.inspection_selection.lock().unwrap() =
+        InspectionSelection::first_page(Panel::Breakpoints);
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: target.clone(),
+            panel: Panel::Breakpoints,
+            command: D::Advance { frames: 1 },
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update.debug_result(Panel::Breakpoints).is_some_and(|request| {
+            matches!(&request.status, DebugStatus::Failed { kind: ErrorKind::PermissionDenied, message }
+                if message.contains("debug lease held by another client"))
+        })
+    });
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: target.clone(),
+            panel: Panel::Memory,
+            command: D::ReadMemory {
+                address: pc,
+                length: 16,
+            },
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update.debug_result(Panel::Memory).is_some_and(|request| {
+            matches!(&request.status, DebugStatus::Finished { view, .. }
+                if view.rows.iter().any(|row| row.key == ".bytes[15]"))
+        })
+    });
+    assert_eq!(gdb_packet(&mut socket, "D"), b"OK");
+    drop(socket);
+    drop(gdb);
+    drop(gdb_runtime);
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: target.clone(),
+            panel: Panel::Breakpoints,
+            command: D::Advance { frames: 1 },
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update
+            .debug_result(Panel::Breakpoints)
+            .is_some_and(|request| matches!(&request.status, DebugStatus::Finished { .. }))
+    });
+}
+
 #[test]
 #[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_FIXTURE"]
 fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
@@ -198,7 +296,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         controller
             .commands
             .send(Command::DebugAt {
-                target,
+                target: target.clone(),
                 panel: Panel::Gpu,
                 command,
             })
@@ -214,6 +312,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             controller.inspection_selection.lock().unwrap().panel,
             Panel::Gpu
         );
+        check_gdb_ownership(&controller, &target, pc);
         controller.inspector.store(false, Ordering::Release);
         *controller.inspection_selection.lock().unwrap() =
             InspectionSelection::first_page(Panel::Result);
@@ -236,7 +335,10 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             })
         });
         controller.commands.send(Command::Stop(id)).unwrap();
-        wait(&controller, |update| update.sessions.is_empty());
+        wait(&controller, |update| {
+            update.sessions.is_empty() && update.pending == 0
+        });
+        assert!(controller.latest.lock().unwrap().error.is_empty());
         drop(controller);
         let metadata: serde_json::Value = serde_json::from_slice(
             &std::fs::read(root.join("cards/inspect/native-manifest.json")).unwrap(),

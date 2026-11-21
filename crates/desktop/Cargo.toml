@@ -63,4 +63,5 @@ silvestris-ui = ["dep:silvestris"]
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+lotus-gdb = { workspace = true }
 silvestris = { path = "../../vendor/silvestris/crates/silvestris", features = ["test-support"] }

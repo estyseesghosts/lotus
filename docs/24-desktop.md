@@ -136,7 +136,10 @@ for cancellation between chunks. New inspector polls on that worker wait
 for explicit commands to finish.
 
 `wave3-native-inspector-01` covers both models through the controller, including
-100000-event import and closed manifests. `wave3-inspector-tests-03` and later
+100000-event import and closed manifests. The Windows native inspector test also
+checks that a live GDB lease rejects a desktop mutation with a reason, allows a
+desktop memory read and restores desktop control on detach.
+`wave3-inspector-tests-03` and later
 checks cover the bounded view model. **Checked by screenshot**
 (`w3c-desktop-01`, 2026-11-16, PrintWindow captures with posted mouse
 messages, one 100%-scale display): every inspector panel renders live CITnLO

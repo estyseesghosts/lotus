@@ -3207,6 +3207,7 @@ dependencies = [
  "image",
  "lotus-accuracy",
  "lotus-debugger",
+ "lotus-gdb",
  "lotus-hardware",
  "lotus-input",
  "lotus-mcp",
