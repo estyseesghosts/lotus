@@ -1882,8 +1882,7 @@ impl Supervisor {
         self.capture_scaled(id, 1).await
     }
     pub async fn capture_scaled(&self, id: &str, scale: u32) -> io::Result<Vec<Artifact>> {
-        let handle = self.handle(id)?;
-        let frames = handle.native.lock().await.capture_scaled(scale).await?;
+        let frames = self.capture_frames(id, scale).await?;
         let batch = frames
             .into_iter()
             .map(|frame| NewArtifact {
@@ -1896,6 +1895,13 @@ impl Supervisor {
             })
             .collect();
         self.publish(id, batch)
+    }
+
+    /// Capture owned, exact pixels using the same size and lease checks as artifact capture.
+    pub async fn capture_frames(&self, id: &str, scale: u32) -> io::Result<Vec<Frame>> {
+        let handle = self.handle(id)?;
+        let frames = handle.native.lock().await.capture_scaled(scale).await?;
+        Ok(frames)
     }
 
     #[must_use]

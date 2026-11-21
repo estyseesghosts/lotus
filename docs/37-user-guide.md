@@ -407,7 +407,8 @@ resources. Anything that changes state needs `allow_control`.
 | `lotus_run_until` | `session`, `frames` 1–600 | advance exactly that many frames, then pause |
 | `lotus_session_status` | `session` | worker status plus gauges |
 | `lotus_input` | `session`, `owner` (`live`), `buttons`, `x`, `y`, `touch`, `circle_pad`, `c_stick` | set the complete input state |
-| `lotus_capture` | `session` | both screens as artifacts |
+| `lotus_capture_image` | `session`, `scale` (optional, 1–4) | labeled inline PNG images, top then bottom |
+| `lotus_capture` | `session` | both screens as raw BGRA artifacts |
 | `lotus_registers` | `session`, `core` (0) | r0–r15 and CPSR |
 | `lotus_read_memory` | `session`, `address`, `length` 1–4096 | mapped bytes; no writes |
 | `lotus_debug` | `session`, `command` | any typed debugger command (section 7) |
@@ -432,10 +433,10 @@ L 8, R 9, Start 10, Select 11, ZL 14, ZR 15, Home 16. So A + Right is
 
 A typical agent loop: `lotus_status` → `lotus_create_session {"kind":
 "primary", "card": "main", "asset": "homebrew"}` → `lotus_run_until 60` →
-`lotus_capture` → `lotus_input` → `lotus_run_until` → … → `lotus_control
+`lotus_capture_image` → `lotus_input` → `lotus_run_until` → … → `lotus_control
 stop`.
 
-Captures count against the artifact quota: 512 artifacts / 512 MiB by default,
+Raw captures count against the artifact quota: 512 artifacts / 512 MiB by default,
 each new one protected for 60 s, then evicted least recently used. Pin what you
 need to keep. Policy and quotas: [23](23-local-mcp.md).
 

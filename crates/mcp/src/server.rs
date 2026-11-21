@@ -26,8 +26,8 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler
 use serde_json::Value;
 
 use crate::tool_arguments::{
-    AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs, GdbOperation,
-    InputArgs, InputPresetArgs, InputPresetOperation, KindArg, LoadArgs, MemoryArgs,
+    AdvanceArgs, CaptureImageArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs,
+    GdbOperation, InputArgs, InputPresetArgs, InputPresetOperation, KindArg, LoadArgs, MemoryArgs,
     PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs, SessionArgs, SettingsArgs,
     SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
 };
@@ -55,6 +55,7 @@ pub struct LotusServer {
     frontend: Frontend,
     gdb: Arc<tokio::sync::Mutex<BTreeMap<String, lotus_gdb::Server>>>,
     scenarios: BTreeMap<String, PathBuf>,
+    screenshot_slots: Arc<tokio::sync::Semaphore>,
 }
 
 impl Default for LotusServer {
@@ -73,6 +74,7 @@ impl LotusServer {
             gdb: Arc::default(),
             frontend: Frontend::Headless,
             scenarios: BTreeMap::new(),
+            screenshot_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
 
@@ -101,6 +103,7 @@ impl LotusServer {
             gdb: Arc::default(),
             frontend,
             scenarios,
+            screenshot_slots: Arc::new(tokio::sync::Semaphore::new(2)),
         }
     }
 
@@ -534,6 +537,40 @@ impl LotusServer {
                     .map(|artifact| ContentBlock::resource_link(resource(artifact)))
                     .collect(),
             ),
+            Err(error) => tool_result(Err(error)),
+        }
+    }
+
+    #[tool(
+        description = "Capture both screens of an owned session as inline lossless PNG images, top then bottom, each preceded by its label and dimensions. Scale defaults to 1 (400×240 and 320×240) and accepts 1–4. Use lotus_capture for raw BGRA artifact links."
+    )]
+    pub async fn lotus_capture_image(
+        &self,
+        Parameters(args): Parameters<CaptureImageArgs>,
+    ) -> CallToolResult {
+        let result = async {
+            let host = self.require_host()?;
+            // Bound the number of owned scaled frame pairs queued for encoding.
+            let slot = self
+                .screenshot_slots
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(io::Error::other)?;
+            let frames = host
+                .capture_frames(&args.session, args.scale.unwrap_or(1))
+                .await?;
+            // The worker can make progress while its owned screen copies are encoded.
+            tokio::task::spawn_blocking(move || {
+                let _slot = slot;
+                crate::screenshot::inline_images(frames)
+            })
+            .await
+            .map_err(io::Error::other)?
+        }
+        .await;
+        match result {
+            Ok(content) => CallToolResult::success(content),
             Err(error) => tool_result(Err(error)),
         }
     }

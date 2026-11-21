@@ -3264,6 +3264,7 @@ dependencies = [
  "lotus-session",
  "lotus-settings",
  "lotus-trace",
+ "png 0.17.16",
  "rmcp",
  "schemars",
  "serde",

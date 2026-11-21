@@ -138,7 +138,12 @@ Tools: status/list (sessions, cards), create (primary/secondary), load an
 approved asset, run/run_until, pause/reset/stop, input, session status with
 gauges, registers, bounded mapped-memory reads, capture and focus. Scenario
 validation accepts only a handle registered by the embedding host; the standalone
-server currently registers none. Captures return `lotus://artifact/...` links.
+server currently registers none. `lotus_capture_image` returns top and bottom
+screens as lossless PNG image blocks, each preceded by its label and dimensions.
+It accepts integer `scale` from 1 to 4, default 1. PNG encoding only runs for
+this explicit tool call and creates no catalog entries. Two captures can
+prepare image replies concurrently on a server. `lotus_capture`
+returns raw BGRA as `lotus://artifact/...` links, including for clients without image support.
 `resources/list` and `resources/read` expose only catalogued captures; read checks
 size/hash. No shell, arbitrary filesystem, network listener or Azahar UDP RPC.
 

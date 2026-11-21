@@ -2,6 +2,7 @@
 import base64
 import json
 import queue
+import struct
 import subprocess
 import sys
 import threading
@@ -52,11 +53,38 @@ def main():
                                 "clientInfo": {"name": "lotus-local-acceptance", "version": "1"}})
             send("notifications/initialized", notification=True)
             names = {entry["name"] for entry in send("tools/list")["tools"]}
-            assert {"lotus_create_session", "lotus_run_until", "lotus_capture", "lotus_input"} <= names
+            assert {"lotus_create_session", "lotus_run_until", "lotus_capture",
+                    "lotus_capture_image", "lotus_input"} <= names
             created = tool("lotus_create_session", {"asset": asset})
             session = json.loads(created["content"][0]["text"])["session"]
             tool("lotus_run_until", {"session": session, "frames": 60})
+            for scale in (1, 2):
+                arguments = {"session": session}
+                if scale != 1:
+                    arguments["scale"] = scale
+                start = time.perf_counter()
+                content = tool("lotus_capture_image", arguments)["content"]
+                elapsed = (time.perf_counter() - start) * 1000
+                assert [block["type"] for block in content] == ["text", "image"] * 2
+                sizes = []
+                for screen, width, label, image in zip(
+                        ("top", "bottom"), (400, 320), content[::2], content[1::2]):
+                    dimensions = (width * scale, 240 * scale)
+                    assert label["text"] == f"{screen} screen ({dimensions[0]} × {dimensions[1]})"
+                    assert image["mimeType"] == "image/png"
+                    png = base64.b64decode(image["data"], validate=True)
+                    assert png.startswith(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+                    assert struct.unpack_from(">II", png, 16) == dimensions
+                    sizes.append(len(png))
+                print(f"inline PNG {scale}x: {elapsed:.1f} ms, {sizes} bytes")
+            assert send("resources/list")["resources"] == []
+            for scale in (0, 5):
+                invalid = send("tools/call", {"name": "lotus_capture_image",
+                               "arguments": {"session": session, "scale": scale}})
+                assert invalid.get("isError")
+            start = time.perf_counter()
             capture = tool("lotus_capture", {"session": session})
+            elapsed = (time.perf_counter() - start) * 1000
             assert len(capture["content"]) == 2
             for link in capture["content"]:
                 assert link["type"] == "resource_link"
@@ -64,6 +92,8 @@ def main():
                 data = base64.b64decode(resource["contents"][0]["blob"], validate=True)
                 assert len(data) == link["size"]
             assert len(send("resources/list")["resources"]) == 2
+            print(f"raw capture 1x: {elapsed:.1f} ms for links, "
+                  f"{[link['size'] for link in capture['content']]} bytes")
             denied = send("tools/call", {"name": "lotus_create_session", "arguments": {"asset": "../../arbitrary.3dsx"}})
             assert denied.get("isError")
             tool("lotus_control", {"session": session, "operation": "stop"})

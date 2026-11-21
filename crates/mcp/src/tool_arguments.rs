@@ -151,6 +151,15 @@ pub struct SessionArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct CaptureImageArgs {
+    pub session: String,
+    /// Integer scale from 1 to 4. Omit for native screen dimensions.
+    #[schemars(range(min = 1, max = 4))]
+    pub scale: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct LoadArgs {
     pub session: String,
     /// Approved content handle from `lotus_status`.
