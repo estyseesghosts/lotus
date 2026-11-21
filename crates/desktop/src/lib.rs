@@ -6,6 +6,8 @@
 
 #[doc(hidden)]
 pub mod debugger_coverage;
+#[cfg(feature = "silvestris-ui")]
+mod debugger_palette;
 pub mod desktop_controller;
 pub mod gauges;
 pub mod icons;

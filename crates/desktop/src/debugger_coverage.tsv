@@ -1,96 +1,96 @@
 # v1	surface, operation, desktop route, permission, extra feature, detail
 debug	advance	session controls	control	-	Current desktop controls expose a subset of arguments
-debug	asset_mount	palette	control	-	Planned in #141
+debug	asset_mount	palette	control	-	-
 debug	audio_capture	inspector actions	control	-	-
 debug	audio_focus	inspector actions	control	-	-
-debug	backtrace	palette	read	-	Planned in #141
-debug	boot_home_menu	palette	control	-	Planned in #141
-debug	breakpoint_configure	palette	control	-	Planned in #141
-debug	breakpoint_remove	palette	control	-	Planned in #141
-debug	breakpoint_set	palette	control	-	Planned in #141
+debug	backtrace	palette	read	-	-
+debug	boot_home_menu	palette	control	-	-
+debug	breakpoint_configure	palette	control	-	-
+debug	breakpoint_remove	palette	control	-	-
+debug	breakpoint_set	palette	control	-	-
 debug	breakpoints	inspector polling	read	-	-
-debug	capture_scaled	palette	read	-	Planned in #141
-debug	cheat_add	palette	control	-	Planned in #141
-debug	cheat_enable	palette	control	-	Planned in #141
-debug	cheat_remove	palette	control	-	Planned in #141
-debug	cheats	palette	read	-	Planned in #141
+debug	capture_scaled	palette	read	-	-
+debug	cheat_add	palette	control	-	-
+debug	cheat_enable	palette	control	-	-
+debug	cheat_remove	palette	control	-	-
+debug	cheats	palette	read	-	-
 debug	citrace_replay	inspector actions	control	-	-
 debug	citrace_start	inspector actions	control	-	-
-debug	citrace_status	palette	read	-	Planned in #141
+debug	citrace_status	palette	read	-	-
 debug	citrace_stop	inspector actions	control	-	-
-debug	content_transform	palette	control	-	Planned in #141
+debug	content_transform	palette	control	-	-
 debug	continue	session controls	control	-	Current desktop controls expose a subset of arguments
-debug	crash_report	palette	read	-	Planned in #141
-debug	deadlocks	palette	read	-	Planned in #141
+debug	crash_report	palette	read	-	-
+debug	deadlocks	palette	read	-	-
 debug	disassemble	CPU inspector	read	-	-
 debug	dsp_inspect	inspector polling	read	-	-
-debug	dsp_load_firmware	palette	control	-	Planned in #141
+debug	dsp_load_firmware	palette	control	-	-
 debug	events	inspector polling	read	-	-
-debug	events_configure	palette	control	event_subscriptions	Planned in #141
-debug	fork	palette	control	-	Planned in #141
+debug	events_configure	palette	control	event_subscriptions	-
+debug	fork	palette	control	-	-
 debug	gpu_configure	inspector actions	control	gpu_capture_levels when capture is set	-
 debug	gpu_draw	inspector rows	read	-	-
 debug	gpu_draws	inspector polling	read	-	-
-debug	handles	palette	read	-	Planned in #141
-debug	hio_forward	palette	control	-	Planned in #141
-debug	hio_reply	palette	control	-	Planned in #141
+debug	handles	palette	read	-	-
+debug	hio_forward	palette	control	-	-
+debug	hio_reply	palette	control	-	-
 debug	input_state	desktop input	control	-	Local input devices supply state through the input router
-debug	install_cia	palette	control	-	Planned in #141
+debug	install_cia	palette	control	-	-
 debug	lease_acquire	external only	control	-	Lease ownership belongs to the external controller
 debug	lease_release	external only	control	-	Lease ownership belongs to the external controller
 debug	load	session controls	control	-	Current desktop controls expose a subset of arguments
 debug	load_state	inspector rows	control	-	-
-debug	load_symbols	palette	control	-	Planned in #141
+debug	load_symbols	palette	control	-	-
 debug	logs	inspector polling	read	-	-
-debug	matrix	palette	control	-	Planned in #141
+debug	matrix	palette	control	-	-
 debug	memory_map	inspector polling	read	-	-
-debug	movie_play	palette	control	-	Planned in #141
-debug	movie_record	palette	control	-	Planned in #141
-debug	movie_status	palette	read	-	Planned in #141
-debug	movie_stop	palette	control	-	Planned in #141
-debug	nfc_remove	palette	control	-	Planned in #141
+debug	movie_play	palette	control	-	-
+debug	movie_record	palette	control	-	-
+debug	movie_status	palette	read	-	-
+debug	movie_stop	palette	control	-	-
+debug	nfc_remove	palette	control	-	-
 debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments
-debug	perf	palette	read	-	Planned in #141
-debug	pointer_chain	palette	read	-	Planned in #141
-debug	processes	palette	read	-	Planned in #141
-debug	read_memory	palette	read	-	Planned in #141
+debug	perf	palette	read	-	-
+debug	pointer_chain	palette	read	-	-
+debug	processes	palette	read	-	-
+debug	read_memory	palette	read	-	-
 debug	registers	inspector polling	read	-	-
 debug	reset	session controls	control	-	Current desktop controls expose a subset of arguments
-debug	resolve_symbol	palette	read	-	Planned in #141
+debug	resolve_symbol	palette	read	-	-
 debug	reverse_continue	inspector actions	control	-	-
 debug	reverse_step	inspector actions	control	-	-
 debug	rewind_configure	inspector actions	control	rewind_compression_queue when compression_queue is set	-
-debug	rewind_status	palette	read	-	Planned in #141
-debug	run_to	palette	control	-	Planned in #141
-debug	run_until	palette	control	-	Planned in #141
+debug	rewind_status	palette	read	-	-
+debug	run_to	palette	control	-	-
+debug	run_until	palette	control	-	-
 debug	save_state	inspector actions	control	-	-
-debug	scan	palette	control	-	Planned in #141
-debug	scan_narrow	palette	control	-	Planned in #141
-debug	scan_results	palette	read	-	Planned in #141
-debug	settings_diff	palette	read	-	Planned in #141
-debug	settings_get	palette	read	-	Planned in #141
+debug	scan	palette	control	-	-
+debug	scan_narrow	palette	control	-	-
+debug	scan_results	palette	read	-	-
+debug	settings_diff	palette	read	-	-
+debug	settings_get	palette	read	-	-
 debug	settings_list	inspector polling	read	-	-
 debug	settings_set	inspector rows	control	deterministic_async for deterministic_async_operations	-
 debug	shader_trace	inspector rows	control	-	-
-debug	state_hash	palette	control if dump is set	state_hash	Planned in #141
+debug	state_hash	palette	control if dump is set	state_hash	-
 debug	states	inspector polling	read	-	-
 debug	status	session status	read	-	Cached session summaries and gauges
 debug	step	inspector actions	control	-	-
 debug	step_out	inspector actions	control	-	-
 debug	step_over	inspector actions	control	-	-
 debug	stop	session controls	control	-	Current desktop controls expose a subset of arguments
-debug	storage_browse	palette	read	-	Planned in #141
+debug	storage_browse	palette	read	-	-
 debug	surface	inspector rows	control	-	-
-debug	suspend	palette	control	-	Planned in #141
-debug	symbolize	palette	read	-	Planned in #141
-debug	system_regenerate	palette	control	-	Planned in #141
-debug	thread_registers	palette	read	-	Planned in #141
+debug	suspend	palette	control	-	-
+debug	symbolize	palette	read	-	-
+debug	system_regenerate	palette	control	-	-
+debug	thread_registers	palette	read	-	-
 debug	threads	inspector polling	read	-	-
-debug	titles	palette	read	-	Planned in #141
+debug	titles	palette	read	-	-
 debug	trace	inspector actions	control	-	-
-debug	write_memory	palette	control	-	Planned in #141
-debug	write_register	palette	control	-	Planned in #141
-debug	write_thread_register	palette	control	-	Planned in #141
+debug	write_memory	palette	control	-	-
+debug	write_register	palette	control	-	-
+debug	write_thread_register	palette	control	-	-
 mcp-debug	lotus_capture	external only	read	-	Raw artifacts are exposed to external clients
 mcp-debug	lotus_capture_image	external only	read	-	Inline images are an MCP response format
 mcp	lotus_control	session controls	control	-	Run, pause, reset and stop

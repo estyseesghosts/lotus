@@ -4,7 +4,7 @@ use std::fmt::Write as _;
 use lotus_mcp::LotusServer;
 use lotus_protocol::{capabilities::feature, debug_schema};
 
-const INVENTORY: &str = include_str!("debugger_coverage.tsv");
+pub(crate) const INVENTORY: &str = include_str!("debugger_coverage.tsv");
 
 pub fn report() -> Result<String, String> {
     render(INVENTORY)
@@ -37,7 +37,8 @@ fn render(inventory: &str) -> Result<String, String> {
             "desktop input" => Some("input_routing.rs"),
             "settings window" => Some("settings_window.rs"),
             "debug bridge" if section == 1 => None,
-            "palette" | "external only" | "unavailable" if *detail != "-" => None,
+            "palette" => Some("lotus_window/command_palette.rs"),
+            "external only" | "unavailable" if *detail != "-" => None,
             _ => {
                 return Err(format!(
                     "unknown or unexplained desktop route {route} for {name}"
@@ -88,8 +89,9 @@ fn render(inventory: &str) -> Result<String, String> {
         "The [coverage test](../crates/desktop/src/debugger_coverage.rs) checks every operation ",
         "from the [shared schema](../specs/debug-v1.schema.json) and the ",
         "[MCP tool router](../crates/mcp/src/server.rs).\n\n",
-        "Linked desktop routes are available today and may expose a subset of arguments. ",
-        "Palette entries need a structured form in #141. The existing ",
+        "Linked desktop routes may expose a subset of arguments. The ",
+        "[command palette](../crates/desktop/src/lotus_window/command_palette.rs) also builds ",
+        "argument forms from the shared schema and lists external-only operations with their reason. The ",
         "[Run Clipboard JSON action](../crates/desktop/src/lotus_window.rs) accepts shared commands ",
         "subject to normal host and worker checks. Permissions describe those checks.\n\n",
         "Route coverage is independent of native acceptance. The host checks ",

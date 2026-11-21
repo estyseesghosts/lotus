@@ -798,6 +798,7 @@ impl Supervisor {
         telemetry.state = native.state();
         telemetry.epoch = native.epoch();
         telemetry.pid = native.pid();
+        telemetry.worker_features = Arc::new(native.features().clone());
         telemetry.startup_ms = launch.elapsed().as_secs_f64() * 1e3;
         telemetry.shader_seed = shader_state.to_string();
         telemetry.record(actor, "create");
@@ -1981,6 +1982,7 @@ impl Supervisor {
                 ));
             }
             *lease = Some(client.to_string());
+            handle.telemetry().desktop_debug_lease_blocked = client != actor_client(Actor::Desktop);
             return Ok(serde_json::json!({"lease": client}));
         }
         if let DebugCommand::Fork { count, overrides } = command {
@@ -2058,6 +2060,7 @@ impl Supervisor {
                 ));
             }
             *lease = None;
+            handle.telemetry().desktop_debug_lease_blocked = false;
             return Ok(serde_json::json!({"released": client}));
         }
         if let DebugCommand::Disassemble {

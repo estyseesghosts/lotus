@@ -4,7 +4,8 @@
 //! supervisor between status replies. Speed compares that rate with Azahar's
 //! `SCREEN_REFRESH_RATE` (`core/core_timing.h:42`). These are host-observed
 //! throughput figures, never guest tick or hardware cycle measurements.
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -55,6 +56,12 @@ pub struct Telemetry {
     /// `summary`, `renderer` (known renderer failure). Null while healthy.
     pub failure: Option<Value>,
     pub backend_name: String,
+    /// Negotiated worker features, shared cheaply with in-process frontends.
+    #[serde(skip)]
+    pub worker_features: Arc<BTreeSet<String>>,
+    /// A connection other than the desktop owns the debugger mutation lease.
+    #[serde(skip)]
+    pub desktop_debug_lease_blocked: bool,
     /// Effective renderer: `software`, `opengl`, `vulkan`, or empty before the profile is read.
     pub renderer: String,
     /// Why a session that preferred Vulkan runs on software; empty otherwise.
@@ -112,6 +119,8 @@ impl Telemetry {
             last_error: String::new(),
             failure: None,
             backend_name: String::new(),
+            worker_features: Arc::default(),
+            desktop_debug_lease_blocked: false,
             renderer: String::new(),
             renderer_fallback: String::new(),
             pid: None,

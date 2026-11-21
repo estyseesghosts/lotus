@@ -41,6 +41,7 @@ pub(super) enum GlobalCommand {
     Settings,
     Open,
     OpenTrace,
+    DebuggerCommands,
     Minimize,
     ZoomWindow,
     Keyboard,
@@ -50,12 +51,13 @@ pub(super) enum GlobalCommand {
     Screens(ScreenLayout),
 }
 impl GlobalCommand {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 16] = [
         Self::Sidebar,
         Self::Inspector,
         Self::Settings,
         Self::Open,
         Self::OpenTrace,
+        Self::DebuggerCommands,
         Self::Minimize,
         Self::ZoomWindow,
         Self::Keyboard,
@@ -74,6 +76,7 @@ impl GlobalCommand {
             Self::Settings => "app.settings",
             Self::Open => "file.open",
             Self::OpenTrace => "debug.trace.open",
+            Self::DebuggerCommands => "debug.commands",
             Self::Minimize => "window.minimize",
             Self::ZoomWindow => "window.zoom",
             Self::Keyboard => "help.keyboard",
@@ -110,6 +113,9 @@ impl GlobalCommand {
             Self::OpenTrace => CommandDescriptor::action(self.id(), "Open JSONL Trace")
                 .needs_input()
                 .enabled(view.controller.is_some()),
+            Self::DebuggerCommands => CommandDescriptor::action(self.id(), "Debugger Commands")
+                .needs_input()
+                .enabled(view.inspection_target().is_some()),
             Self::Minimize => CommandDescriptor::action(self.id(), "Minimize Window"),
             Self::ZoomWindow => CommandDescriptor::action(self.id(), "Zoom Window"),
             Self::Keyboard => CommandDescriptor::action(self.id(), "Keyboard Shortcuts"),
@@ -324,7 +330,7 @@ impl LotusWindow {
         }
     }
 
-    fn invoke_global(
+    pub(super) fn invoke_global(
         &mut self,
         command: GlobalCommand,
         window: &mut Window,
@@ -349,6 +355,7 @@ impl LotusWindow {
                 self.open_file(session, cx);
             }
             GlobalCommand::OpenTrace => self.open_trace(cx),
+            GlobalCommand::DebuggerCommands => self.show_panel(Panel::Commands),
             GlobalCommand::Minimize => window.minimize_window(),
             GlobalCommand::ZoomWindow => silvestris::native::zoom_window(window),
             GlobalCommand::Keyboard => {
@@ -646,6 +653,7 @@ impl LotusWindow {
         let target = self.inspection_target();
         let can_debug = self.control && target.is_some();
         let mut entries = vec![
+            MenuEntry::Command(GlobalCommand::DebuggerCommands.id().into()),
             MenuEntry::Command(GlobalCommand::OpenTrace.id().into()),
             self.popup_action(
                 CommandDescriptor::action("inspector.clipboard", "Run Clipboard JSON")
@@ -714,7 +722,10 @@ impl LotusWindow {
             },
             MenuModel {
                 label: "Debug".into(),
-                entries: vec![global(GlobalCommand::OpenTrace)],
+                entries: vec![
+                    global(GlobalCommand::DebuggerCommands),
+                    global(GlobalCommand::OpenTrace),
+                ],
             },
             MenuModel {
                 label: "Window".into(),

@@ -77,6 +77,11 @@ fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, p
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     assert!(gdb_packet(&mut socket, "qSupported").starts_with(b"PacketSize="));
+    wait(controller, |update| {
+        target
+            .resolve(&update.sessions)
+            .is_some_and(|summary| summary.telemetry.desktop_debug_lease_blocked)
+    });
 
     *controller.inspection_selection.lock().unwrap() =
         InspectionSelection::first_page(Panel::Breakpoints);
@@ -112,6 +117,11 @@ fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, p
         })
     });
     assert_eq!(gdb_packet(&mut socket, "D"), b"OK");
+    wait(controller, |update| {
+        target
+            .resolve(&update.sessions)
+            .is_some_and(|summary| !summary.telemetry.desktop_debug_lease_blocked)
+    });
     drop(socket);
     drop(gdb);
     drop(gdb_runtime);
@@ -244,6 +254,30 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
                     if view.rows.iter().any(|r| r.key == ".bytes[15]"))
             })
         });
+        #[cfg(feature = "silvestris-ui")]
+        {
+            *controller.inspection_selection.lock().unwrap() =
+                InspectionSelection::first_page(Panel::Commands);
+            controller
+                .commands
+                .send(Command::DebugAt {
+                    target: target.clone(),
+                    panel: Panel::Commands,
+                    command: D::ReadMemory {
+                        address: pc,
+                        length: 8,
+                    },
+                })
+                .unwrap();
+            wait(&controller, |update| {
+                update.debug_result(Panel::Commands).is_some_and(|request| {
+                    request.target == target
+                        && request.operation == "read_memory"
+                        && matches!(&request.status, DebugStatus::Finished { view, .. }
+                            if view.rows.iter().any(|row| row.key == ".bytes[7]"))
+                })
+            });
+        }
         *controller.inspection_selection.lock().unwrap() =
             InspectionSelection::first_page(Panel::Gpu);
         controller

@@ -100,8 +100,16 @@ Wave 3 inspectors (**verified compiled**, controller/model **verified emulator**
 CPU/VFP and disassembly, threads/waits, breakpoints, memory maps, paginated
 settings, IPC/logs, frozen GPU captures and shader/texture inspection, audio,
 checkpoint selection and event lanes. Boolean settings are clickable; other
-commands can be supplied through “Run clipboard JSON”, validated against the
-same typed API as CLI/MCP. Execution controls share debug leases. Capture/trace
+commands are available in **Debugger Commands** from the Debug or Inspector
+Utilities menu. Search by command or group, then fill in the shared schema’s
+argument form. Integer fields accept decimal or `0x` hexadecimal. Structured
+fields accept JSON and optional fields can be left blank for their defaults.
+Use **Preview JSON** to inspect the payload, **Raw JSON** to edit it directly,
+or **Run Clipboard JSON** to send a clipboard command to Result. The palette
+shows its session, guest epoch and permission state and returns results inline.
+Command input is limited to 64 KiB. Form drafts are kept within one window and
+one live guest epoch.
+Execution controls share debug leases. Capture/trace
 buttons explicitly enable instrumentation; GPU replay requires state restore or
 reset before CPU resume.
 

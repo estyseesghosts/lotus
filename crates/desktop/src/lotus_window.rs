@@ -50,6 +50,8 @@ use crate::tiling::{self, DividerDrag, SessionDrag, Source, Target};
 use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 #[cfg(feature = "silvestris-ui")]
+mod command_palette;
+#[cfg(feature = "silvestris-ui")]
 mod shared_commands;
 #[cfg(feature = "silvestris-ui")]
 mod shared_navigation;
@@ -193,6 +195,8 @@ pub struct LotusWindow {
     shared_sources: gpui::Entity<silvestris::controls::SourceList>,
     #[cfg(feature = "silvestris-ui")]
     shared_commands: shared_commands::SharedCommands,
+    #[cfg(feature = "silvestris-ui")]
+    command_palettes: BTreeMap<SessionTarget, command_palette::CommandPalette>,
     #[cfg(feature = "silvestris-ui")]
     navigation: crate::navigation::Navigation,
     #[cfg(feature = "silvestris-ui")]
@@ -368,6 +372,8 @@ impl LotusWindow {
             shared_sources,
             #[cfg(feature = "silvestris-ui")]
             shared_commands,
+            #[cfg(feature = "silvestris-ui")]
+            command_palettes: BTreeMap::new(),
             #[cfg(feature = "silvestris-ui")]
             navigation: crate::navigation::Navigation::default(),
             #[cfg(feature = "silvestris-ui")]
@@ -772,6 +778,9 @@ impl LotusWindow {
         }
         self.retain_current_inspection(cx);
         self.inspector_state.retain(&self.sessions);
+        #[cfg(feature = "silvestris-ui")]
+        self.command_palettes
+            .retain(|target, _| target.resolve(&self.sessions).is_some());
         self.sync_inspection_selection();
         if let Some(surface) =
             surface.filter(|surface| surface.target.is_current(&self.inspected, &self.sessions))
@@ -4046,7 +4055,7 @@ impl LotusWindow {
                             theme,
                             "inspector-utility",
                             Icon::More,
-                            "Trace import, clipboard command, keys",
+                            "Inspector utilities",
                         )
                         .on_click(cx.listener(
                             |view, event: &ClickEvent, window, cx| {
@@ -4065,6 +4074,14 @@ impl LotusWindow {
                     ),
             );
         let commands = Self::panel_commands(current);
+        #[cfg(feature = "silvestris-ui")]
+        if current == Panel::Commands {
+            panel = panel.children(
+                target
+                    .as_ref()
+                    .and_then(|target| self.render_command_palette(target, cx)),
+            );
+        }
         if !commands.is_empty() {
             let mut actions = div()
                 .flex()
@@ -4123,6 +4140,11 @@ impl LotusWindow {
                     "Cancelled display. The worker may still finish the command.".into()
                 }
                 DebugStatus::Expired => "Session or guest changed".into(),
+            };
+            let message = if request.operation.is_empty() {
+                message
+            } else {
+                format!("{} · {message}", request.operation.replace('_', " "))
             };
             let mut status = div()
                 .flex()
@@ -4222,6 +4244,8 @@ impl LotusWindow {
             }
         }
         let status = match snapshot {
+            #[cfg(feature = "silvestris-ui")]
+            None if current == Panel::Commands => return panel.children(utility),
             None if current == Panel::Result => {
                 Some("No command or imported trace to display".into())
             }
@@ -4654,6 +4678,8 @@ impl Render for LotusWindow {
         };
         #[cfg(feature = "silvestris-ui")]
         self.sync_shared_commands(_window, cx);
+        #[cfg(feature = "silvestris-ui")]
+        self.ensure_command_palette(_window, cx);
         #[cfg(feature = "silvestris-ui")]
         let content = self.render_shared_window(_window, cx);
         #[cfg(feature = "silvestris-ui")]

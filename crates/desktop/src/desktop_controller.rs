@@ -126,6 +126,7 @@ pub struct DebugRequest {
     pub target: SessionTarget,
     pub panel: Panel,
     pub command: Arc<DebugCommand>,
+    pub operation: String,
     pub status: DebugStatus,
     pub requires_control: bool,
 }
@@ -1030,6 +1031,10 @@ impl Loops {
 
     fn start_debug(&self, target: SessionTarget, panel: Panel, command: DebugCommand) {
         let id = self.debug_sequence.fetch_add(1, Ordering::Relaxed);
+        let operation = serde_json::to_value(&command)
+            .ok()
+            .and_then(|value| value["operation"].as_str().map(str::to_owned))
+            .unwrap_or_default();
         let mut update = lock(&self.published);
         let mut active = lock(&self.active_debug);
         let allowed = active.len() < DEBUG_IN_FLIGHT
@@ -1063,6 +1068,7 @@ impl Loops {
             target: target.clone(),
             panel,
             command: command.clone(),
+            operation,
             requires_control: debug_requires_control(&command),
             status: if allowed {
                 DebugStatus::Running
@@ -1420,6 +1426,7 @@ mod tests {
             target: target.clone(),
             panel: Panel::Gpu,
             requires_control: true,
+            operation: "surface".into(),
             command: Arc::new(DebugCommand::Surface {
                 address: 0,
                 width: 1,
