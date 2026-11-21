@@ -25,9 +25,27 @@ async fn mcp_matches_native_api_and_scopes_assets_sessions_resources() {
     let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").expect("native executable"));
     let fixture = PathBuf::from(std::env::var_os("LOTUS_FIXTURE").expect("homebrew fixture"));
     let root = std::env::temp_dir().join(format!("lotus-mcp-{}", SessionUuid::generate()));
+    let mut reference = NativeSession::spawn(&worker, &root.join("reference"))
+        .await
+        .expect("shared native API");
     let mut config = HostConfig::new(worker.clone(), root.join("mcp"));
     config.assets = BTreeMap::from([("fixture".into(), fixture.clone())]);
     config.allow_control = true;
+    // Both captures must use the same renderer and host-independent HLE timing.
+    config.prefer_vulkan = false;
+    if reference
+        .features()
+        .contains(lotus_protocol::capabilities::feature::DETERMINISTIC_ASYNC)
+    {
+        config.profile.insert(
+            "deterministic_async_operations".into(),
+            lotus_protocol::debug::SettingValue::Boolean(true),
+        );
+        reference
+            .apply_profile(&config.profile)
+            .await
+            .expect("matching worker profile");
+    }
     let mut read_only = config.clone();
     read_only.allow_control = false;
     let denied = LotusServer::configured(read_only, BTreeMap::new()).expect("read-only server");
@@ -84,9 +102,6 @@ async fn mcp_matches_native_api_and_scopes_assets_sessions_resources() {
         }))
         .await;
     assert_eq!(capture.content.len(), 2);
-    let mut reference = NativeSession::spawn(&worker, &root.join("reference"))
-        .await
-        .expect("shared native API");
     reference.load(&fixture).await.expect("same content");
     reference.advance(60).await.expect("same checkpoint");
     let frames = reference.capture().await.expect("reference pixels");
@@ -98,7 +113,7 @@ async fn mcp_matches_native_api_and_scopes_assets_sessions_resources() {
             .resource_bytes(&resource.uri)
             .await
             .expect("scoped resource");
-        assert_eq!(bytes, frames[index].bgra);
+        assert!(bytes == frames[index].bgra, "raw resource pixels differ");
     }
     for scale in [1, 2] {
         let capture = server
@@ -124,11 +139,18 @@ async fn mcp_matches_native_api_and_scopes_assets_sessions_resources() {
             let mut reader = png::Decoder::new(encoded.as_slice()).read_info().unwrap();
             let mut rgba = vec![0; reader.output_buffer_size()];
             let info = reader.next_frame(&mut rgba).unwrap();
-            assert_eq!((info.width, info.height), (frame.lease.width, frame.lease.height));
-            for pixel in rgba.chunks_exact_mut(4) {
+            assert_eq!(
+                (info.width, info.height),
+                (frame.lease.width, frame.lease.height)
+            );
+            for pixel in rgba.as_chunks_mut::<4>().0 {
                 pixel.swap(0, 2);
             }
-            assert_eq!(rgba, frame.bgra, "{} screenshot pixels", frame.lease.screen);
+            assert!(
+                rgba == frame.bgra,
+                "{} screenshot pixels differ",
+                frame.lease.screen
+            );
         }
     }
     assert_eq!(

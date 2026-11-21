@@ -15,7 +15,9 @@ pub(crate) fn inline_images(mut frames: Vec<Frame>) -> io::Result<Vec<ContentBlo
         || top.lease.sequence != bottom.lease.sequence
         || top.lease.height != bottom.lease.height
     {
-        return Err(io::Error::other("capture did not contain a matching top and bottom screen"));
+        return Err(io::Error::other(
+            "capture did not contain a matching top and bottom screen",
+        ));
     }
 
     let mut content = Vec::with_capacity(4);
@@ -42,7 +44,7 @@ fn encode_png(bgra: &mut [u8], width: u32, height: u32) -> io::Result<Vec<u8>> {
     {
         return Err(io::Error::other("invalid screenshot size"));
     }
-    for pixel in bgra.chunks_exact_mut(4) {
+    for pixel in bgra.as_chunks_mut::<4>().0 {
         pixel.swap(0, 2);
     }
     let mut png = Vec::new();
@@ -69,7 +71,10 @@ mod tests {
         let info = reader.next_frame(&mut rgba).unwrap();
         assert_eq!((info.width, info.height), (2, 2));
         assert_eq!(info.color_type, png::ColorType::Rgba);
-        assert_eq!(rgba, [255, 0, 0, 255, 0, 0, 255, 128, 0, 255, 0, 64, 3, 2, 1, 0]);
+        assert_eq!(
+            rgba,
+            [255, 0, 0, 255, 0, 0, 255, 128, 0, 255, 0, 64, 3, 2, 1, 0]
+        );
         assert!(encode_png(&mut bgra, 4, 2).is_err());
         assert!(encode_png(&mut [], 1601, 960).is_err());
     }
