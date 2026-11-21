@@ -733,14 +733,36 @@ mod tests {
                 );
                 view.inspected = "b".into(); // controller acknowledges the request
                 let target = view.inspection_target();
-                let snapshot = (
-                    target.clone(),
-                    Panel::Result,
-                    Arc::new(inspection::Inspection::from_value(
+                let b = target.clone().unwrap();
+                view.choose_inspection(Panel::Timeline);
+                let cursor = u64::from(u32::MAX) + 20;
+                view.change_inspection_page(&b, Panel::Timeline, 0, Some(cursor));
+                view.choose_inspection(Panel::Logs);
+                assert_eq!(view.inspection_offset(Some(&b), Panel::Logs), 0);
+                view.choose_inspection(Panel::Timeline);
+                assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), cursor);
+                view.toggle_tile_inspector("a".into());
+                view.inspected = "a".into();
+                let a = view.inspection_target().unwrap();
+                assert_eq!(view.inspection_offset(Some(&a), Panel::Timeline), 0);
+                view.change_inspection_page(&a, Panel::Timeline, 0, Some(128));
+                view.change_inspection_page(&b, Panel::Timeline, cursor, None);
+                view.toggle_tile_inspector("b".into());
+                view.inspected = "b".into();
+                assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), cursor);
+                view.sessions[1].telemetry.frames += 1;
+                view.inspector_state.retain(&view.sessions);
+                assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), cursor);
+                view.choose_inspection(Panel::Cpu);
+                let snapshot = InspectionSnapshot {
+                    target: target.clone(),
+                    panel: Panel::Result,
+                    offset: None,
+                    view: Arc::new(inspection::Inspection::from_value(
                         &serde_json::json!({"old": 1}),
                         Panel::Result,
                     )),
-                );
+                };
                 view.set_inspection(Some(snapshot.clone()), cx);
                 view.surface_target = target.clone();
                 view.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(
@@ -751,14 +773,15 @@ mod tests {
                     view.surface_image.is_some(),
                     "ordinary poll retains the same result image"
                 );
-                let replacement = (
-                    target.clone(),
-                    Panel::Result,
-                    Arc::new(inspection::Inspection::from_value(
+                let replacement = InspectionSnapshot {
+                    target: target.clone(),
+                    panel: Panel::Result,
+                    offset: None,
+                    view: Arc::new(inspection::Inspection::from_value(
                         &serde_json::json!({"new": 2}),
                         Panel::Result,
                     )),
-                );
+                };
                 view.set_inspection(Some(replacement), cx);
                 assert!(
                     view.surface_image.is_none(),
@@ -770,6 +793,11 @@ mod tests {
                 )])));
                 view.sessions[1].telemetry.epoch += 1;
                 view.retain_current_inspection(cx);
+                view.inspector_state.retain(&view.sessions);
+                let new_b = view.inspection_target().unwrap();
+                assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), 0);
+                assert_eq!(view.inspection_offset(Some(&new_b), Panel::Timeline), 0);
+                assert_eq!(view.inspection_offset(Some(&a), Panel::Timeline), 128);
                 assert!(view.inspection.is_none());
                 assert!(view.surface_image.is_none(), "old epoch image is evicted");
                 view.debug_command(&target, Panel::Result, D::Registers { core: 0 });
@@ -800,7 +828,7 @@ mod tests {
                     Panel::Result,
                     "current target can act"
                 );
-                view.choose_inspection(Panel::Cpu, 0);
+                view.choose_inspection(Panel::Cpu);
                 view.preferences.ui.inspector_pinned = true;
                 cx.notify();
             })

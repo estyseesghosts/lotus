@@ -114,10 +114,16 @@ previews. Selecting successive draws produces bounded structural state diffs.
 
 Inspector actions keep their result and error in the panel where they started.
 Use **Show panel** to return to its live data and **Show result** to reopen the
-details. Clipboard commands and imported traces open Result. A session switch
-preserves retained results for that session. Reset, reload, or replacement
-expires guest results and their surface images. Closing the window clears
-request history. The saved inspector panel is a window preference.
+details. Clipboard commands and imported traces open Result. The inspector remembers
+each live session's page separately for Settings, IPC, Logs and Timeline.
+Paging and retained results survive a panel change, a split tile switch and a
+paused frame advance. Reset, reload, worker/backend replacement or session removal
+expires that guest's page history, results and images. Closing the window
+clears this state. The saved inspector panel is a window preference.
+
+Polling replies carry the session identity, guest epoch, panel and requested
+cursor. Only the current page can supply rows and actions. The panel shows
+loading, empty and worker error states separately from explicit command status.
 
 **Cancel** removes a request waiting for the worker or a snapshot slot. An
 issued command drains to its worker reply and its result is discarded. Any

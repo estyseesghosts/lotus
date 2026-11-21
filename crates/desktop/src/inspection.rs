@@ -1,11 +1,16 @@
 //! Owned inspector rows. Parsing, formatting and trace loading run off the GPUI thread.
 use lotus_protocol::debug::DebugCommand as D;
 use serde_json::Value;
-use std::{io, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    io,
+    path::Path,
+    sync::Arc,
+};
 
 use lotus_session::supervisor::SessionSummary;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SessionTarget {
     pub id: String,
     pub created_unix_ms: u64,
@@ -47,9 +52,15 @@ impl SessionTarget {
     }
 }
 
-/// None is an imported local trace, not data from the currently selected worker.
-/// Worker results always retain their request's identity/creation time/epoch.
-pub type InspectionSnapshot = (Option<SessionTarget>, Panel, Arc<Inspection>);
+#[derive(Clone, Debug)]
+pub struct InspectionSnapshot {
+    /// Imported traces have no worker target.
+    pub target: Option<SessionTarget>,
+    pub panel: Panel,
+    /// Present only for background polls. Explicit results have their own request ID.
+    pub offset: Option<u64>,
+    pub view: Arc<Inspection>,
+}
 
 pub fn snapshot_current(
     snapshot: &InspectionSnapshot,
@@ -57,11 +68,11 @@ pub fn snapshot_current(
     sessions: &[SessionSummary],
 ) -> bool {
     snapshot
-        .0
+        .target
         .as_ref()
         .is_none_or(|target| target.is_current(inspected, sessions))
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(usize)]
 pub enum Panel {
     Cpu,
@@ -210,19 +221,22 @@ impl Panel {
     pub fn live(self) -> bool {
         !matches!(self, Self::Settings | Self::Memory | Self::Result)
     }
-    pub fn command(self, offset: u32) -> Option<D> {
+    pub fn command(self, offset: u64) -> Option<D> {
         Some(match self {
             Self::Cpu => D::Registers { core: 0 },
             Self::Threads => D::Threads,
             Self::Breakpoints => D::Breakpoints,
             Self::Memory => D::MemoryMap,
-            Self::Settings => D::SettingsList { offset, limit: 32 },
+            Self::Settings => D::SettingsList {
+                offset: offset.try_into().ok()?,
+                limit: 32,
+            },
             Self::Ipc | Self::Timeline => D::Events {
-                after: u64::from(offset),
+                after: offset,
                 limit: 128,
             },
             Self::Logs => D::Logs {
-                after: u64::from(offset),
+                after: offset,
                 limit: 128,
             },
             Self::Gpu => D::GpuDraws,
@@ -230,6 +244,79 @@ impl Panel {
             Self::States => D::States,
             Self::Result => return None,
         })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InspectionSelection {
+    pub panel: Panel,
+    page: Option<(SessionTarget, u64)>,
+}
+
+impl InspectionSelection {
+    pub fn first_page(panel: Panel) -> Self {
+        Self { panel, page: None }
+    }
+
+    pub fn with_offset(panel: Panel, target: &SessionTarget, offset: u64) -> Self {
+        Self {
+            panel,
+            page: (offset != 0).then(|| (target.clone(), offset)),
+        }
+    }
+
+    pub(crate) fn offset_for(&self, target: &SessionTarget) -> u64 {
+        self.page
+            .as_ref()
+            .filter(|(owner, _)| owner == target)
+            .map_or(0, |(_, offset)| *offset)
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct PanelState {
+    offset: u64,
+    back: VecDeque<u64>,
+}
+
+impl PanelState {
+    pub(crate) fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    pub(crate) fn advance(&mut self, next: u64) {
+        if next <= self.offset {
+            return;
+        }
+        if self.back.len() == 64 {
+            self.back.pop_front();
+        }
+        self.back.push_back(self.offset);
+        self.offset = next;
+    }
+
+    pub(crate) fn back(&mut self) {
+        self.offset = self.back.pop_back().unwrap_or(0);
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct InspectorState {
+    panels: BTreeMap<(SessionTarget, Panel), PanelState>,
+}
+
+impl InspectorState {
+    pub(crate) fn panel(&self, target: &SessionTarget, panel: Panel) -> Option<&PanelState> {
+        self.panels.get(&(target.clone(), panel))
+    }
+
+    pub(crate) fn panel_mut(&mut self, target: &SessionTarget, panel: Panel) -> &mut PanelState {
+        self.panels.entry((target.clone(), panel)).or_default()
+    }
+
+    pub(crate) fn retain(&mut self, sessions: &[SessionSummary]) {
+        self.panels
+            .retain(|(target, _), _| target.resolve(sessions).is_some());
     }
 }
 #[derive(Debug, Clone)]
@@ -243,8 +330,9 @@ pub struct Row {
 pub struct Inspection {
     pub rows: Arc<Vec<Row>>,
     pub source: String,
-    pub next: Option<u32>,
+    pub next: Option<u64>,
     pub lost: u64,
+    pub error: Option<(io::ErrorKind, String)>,
 }
 const ROW_CAP: usize = 100_000;
 const TEXT_BUDGET: usize = 32 << 20;
@@ -434,8 +522,19 @@ impl Inspection {
                 value["paused"],
                 value["rasterizer_cache_flush"]
             ),
-            next: value["next"].as_u64().and_then(|n| n.try_into().ok()),
+            next: value["next"].as_u64(),
             lost: value["lost_total"].as_u64().unwrap_or(0),
+            error: None,
+        }
+    }
+
+    pub(crate) fn failed(error: io::Error) -> Self {
+        Self {
+            rows: Arc::default(),
+            source: String::new(),
+            next: None,
+            lost: 0,
+            error: Some((error.kind(), error.to_string())),
         }
     }
     pub fn draw_diff(before: &Value, after: &Value) -> Vec<String> {
@@ -525,6 +624,7 @@ impl Inspection {
             rows: Arc::new(rows),
             next: None,
             lost,
+            error: None,
         })
     }
 }

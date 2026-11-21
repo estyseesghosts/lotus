@@ -20,7 +20,9 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::inspection::{self, Inspection, InspectionSnapshot, Panel, SessionTarget};
+use crate::inspection::{
+    self, Inspection, InspectionSelection, InspectionSnapshot, Panel, SessionTarget,
+};
 use crate::presence::{self, Presence};
 use crate::ui_metrics::UiMetrics;
 use lotus_mcp::server::{Frontend, LotusServer};
@@ -217,7 +219,7 @@ impl Update {
             && self
                 .inspection
                 .as_ref()
-                .is_some_and(|item| item.0.is_none())
+                .is_some_and(|item| item.target.is_none())
         {
             return None;
         }
@@ -234,7 +236,7 @@ pub struct DesktopController {
     pub latest: Arc<Mutex<Update>>,
     /// Fetch registers while paused only when the inspector is open.
     pub inspector: Arc<AtomicBool>,
-    pub inspection_selection: Arc<Mutex<(Panel, u32)>>,
+    pub inspection_selection: Arc<Mutex<InspectionSelection>>,
     /// Discord Rich Presence; configured from the window's preferences.
     pub presence: Arc<Presence>,
     /// Window-side counters, published as `frontend_metrics.ui` (lotus#74).
@@ -302,7 +304,7 @@ pub struct PendingOperation {
 /// Inspector refresh state, updated by the requests' own tasks.
 struct InspectorKeys {
     registers: Option<(SessionTarget, u64)>,
-    inspection: Option<(SessionTarget, Panel, u32, u64)>,
+    inspection: Option<(SessionTarget, Panel, u64, u64)>,
     inspected_at: Instant,
 }
 
@@ -320,7 +322,8 @@ impl DesktopController {
             ..Update::default()
         }));
         let inspector = Arc::new(AtomicBool::new(false));
-        let inspection_selection = Arc::new(Mutex::new((Panel::Cpu, 0)));
+        let inspection_selection =
+            Arc::new(Mutex::new(InspectionSelection::first_page(Panel::Cpu)));
         let shutdown = Arc::new(AtomicBool::new(false));
         let presence = Arc::new(Presence::start());
         let ui = Arc::new(UiMetrics::default());
@@ -411,7 +414,7 @@ struct Loops {
     presence: Arc<Presence>,
     published: Arc<Mutex<Update>>,
     inspector: Arc<AtomicBool>,
-    inspection_selection: Arc<Mutex<(Panel, u32)>>,
+    inspection_selection: Arc<Mutex<InspectionSelection>>,
     previous_draw: Arc<Mutex<Option<(SessionTarget, Value)>>>,
     debug_sequence: Arc<AtomicU64>,
     active_debug: Arc<Mutex<ActiveDebug>>,
@@ -796,7 +799,9 @@ impl Loops {
                     }
                 });
             }
-            let (panel, offset) = *lock(&self.inspection_selection);
+            let selection = lock(&self.inspection_selection).clone();
+            let panel = selection.panel;
+            let offset = selection.offset_for(&target);
             let view_key = (target.clone(), panel, offset, telemetry.frames);
             let due = {
                 let keys = lock(&state);
@@ -824,7 +829,7 @@ impl Loops {
             }
             let (loops, state) = (self.clone(), state.clone());
             tokio::spawn(async move {
-                let value = loops
+                let result = loops
                     .timed(
                         "inspection",
                         &selected,
@@ -832,14 +837,24 @@ impl Loops {
                     )
                     .await;
                 lock(&state).inspected_at = Instant::now();
-                if !loops.current_reply(&target, generation, &value) {
-                    return;
-                }
-                let view = Arc::new(Inspection::from_value(&value, panel));
+                let view = match result {
+                    Ok(value) if loops.current_reply(&target, generation, &value) => {
+                        Inspection::from_value(&value, panel)
+                    }
+                    Ok(_) => return,
+                    Err(error) => Inspection::failed(error),
+                };
                 let mut update = lock(&loops.published);
+                let current = lock(&loops.inspection_selection);
                 if loops.current(&target, generation)
-                    && *lock(&loops.inspection_selection) == (panel, offset)
-                    && update.publish_inspection((Some(target), panel, view))
+                    && current.panel == panel
+                    && current.offset_for(&target) == offset
+                    && update.publish_inspection(InspectionSnapshot {
+                        target: Some(target),
+                        panel,
+                        offset: Some(offset),
+                        view: Arc::new(view),
+                    })
                 {
                     lock(&state).inspection = Some(view_key);
                 }
@@ -847,11 +862,13 @@ impl Loops {
         }
     }
 
-    async fn inspect(&self, target: &SessionTarget, panel: Panel, command: &DebugCommand) -> Value {
-        let mut value = match self.dispatch_debug(target, command).await {
-            Ok(value) => value,
-            Err(error) => serde_json::json!({"error":error.to_string()}),
-        };
+    async fn inspect(
+        &self,
+        target: &SessionTarget,
+        panel: Panel,
+        command: &DebugCommand,
+    ) -> io::Result<Value> {
+        let mut value = self.dispatch_debug(target, command).await?;
         if panel == Panel::Cpu {
             if let Some(pc) = value["registers"][15].as_u64() {
                 let command = DebugCommand::Disassemble {
@@ -864,7 +881,7 @@ impl Loops {
                 }
             }
         }
-        value
+        Ok(value)
     }
 
     /// Exclusive audio follows the selection, latest selection wins. Each hand-off runs as
@@ -1027,7 +1044,7 @@ impl Loops {
             if update
                 .inspection
                 .as_ref()
-                .is_some_and(|item| item.0.is_none())
+                .is_some_and(|item| item.target.is_none())
             {
                 update.inspection = None;
             }
@@ -1264,13 +1281,14 @@ impl Loops {
                 let view = tokio::task::spawn_blocking(move || Inspection::load_trace(&path)).await;
                 let mut update = lock(&self.published);
                 if trace_generation == Some(self.result_generation.load(Ordering::Acquire))
-                    && *lock(&self.inspection_selection) == (Panel::Result, 0)
+                    && lock(&self.inspection_selection).panel == Panel::Result
                 {
-                    update.publish_inspection((
-                        None,
-                        Panel::Result,
-                        Arc::new(view.map_err(io::Error::other)??),
-                    ));
+                    update.publish_inspection(InspectionSnapshot {
+                        target: None,
+                        panel: Panel::Result,
+                        offset: None,
+                        view: Arc::new(view.map_err(io::Error::other)??),
+                    });
                 }
             }
             Command::Play(id) => host.run(&id, actor).await?,
@@ -1380,14 +1398,15 @@ mod tests {
         }
     }
     fn reply(target: &SessionTarget) -> InspectionSnapshot {
-        (
-            Some(target.clone()),
-            Panel::Memory,
-            Arc::new(Inspection::from_value(
+        InspectionSnapshot {
+            target: Some(target.clone()),
+            panel: Panel::Memory,
+            offset: Some(0),
+            view: Arc::new(Inspection::from_value(
                 &serde_json::json!({"old_guest": 1}),
                 Panel::Memory,
             )),
-        )
+        }
     }
     fn surface_request(target: &SessionTarget) -> DebugRequest {
         let image = DebugImage {
@@ -1408,7 +1427,7 @@ mod tests {
                 format: 0,
             }),
             status: DebugStatus::Finished {
-                view: reply(target).2,
+                view: reply(target).view,
                 image: Some(Arc::new(image)),
             },
         }
@@ -1460,13 +1479,18 @@ mod tests {
             ..Default::default()
         };
         let trace = Inspection::from_value(&serde_json::json!({"trace":"local"}), Panel::Result);
-        assert!(update.publish_inspection((None, Panel::Result, Arc::new(trace))));
+        assert!(update.publish_inspection(InspectionSnapshot {
+            target: None,
+            panel: Panel::Result,
+            offset: None,
+            view: Arc::new(trace),
+        }));
         update.debug_requests.push_back(surface_request(&target));
         update.sessions.clear();
         update.inspected.clear();
         update.retain_current_inspection();
-        assert!(update.inspection.as_ref().unwrap().0.is_none());
-        assert_eq!(update.inspection.as_ref().unwrap().2.rows.len(), 1);
+        assert!(update.inspection.as_ref().unwrap().target.is_none());
+        assert_eq!(update.inspection.as_ref().unwrap().view.rows.len(), 1);
         assert!(update.debug_result(Panel::Gpu).is_none());
     }
 }

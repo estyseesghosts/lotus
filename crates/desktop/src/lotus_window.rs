@@ -34,7 +34,9 @@ use crate::desktop_controller::{
 };
 use crate::gauges;
 use crate::icons::{icon, Icon};
-use crate::inspection::{self, InspectionSnapshot, Panel, SessionTarget};
+use crate::inspection::{
+    self, InspectionSelection, InspectionSnapshot, InspectorState, Panel, PanelState, SessionTarget,
+};
 use crate::layout::{self, Drag, Pane, PaneState, Plan};
 #[cfg(not(feature = "silvestris-ui"))]
 use crate::layout::{GaugeMode, ToolbarDensity};
@@ -231,6 +233,7 @@ pub struct LotusWindow {
     debug_request: Option<DebugRequest>,
     hidden_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
+    inspector_state: InspectorState,
     surface_image: Option<Arc<RenderImage>>,
     surface_target: Option<SessionTarget>,
     error: String,
@@ -337,9 +340,8 @@ impl LotusWindow {
             controller.set_preview_visible(window.is_visible());
             #[cfg(feature = "silvestris-ui")]
             {
-                *controller.inspection_selection.lock().unwrap() = (
+                *controller.inspection_selection.lock().unwrap() = InspectionSelection::first_page(
                     Panel::from_id(&preferences.ui.inspector_panel).unwrap_or(Panel::Cpu),
-                    0,
                 );
             }
             controller
@@ -392,6 +394,7 @@ impl LotusWindow {
             resolved_sent: Cell::new(None),
             registers: None,
             inspection: None,
+            inspector_state: InspectorState::default(),
             debug_request: None,
             hidden_debug_details: BTreeSet::new(),
             inspection_panel: {
@@ -737,7 +740,12 @@ impl LotusWindow {
                     return None;
                 };
                 Some((
-                    (Some(request.target.clone()), request.panel, view.clone()),
+                    InspectionSnapshot {
+                        target: Some(request.target.clone()),
+                        panel: request.panel,
+                        offset: None,
+                        view: view.clone(),
+                    },
                     image.clone(),
                 ))
             });
@@ -746,7 +754,7 @@ impl LotusWindow {
                     let changed = self
                         .inspection
                         .as_ref()
-                        .is_none_or(|old| !Arc::ptr_eq(&old.2, &snapshot.2));
+                        .is_none_or(|old| !Arc::ptr_eq(&old.view, &snapshot.view));
                     (Some(snapshot), image.filter(|_| changed))
                 }
                 None => (update.inspection.clone(), None),
@@ -763,6 +771,8 @@ impl LotusWindow {
             self.release_input();
         }
         self.retain_current_inspection(cx);
+        self.inspector_state.retain(&self.sessions);
+        self.sync_inspection_selection();
         if let Some(surface) =
             surface.filter(|surface| surface.target.is_current(&self.inspected, &self.sessions))
         {
@@ -2990,7 +3000,7 @@ impl LotusWindow {
                     panel.label(),
                 )
                 .on_click(cx.listener(move |view, _: &ClickEvent, _, _| {
-                    view.choose_inspection(panel, 0);
+                    view.choose_inspection(panel);
                 })),
             );
         }
@@ -3505,22 +3515,66 @@ impl LotusWindow {
         }
     }
 
-    fn choose_inspection(&mut self, panel: Panel, offset: u32) {
+    fn choose_inspection(&mut self, panel: Panel) {
         self.inspection_panel = panel;
         #[cfg(feature = "silvestris-ui")]
         if self.preferences.ui.inspector_panel != panel.id() {
             self.preferences.ui.inspector_panel = panel.id().into();
             self.preferences.save();
         }
+        self.sync_inspection_selection();
+    }
+
+    fn inspection_offset(&self, target: Option<&SessionTarget>, panel: Panel) -> u64 {
+        target
+            .and_then(|target| self.inspector_state.panel(target, panel))
+            .map_or(0, PanelState::offset)
+    }
+
+    fn sync_inspection_selection(&self) {
         if let Some(controller) = &self.controller {
-            *controller.inspection_selection.lock().unwrap() = (panel, offset);
+            let panel = self.inspection_panel;
+            let target = self.inspection_target();
+            let selection = target.as_ref().map_or_else(
+                || InspectionSelection::first_page(panel),
+                |target| {
+                    InspectionSelection::with_offset(
+                        panel,
+                        target,
+                        self.inspection_offset(Some(target), panel),
+                    )
+                },
+            );
+            *controller.inspection_selection.lock().unwrap() = selection;
         }
+    }
+
+    fn change_inspection_page(
+        &mut self,
+        target: &SessionTarget,
+        panel: Panel,
+        offset: u64,
+        next: Option<u64>,
+    ) {
+        if self.inspection_panel != panel
+            || self.inspection_target().as_ref() != Some(target)
+            || self.inspection_offset(Some(target), panel) != offset
+        {
+            return;
+        }
+        let state = self.inspector_state.panel_mut(target, panel);
+        if let Some(next) = next {
+            state.advance(next);
+        } else {
+            state.back();
+        }
+        self.sync_inspection_selection();
     }
     fn set_inspection(&mut self, snapshot: Option<InspectionSnapshot>, cx: &mut Context<Self>) {
         // Polls clone the same immutable Arc. A new result must not inherit a
         // previous command's image, even when both belong to the same epoch.
-        let old = self.inspection.as_ref().map(|s| Arc::as_ptr(&s.2));
-        let new = snapshot.as_ref().map(|s| Arc::as_ptr(&s.2));
+        let old = self.inspection.as_ref().map(|s| Arc::as_ptr(&s.view));
+        let new = snapshot.as_ref().map(|s| Arc::as_ptr(&s.view));
         if old != new {
             self.surface_target = None;
             if let Some(image) = self.surface_image.take() {
@@ -3541,7 +3595,7 @@ impl LotusWindow {
         let local_trace = self
             .inspection
             .as_ref()
-            .is_some_and(|snapshot| snapshot.0.is_none());
+            .is_some_and(|snapshot| snapshot.target.is_none());
         if local_trace
             || self
                 .surface_target
@@ -3575,7 +3629,7 @@ impl LotusWindow {
         };
         let target = target.clone();
         if panel == Panel::Result {
-            self.choose_inspection(Panel::Result, 0);
+            self.choose_inspection(Panel::Result);
         }
         self.send(Command::DebugAt {
             target,
@@ -3594,7 +3648,7 @@ impl LotusWindow {
             if let Ok(Ok(Some(paths))) = paths.await {
                 if let Some(path) = paths.into_iter().next() {
                     let _ = this.update(cx, |view, _| {
-                        view.choose_inspection(Panel::Result, 0);
+                        view.choose_inspection(Panel::Result);
                         view.send(Command::OpenTrace { path });
                     });
                 }
@@ -3605,7 +3659,7 @@ impl LotusWindow {
     /// Select an inspector view and make sure the panel shows it.
     fn show_panel(&mut self, panel: Panel) {
         self.menu = Menu::Closed;
-        self.choose_inspection(panel, 0);
+        self.choose_inspection(panel);
         if self.split() {
             // The focused tile's floating inspector; the docked pane state stays as saved.
             if self.inspect_tile.is_none() {
@@ -4097,21 +4151,99 @@ impl LotusWindow {
             }
             panel = panel.child(status);
         }
-        let view = self.inspection.as_ref().filter(|snapshot| {
-            snapshot.1 == current
-                && inspection::snapshot_current(snapshot, &self.inspected, &self.sessions)
+        let offset = self.inspection_offset(target.as_ref(), current);
+        let snapshot = self.inspection.as_ref().filter(|snapshot| {
+            snapshot.panel == current
+                && snapshot
+                    .target
+                    .as_ref()
+                    .is_none_or(|owner| Some(owner) == target.as_ref())
+                && snapshot.offset.is_none_or(|page| page == offset)
         });
-        let Some((_, _, view)) = view else {
+        if let Some(target) = target.as_ref().filter(|_| {
+            current != Panel::Result && snapshot.is_none_or(|snapshot| snapshot.offset.is_some())
+        }) {
+            let next = snapshot
+                .and_then(|snapshot| snapshot.view.next)
+                .filter(|next| *next > offset);
+            if offset != 0 || next.is_some() {
+                panel = panel.child(
+                    div()
+                        .flex()
+                        .justify_end()
+                        .gap_1()
+                        .px_2()
+                        .py_1()
+                        .when(offset != 0, |row| {
+                            let target = target.clone();
+                            row.child(
+                                small_button(
+                                    theme,
+                                    "inspect-previous",
+                                    "Previous page",
+                                    Tone::Plain,
+                                    true,
+                                )
+                                .on_click(cx.listener(
+                                    move |view, _, _, cx| {
+                                        view.change_inspection_page(&target, current, offset, None);
+                                        cx.notify();
+                                    },
+                                )),
+                            )
+                        })
+                        .when_some(next, |row, next| {
+                            let target = target.clone();
+                            row.child(
+                                small_button(theme, "inspect-next", "Next page", Tone::Plain, true)
+                                    .on_click(cx.listener(move |view, _, _, cx| {
+                                        view.change_inspection_page(
+                                            &target,
+                                            current,
+                                            offset,
+                                            Some(next),
+                                        );
+                                        cx.notify();
+                                    })),
+                            )
+                        }),
+                );
+            }
+        }
+        let status = match snapshot {
+            None if current == Panel::Result => {
+                Some("No command or imported trace to display".into())
+            }
+            None if target.is_none() => Some("Select a session to inspect".into()),
+            None => Some(format!("Loading {}…", current.label())),
+            Some(snapshot) => match &snapshot.view.error {
+                Some((std::io::ErrorKind::Unsupported, message)) => {
+                    Some(format!("Unsupported · {message}"))
+                }
+                Some((std::io::ErrorKind::PermissionDenied, message)) => {
+                    Some(format!("Read-only · {message}"))
+                }
+                Some((_, message)) => Some(message.clone()),
+                None if snapshot.view.rows.is_empty() && snapshot.view.lost == 0 => {
+                    Some("No entries on this page".into())
+                }
+                None => None,
+            },
+        };
+        if let Some(status) = status {
             return panel
                 .child(
                     div()
                         .p_3()
                         .text_sm()
                         .text_color(theme.text_secondary)
-                        .child("Select a session and inspector. Results are safe-point snapshots; unsupported backend operations show their reason."),
+                        .child(status),
                 )
                 .children(utility);
-        };
+        }
+        let view = &snapshot
+            .expect("a populated inspector view has a snapshot")
+            .view;
         panel = panel
             .child(
                 div()
@@ -4130,15 +4262,7 @@ impl LotusWindow {
                     .px_2()
                     .pb_1()
                     .text_xs()
-                    .child(format!("{} rows · {} lost", view.rows.len(), view.lost))
-                    .when_some(view.next, |row, next| {
-                        row.child(
-                            small_button(theme, "inspect-next", "Next page", Tone::Plain, true)
-                                .on_click(cx.listener(move |view, _, _, _| {
-                                    view.choose_inspection(current, next)
-                                })),
-                        )
-                    }),
+                    .child(format!("{} rows · {} lost", view.rows.len(), view.lost)),
             );
         if let Some(image) = &self.surface_image {
             panel = panel.child(

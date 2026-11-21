@@ -192,9 +192,9 @@ fn a_stalled_selected_worker_never_freezes_the_window_or_its_siblings() {
     // After A answers, its late inspector result must not appear under B.
     std::thread::sleep(Duration::from_millis(3500));
     let update = controller.latest.lock().expect("snapshot");
-    if let Some((session, _, _)) = &update.inspection {
+    if let Some(snapshot) = &update.inspection {
         assert_eq!(
-            session.as_ref().map(|target| &target.id),
+            snapshot.target.as_ref().map(|target| &target.id),
             Some(&b),
             "stale inspection from A published under B"
         );
@@ -339,7 +339,7 @@ fn cancelling_a_debug_request_drains_issued_work_and_skips_queued_writes() {
 /// panel must disappear before the next request, rather than becoming new-guest data.
 #[test]
 fn reset_invalidates_cached_inspection_without_waiting_for_a_replacement_panel() {
-    use lotus_desktop::inspection::Panel;
+    use lotus_desktop::inspection::{InspectionSelection, Panel};
     let base = std::env::temp_dir().join(format!(
         "lotus-inspection-epoch-{}",
         SessionUuid::generate()
@@ -364,11 +364,12 @@ fn reset_invalidates_cached_inspection_without_waiting_for_a_replacement_panel()
         .commands
         .send(Command::Pause(id.clone()))
         .unwrap();
-    *controller.inspection_selection.lock().unwrap() = (Panel::Memory, 0);
+    *controller.inspection_selection.lock().unwrap() =
+        InspectionSelection::first_page(Panel::Memory);
     controller.inspector.store(true, Ordering::Release);
     wait(&controller, "initial memory snapshot", |u| {
-        u.inspection.as_ref().is_some_and(|(target, panel, _)| {
-            target.as_ref().is_some_and(|t| t.id == id) && *panel == Panel::Memory
+        u.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot.target.as_ref().is_some_and(|t| t.id == id) && snapshot.panel == Panel::Memory
         })
     });
     let before = controller
@@ -378,11 +379,12 @@ fn reset_invalidates_cached_inspection_without_waiting_for_a_replacement_panel()
         .inspection
         .as_ref()
         .unwrap()
-        .0
+        .target
         .clone()
         .unwrap();
     // Result has no polling command. No replacement can hide a stale cache.
-    *controller.inspection_selection.lock().unwrap() = (Panel::Result, 0);
+    *controller.inspection_selection.lock().unwrap() =
+        InspectionSelection::first_page(Panel::Result);
     controller
         .commands
         .send(Command::Reset(id.clone()))
@@ -413,10 +415,11 @@ fn reset_invalidates_cached_inspection_without_waiting_for_a_replacement_panel()
             request.target == before && matches!(request.status, DebugStatus::Expired)
         })
     });
-    *controller.inspection_selection.lock().unwrap() = (Panel::Memory, 0);
+    *controller.inspection_selection.lock().unwrap() =
+        InspectionSelection::first_page(Panel::Memory);
     wait(&controller, "new memory snapshot", |u| {
-        u.inspection.as_ref().is_some_and(|(target, _, _)| {
-            target.as_ref().is_some_and(|t| {
+        u.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot.target.as_ref().is_some_and(|t| {
                 t.id == id && t.epoch != before.epoch && t.resolve(&u.sessions).is_some()
             })
         })
@@ -493,10 +496,12 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
     });
     let preview_latency = started.elapsed();
     wait(&controller, "B's first inspection", |update| {
-        update
-            .inspection
-            .as_ref()
-            .is_some_and(|(session, _, _)| session.as_ref().is_some_and(|target| target.id == b))
+        update.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .target
+                .as_ref()
+                .is_some_and(|target| target.id == b)
+        })
     });
     let inspection_latency = started.elapsed();
     eprintln!(
@@ -539,8 +544,8 @@ fn a_stalled_preview_and_inspector_do_not_delay_the_next_selection() {
             !update.previews.contains_key(&a),
             "A's late preview shown after A left the view"
         );
-        if let Some((session, _, _)) = &update.inspection {
-            assert_eq!(session.as_ref().map(|target| &target.id), Some(&b));
+        if let Some(snapshot) = &update.inspection {
+            assert_eq!(snapshot.target.as_ref().map(|target| &target.id), Some(&b));
         }
     }
     let metrics = controller.host().frontend_metrics();
@@ -738,8 +743,11 @@ fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
         "B's inspection while A stays selected",
         |update| {
             update.inspected == b
-                && update.inspection.as_ref().is_some_and(|(session, _, _)| {
-                    session.as_ref().is_some_and(|target| target.id == b)
+                && update.inspection.as_ref().is_some_and(|snapshot| {
+                    snapshot
+                        .target
+                        .as_ref()
+                        .is_some_and(|target| target.id == b)
                 })
         },
     );
@@ -770,10 +778,12 @@ fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
         },
     );
     wait(&controller, "A's inspection after B left", |update| {
-        update
-            .inspection
-            .as_ref()
-            .is_some_and(|(session, _, _)| session.as_ref().is_some_and(|target| target.id == a))
+        update.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .target
+                .as_ref()
+                .is_some_and(|target| target.id == a)
+        })
     });
     let update = controller.latest.lock().expect("snapshot");
     assert!(

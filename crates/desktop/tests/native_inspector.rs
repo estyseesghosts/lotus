@@ -1,7 +1,7 @@
 //! Inspector/controller acceptance; no GUI input or screenshot access required.
 use lotus_desktop::{
     desktop_controller::{Command, DesktopController, McpMode, Update},
-    inspection::Panel,
+    inspection::{InspectionSelection, Panel},
 };
 use lotus_protocol::{debug::DebugCommand as D, envelope::SessionUuid};
 use lotus_session::supervisor::{HostConfig, SessionKind};
@@ -61,45 +61,75 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             .unwrap();
         controller.inspector.store(true, Ordering::Release);
         wait(&controller, |update| {
-            update
-                .inspection
-                .as_ref()
-                .is_some_and(|(target, panel, data)| {
-                    target.as_ref().is_some_and(|target| {
-                        target.is_current(&update.inspected, &update.sessions)
-                    }) && *panel == Panel::Cpu
-                        && data.rows.iter().any(|r| r.key == "r15")
-                })
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .target
+                    .as_ref()
+                    .is_some_and(|target| target.is_current(&update.inspected, &update.sessions))
+                    && snapshot.panel == Panel::Cpu
+                    && snapshot.view.rows.iter().any(|r| r.key == "r15")
+            })
         });
         let pc = {
             let update = controller.latest.lock().unwrap();
-            let view = &update.inspection.as_ref().unwrap().2;
+            let view = &update.inspection.as_ref().unwrap().view;
             u32::from_str_radix(
                 &view.rows.iter().find(|r| r.key == "r15").unwrap().value,
                 16,
             )
             .unwrap()
         };
-        *controller.inspection_selection.lock().unwrap() = (Panel::Threads, 0);
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::first_page(Panel::Threads);
         wait(&controller, |update| {
-            update.inspection.as_ref().is_some_and(|(_, panel, data)| {
-                *panel == Panel::Threads && data.rows.iter().any(|r| r.key.starts_with(".threads["))
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.panel == Panel::Threads
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|r| r.key.starts_with(".threads["))
             })
         });
-        *controller.inspection_selection.lock().unwrap() = (Panel::Result, 0);
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::first_page(Panel::Settings);
+        wait(&controller, |update| {
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.panel == Panel::Settings
+                    && snapshot.offset == Some(0)
+                    && snapshot.view.next.is_some()
+            })
+        });
+        let (target, next, first_setting) = {
+            let update = controller.latest.lock().unwrap();
+            let snapshot = update.inspection.as_ref().unwrap();
+            (
+                snapshot.target.clone().unwrap(),
+                snapshot.view.next.unwrap(),
+                snapshot.view.rows[0].key.clone(),
+            )
+        };
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::with_offset(Panel::Settings, &target, next);
+        wait(&controller, |update| {
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.panel == Panel::Settings
+                    && snapshot.target.as_ref() == Some(&target)
+                    && snapshot.offset == Some(next)
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .all(|row| row.key != first_setting)
+                    && !snapshot.view.rows.is_empty()
+            })
+        });
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::first_page(Panel::Result);
         controller
             .commands
             .send(Command::DebugAt {
-                target: controller
-                    .latest
-                    .lock()
-                    .unwrap()
-                    .inspection
-                    .as_ref()
-                    .unwrap()
-                    .0
-                    .clone()
-                    .unwrap(),
+                target,
                 panel: Panel::Result,
                 command: D::ReadMemory {
                     address: pc,
@@ -127,8 +157,10 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             .send(Command::OpenTrace { path })
             .unwrap();
         wait(&controller, |update| {
-            update.inspection.as_ref().is_some_and(|(target, _, view)| {
-                target.is_none() && view.rows.len() == 100000 && view.lost == 0
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.target.is_none()
+                    && snapshot.view.rows.len() == 100000
+                    && snapshot.view.lost == 0
             })
         });
         controller.commands.send(Command::Stop(id)).unwrap();
