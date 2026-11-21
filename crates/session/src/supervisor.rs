@@ -752,6 +752,7 @@ impl Supervisor {
         pause_if_running(&mut native).await?;
         handle.cancel_input(true);
         native.load(&content).await?;
+        self.budgets.clear_recordings(id);
         lock(&handle.info).asset = Some(asset.to_string());
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
         handle.record(actor, "load");
@@ -1398,6 +1399,7 @@ impl Supervisor {
         handle.record(actor, "reset");
         handle.cancel_input(true);
         let result = native.reset().await?;
+        self.budgets.clear_recordings(id);
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
         Ok(result)
     }
@@ -1744,11 +1746,10 @@ impl Supervisor {
             }
             _ => None,
         };
-        let mut result = self.debug_inner(id, command, client, expected).await?;
+        let mut result = self
+            .debug_inner(id, command, client, expected, permit)
+            .await?;
         drop(slot);
-        if let Some((permit, active)) = permit {
-            permit.commit(active);
-        }
         handle.native.lock().await.decorate(&mut result);
         Ok(result)
     }
@@ -1759,6 +1760,7 @@ impl Supervisor {
         command: &lotus_protocol::debug::DebugCommand,
         client: &str,
         expected: Option<(u64, u64)>,
+        permit: Option<(crate::policy::ToolPermit<'_>, bool)>,
     ) -> io::Result<serde_json::Value> {
         use lotus_protocol::debug::DebugCommand;
         command.validate().map_err(io::Error::other)?;
@@ -2006,11 +2008,13 @@ impl Supervisor {
             DebugCommand::Status => native.status().await,
             DebugCommand::Reset => {
                 let result = native.reset().await?;
+                self.budgets.clear_recordings(id);
                 self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 Ok(result)
             }
             DebugCommand::Load { asset } => {
                 let result = native.load(&self.resolve_asset(asset)?).await?;
+                self.budgets.clear_recordings(id);
                 lock(&handle.info).asset = Some(asset.clone());
                 self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 Ok(result)
@@ -2024,6 +2028,11 @@ impl Supervisor {
             DebugCommand::Advance { frames } => native.advance(*frames).await,
             _ => {
                 let mut result = native.debug(command).await?;
+                // Keep the ledger in worker command order even when another
+                // request acquires this session's native lock immediately.
+                if let Some((permit, active)) = permit {
+                    permit.commit(active);
+                }
                 if matches!(
                     command,
                     DebugCommand::SettingsSet { .. } | DebugCommand::SystemRegenerate { .. }

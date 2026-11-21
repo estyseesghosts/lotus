@@ -83,7 +83,7 @@ without the field advertises nothing.
 Policy (#23, `crates/session/src/policy.rs`), `"policy": {...}` in the host
 config, defaults shown:
 `{"workload": "interactive", "rewind_sessions": null, "gpu_capture_sessions": null,
-"snapshot_slots": null, "snapshot_wait_ms": 10000, "memory_reserve_mib": 1024,
+"snapshot_slots": null, "snapshot_queue_limit": 16, "snapshot_wait_ms": 10000, "memory_reserve_mib": 1024,
 "gpu_admission": true, "gpu_reserve_mib": 0, "focus_priority": false}`. Unset budgets are 2 under `interactive` and unlimited
 under `batch`; 0 means unlimited. Normal emulation is never gated:
 
@@ -97,11 +97,14 @@ under `batch`; 0 means unlimited. Normal emulation is never gated:
   An explicit depth requires the worker's `rewind_compression_queue` feature.
   The stored history has its own `budget_mib` limit. See [#32](34-performance-and-issue-triage.md#32-async-rewind-compression).
 - `gpu_capture_sessions`: sessions with `gpu_configure` above `counters`.
-  When Lotus observes a worker exit, it releases both the rewind and
-  GPU-capture slots. The failed session and its report stay available.
+  A worker exit releases both rewind and GPU-capture slots. The failed
+  session and its report stay available. Reset and content load also release
+  the slots after the worker clears its recordings.
 - `snapshot_slots`: one-shot full-state work host-wide (`save_state`,
-  `load_state`, `fork`, `matrix`, copying a card for a secondary). Extra requests
-  wait up to `snapshot_wait_ms`, then fail with the reason.
+  `load_state`, `fork`, `matrix`, copying a card for a secondary). Up to
+  `snapshot_queue_limit` extra requests can wait for at most
+  `snapshot_wait_ms`. Overflow fails immediately with `ResourceBusy`.
+  A queue limit of 0 refuses any request that needs to wait.
 - `memory_reserve_mib`: a new session is refused while available physical
   memory is below the reserve plus the largest current worker working set
   (1 GiB with none running; a t03 Vulkan worker measured 962 MiB). Device memory

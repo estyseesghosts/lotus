@@ -464,6 +464,44 @@ async fn crashed_worker_releases_tool_budgets_before_unregistering() {
     fixture.host.close().await;
 }
 
+#[tokio::test]
+async fn reset_and_reload_release_recording_slots() {
+    use lotus_protocol::debug::DebugCommand;
+    let fixture = host_with("reset-tool-budget", 2, |config| {
+        config.policy.rewind_sessions = Some(1);
+    });
+    let ids = fixture.running(2).await;
+    let rewind = DebugCommand::RewindConfigure {
+        enabled: true,
+        capacity: 4,
+        budget_mib: 16,
+        interval_frames: None,
+        compression_level: None,
+        compression_queue: None,
+    };
+    let host = &fixture.host;
+    host.debug(&ids[0], &rewind, Actor::Host)
+        .await
+        .expect("first recorder");
+    host.reset(&ids[0], Actor::Host).await.expect("reset");
+    host.debug(&ids[1], &rewind, Actor::Host)
+        .await
+        .expect("slot freed on reset");
+    host.debug(
+        &ids[1],
+        &DebugCommand::Load {
+            asset: "demo".into(),
+        },
+        Actor::Host,
+    )
+    .await
+    .expect("reload");
+    host.debug(&ids[0], &rewind, Actor::Host)
+        .await
+        .expect("slot freed on reload");
+    host.close().await;
+}
+
 async fn futures_join(
     host: &Arc<Supervisor>,
     ids: &[String],

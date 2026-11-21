@@ -248,7 +248,7 @@ are an error. Paths must exist except `asset_directories`.
 | `policy` | see below | budgets and admission |
 
 `policy` defaults: `{"workload": "interactive", "rewind_sessions": null,
-"gpu_capture_sessions": null, "snapshot_slots": null, "snapshot_wait_ms": 10000,
+"gpu_capture_sessions": null, "snapshot_slots": null, "snapshot_queue_limit": 16, "snapshot_wait_ms": 10000,
 "memory_reserve_mib": 1024, "gpu_admission": true, "gpu_reserve_mib": 0,
 "focus_priority": false}`. Unset budgets mean 2 under `interactive` and
 unlimited under `batch`; 0 is unlimited. A new session is refused when free

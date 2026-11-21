@@ -3,6 +3,7 @@
 1. interactive (default): two sessions may record rewind checkpoints; a third is refused with
    the two holders named, shown in lotus_status.policy and in its telemetry.policy_note, and
    admitted once a holder disables rewind. GPU `counters` capture never counts; `events` does.
+   Reset clears both native recordings and releases both host slots.
 2. batch: three rewind sessions, no limit.
 2b. concurrent (#44): with rewind_sessions 1, three sessions send rewind_configure at once;
    exactly one is admitted, in five rounds.
@@ -75,6 +76,14 @@ try:
     assert "GPU capture budget" in gpu_refused, gpu_refused
     report["interactive"] = {"refused": refused, "gpu_refused": gpu_refused,
                              "policy": status(client)["policy"]}
+    client.tool("lotus_control", {"session": b, "operation": "reset"})
+    policy = status(client)["policy"]
+    assert policy["rewind"]["sessions"] == [c], policy
+    assert policy["gpu_capture"]["sessions"] == [a], policy
+    assert json.loads(debug(client, b, "rewind_status"))["enabled"] is False
+    rewind(client, a, True)
+    debug(client, c, "gpu_configure", enabled=True, stop_events=[], capture="events")
+    report["interactive"]["after_reset"] = status(client)["policy"]
     client.close()
     clients.pop()
 

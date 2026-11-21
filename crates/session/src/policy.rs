@@ -53,6 +53,8 @@ pub struct Policy {
     pub snapshot_slots: Option<usize>,
     /// Longest wait for a snapshot slot before the request fails with the reason.
     pub snapshot_wait_ms: u64,
+    /// Requests allowed to wait for a snapshot slot. Zero refuses a wait.
+    pub snapshot_queue_limit: usize,
     /// New sessions are refused while available physical memory would drop below this.
     /// 0 disables the check.
     pub memory_reserve_mib: u64,
@@ -73,6 +75,7 @@ impl Default for Policy {
             gpu_capture_sessions: None,
             snapshot_slots: None,
             snapshot_wait_ms: 10_000,
+            snapshot_queue_limit: 16,
             memory_reserve_mib: 1024,
             gpu_admission: true,
             gpu_reserve_mib: 0,
@@ -174,6 +177,11 @@ impl Ledger {
     fn has_pending(&self, session: &str) -> bool {
         self.rewind.pending.contains_key(session) || self.gpu.pending.contains_key(session)
     }
+
+    fn clear_recordings(&mut self, session: &str) {
+        self.rewind.active.remove(session);
+        self.gpu.active.remove(session);
+    }
 }
 
 /// Admission to enable or disable a session-long tool; see the module docs.
@@ -243,6 +251,14 @@ pub struct Budgets {
 pub struct SnapshotSlot<'a> {
     _permit: Option<tokio::sync::SemaphorePermit<'a>>,
     pub waited: Duration,
+}
+
+struct SnapshotWaiter<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for SnapshotWaiter<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl Budgets {
@@ -329,11 +345,16 @@ impl Budgets {
     /// A session ended: it holds nothing, and its permits still in flight cannot commit.
     pub fn release(&self, session: &str) {
         let mut ledger = self.ledger();
-        ledger.rewind.active.remove(session);
-        ledger.gpu.active.remove(session);
+        ledger.clear_recordings(session);
         if ledger.has_pending(session) {
             ledger.ended.insert(session.to_string());
         }
+    }
+
+    /// A reset or content load ended the recordings. Requests waiting for the
+    /// worker still own their reservations until they complete or are cancelled.
+    pub fn clear_recordings(&self, session: &str) {
+        self.ledger().clear_recordings(session);
     }
 
     /// Wait for a one-shot snapshot slot, at most `snapshot_wait_ms`.
@@ -351,12 +372,24 @@ impl Budgets {
                 waited: Duration::ZERO,
             });
         }
-        self.queued
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        use std::sync::atomic::Ordering::Relaxed;
+        let queue_limit = self.policy.snapshot_queue_limit;
+        if self
+            .queued
+            .fetch_update(Relaxed, Relaxed, |queued| {
+                (queued < queue_limit).then(|| queued + 1)
+            })
+            .is_err()
+        {
+            self.refused.fetch_add(1, Relaxed);
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                format!("{operation}: snapshot wait queue is full (policy.snapshot_queue_limit = {queue_limit})"),
+            ));
+        }
+        let _queued = SnapshotWaiter(&self.queued);
         let wait = Duration::from_millis(self.policy.snapshot_wait_ms);
         let acquired = tokio::time::timeout(wait, semaphore.acquire()).await;
-        self.queued
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         match acquired {
             Ok(Ok(permit)) => Ok(SnapshotSlot {
                 _permit: Some(permit),
@@ -393,6 +426,7 @@ impl Budgets {
                 "sessions": ledger.gpu.active,
                 "pending": ledger.gpu.live_pending(&ledger.ended).collect::<BTreeMap<_, _>>()},
             "snapshots": {"limit": self.policy.snapshot_limit(), "in_use": in_use,
+                "queue_limit": self.policy.snapshot_limit().map(|_| self.policy.snapshot_queue_limit),
                 "queued": self.queued.load(std::sync::atomic::Ordering::Relaxed)},
             "refused": self.refused.load(std::sync::atomic::Ordering::Relaxed),
             "focus_priority": self.policy.focus_priority,
@@ -757,6 +791,37 @@ mod tests {
         let status = budgets.status(&Memory::default(), &GpuMemory::default());
         assert_eq!(status["refused"], 1);
         assert_eq!(status["snapshots"]["in_use"], 0);
+    }
+
+    #[tokio::test]
+    async fn snapshot_wait_queue_refuses_overflow_and_releases_cancelled_waiters() {
+        let budgets = Budgets::new(Policy {
+            snapshot_slots: Some(1),
+            snapshot_queue_limit: 1,
+            ..Policy::default()
+        });
+        let held = budgets.snapshot("save_state").await.expect("free slot");
+        let mut waiting = Box::pin(budgets.snapshot("fork"));
+        tokio::select! {
+            biased;
+            _ = &mut waiting => panic!("slot is held"),
+            () = std::future::ready(()) => {}
+        }
+        let status = || budgets.status(&Memory::default(), &GpuMemory::default());
+        assert_eq!(status()["snapshots"]["queued"], 1);
+        let overflow = budgets
+            .snapshot("matrix")
+            .await
+            .err()
+            .expect("queue is full");
+        assert!(
+            overflow.to_string().contains("snapshot_queue_limit"),
+            "{overflow}"
+        );
+        drop(waiting);
+        assert_eq!(status()["snapshots"]["queued"], 0);
+        drop(held);
+        budgets.snapshot("matrix").await.expect("slot released");
     }
 
     fn gpu_status(
