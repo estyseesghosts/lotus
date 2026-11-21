@@ -382,11 +382,13 @@ async fn concurrent_rewind_enables_respect_the_budget() {
     }
     // A worker that rejects the enable leaves no holder and no pending slot.
     std::fs::write(fixture.root(&ids[0]).join("mock-reject-debug"), b"").expect("reject");
-    assert!(fixture
+    let refused = fixture
         .host
         .debug(&ids[0], &enable, Actor::Host)
         .await
-        .is_err());
+        .expect_err("worker refusal");
+    assert_eq!(refused.kind(), std::io::ErrorKind::Unsupported);
+    assert!(refused.to_string().contains("Debug: Unsupported"));
     let status = fixture.host.policy_status();
     assert!(status["rewind"]["sessions"].as_array().unwrap().is_empty());
     fixture

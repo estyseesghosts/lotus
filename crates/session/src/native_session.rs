@@ -758,11 +758,10 @@ impl NativeSession {
             status, mut data, ..
         } = reply;
         if status != Status::Ok {
-            // Keep a refusal distinguishable (owner, lease) from other failures (lotus#66).
-            let kind = if status == Status::PermissionDenied {
-                io::ErrorKind::PermissionDenied
-            } else {
-                io::ErrorKind::Other
+            let kind = match status {
+                Status::PermissionDenied => io::ErrorKind::PermissionDenied,
+                Status::Unsupported => io::ErrorKind::Unsupported,
+                _ => io::ErrorKind::Other,
             };
             return Err(io::Error::new(
                 kind,
