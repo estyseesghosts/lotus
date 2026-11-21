@@ -31,8 +31,9 @@ Configuration is trusted local startup input, never a tool parameter. Each
 server process owns its sessions and artifact catalog. Client tools cannot
 select executables, roots or arbitrary content paths. Controls require
 `allow_control`; status/memory/capture operate only on owned sessions.
-`max_sessions` workers and the artifact quota bound resources. On client
-disconnect every session is stopped. Session handles expire with
+`max_sessions` workers and the artifact quota bound resources. A headless
+MCP client disconnect shuts down its host and sessions. In the desktop, the
+window keeps ownership when MCP disconnects. Session handles expire with
 the server; create a session on the same primary card to retain SD/NAND data.
 CPU execution is not retained across server restarts. Secondary guest data is
 discarded. Primary manifests record `lifecycle: closed|crashed` and clear the
@@ -159,7 +160,28 @@ this explicit tool call and creates no catalog entries. Two captures can
 prepare image replies concurrently on a server. `lotus_capture`
 returns raw BGRA as `lotus://artifact/...` links, including for clients without image support.
 `resources/list` and `resources/read` expose only catalogued captures; read checks
-size/hash. No shell, arbitrary filesystem, network listener or Azahar UDP RPC.
+size/hash. MCP uses stdio. The GDB tool below opens a separate loopback
+debugger listener on request.
+
+### GDB listener (#152)
+
+On a loaded CITnLO session, open **Debug → GDB** to start a listener, copy its
+address, see whether a client holds the mutation lease, or stop it. Leave the
+port blank or enter `0` to select a free port on `127.0.0.1`. AZAHAR is
+unsupported.
+
+`lotus_gdb` accepts `session` and `operation` (`start`, `status`, `stop`).
+`start` also accepts an optional `port` and reports the assigned address.
+Start and Stop require host control permission. Status also works on a
+read-only host and reports the listener state, backend, address, and lease.
+The desktop and embedded MCP share the same listener. Either can stop it,
+and a second Start reports a conflict. An attached GDB client holds exclusive
+guest mutation control until detach, disconnect, or Stop. Read debugger
+operations remain available.
+
+Desktop listeners survive an embedded MCP disconnect. Worker exit, session
+stop, or an external guest reset or replacement retires the listener. A rewind
+issued by the attached GDB client updates the listener to the new guest epoch.
 
 **Verified emulator**: the opt-in `native_parity` test compares MCP screen bytes
 with the shared native API at frame 60, and checks read-only permission, asset,

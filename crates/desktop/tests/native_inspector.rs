@@ -1,17 +1,22 @@
 //! Inspector/controller acceptance; no GUI input or screenshot access required.
 use lotus_desktop::{
-    desktop_controller::{Command, DebugStatus, DesktopController, McpMode, Update},
+    desktop_controller::{
+        Command, DebugStatus, DesktopController, GdbAction, GdbFeedback, McpMode, Update,
+    },
     inspection::{InspectionSelection, Panel, SessionTarget},
 };
+use lotus_mcp::tool_arguments::{DebugArgs, GdbArgs, GdbOperation};
 use lotus_protocol::{
     debug::{DebugCommand as D, GpuCapture},
     envelope::SessionUuid,
 };
 use lotus_session::supervisor::{HostConfig, SessionKind};
+use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult};
+use serde_json::Value;
 use std::{
     collections::BTreeMap,
     io::{ErrorKind, Read, Write},
-    net::TcpStream,
+    net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
     sync::atomic::Ordering,
     time::{Duration, Instant},
@@ -59,29 +64,123 @@ fn gdb_packet(socket: &mut TcpStream, request: &str) -> Vec<u8> {
     reply
 }
 
-fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, pc: u32) {
-    let gdb_runtime = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(1)
-        .enable_all()
-        .build()
+fn tool_json(result: CallToolResult) -> Value {
+    assert_ne!(result.is_error, Some(true), "{:?}", result.content);
+    serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap()
+}
+
+fn gdb_action(controller: &DesktopController, target: &SessionTarget, action: GdbAction) {
+    controller
+        .commands
+        .send(Command::Gdb {
+            target: target.clone(),
+            action,
+        })
         .unwrap();
-    let gdb = gdb_runtime
-        .block_on(lotus_gdb::Server::start(
-            controller.host().clone(),
-            target.id.clone(),
-            0,
-        ))
-        .unwrap();
-    let mut socket = TcpStream::connect(gdb.address).unwrap();
+}
+
+fn listener(controller: &DesktopController, target: &SessionTarget) -> SocketAddr {
+    wait(controller, |update| {
+        update
+            .gdb_status
+            .get(target)
+            .is_some_and(|status| status.address.is_some())
+    });
+    controller.latest.lock().unwrap().gdb_status[target]
+        .address
+        .unwrap()
+}
+
+fn attach(address: SocketAddr) -> TcpStream {
+    let mut socket = TcpStream::connect(address).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
     assert!(gdb_packet(&mut socket, "qSupported").starts_with(b"PacketSize="));
+    socket
+}
+
+fn port_closed(address: SocketAddr) -> bool {
+    TcpStream::connect_timeout(&address, Duration::from_millis(50)).is_err()
+}
+
+fn wait_port_closed(address: SocketAddr) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !port_closed(address) {
+        assert!(
+            Instant::now() < deadline,
+            "GDB port remained open: {address}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, pc: u32) {
+    let occupied = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    gdb_action(
+        controller,
+        target,
+        GdbAction::Start {
+            port: occupied.local_addr().unwrap().port(),
+        },
+    );
+    wait(controller, |update| {
+        matches!(
+            update.gdb_feedback.get(target),
+            Some(GdbFeedback::Failed {
+                kind: ErrorKind::AddrInUse,
+                ..
+            })
+        )
+    });
+    drop(occupied);
+
+    gdb_action(controller, target, GdbAction::Start { port: 0 });
+    let address = listener(controller, target);
+    assert!(address.ip().is_loopback() && address.port() != 0);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = controller.mcp_server();
+    let mcp = |operation| {
+        runtime.block_on(server.lotus_gdb(Parameters(GdbArgs {
+            session: target.id.clone(),
+            operation,
+            port: 0,
+        })))
+    };
+    let status = tool_json(mcp(GdbOperation::Status));
+    assert_eq!(status["address"], address.to_string());
+    assert_eq!(status["backend_supported"], true);
+    assert_eq!(status["leased"], false);
+    let conflict = mcp(GdbOperation::Start);
+    assert_eq!(conflict.is_error, Some(true));
+    assert!(conflict.content[0]
+        .as_text()
+        .unwrap()
+        .text
+        .contains(&address.to_string()));
+
+    let mut socket = attach(address);
     wait(controller, |update| {
         target
             .resolve(&update.sessions)
             .is_some_and(|summary| summary.telemetry.desktop_debug_lease_blocked)
     });
+    let status = tool_json(mcp(GdbOperation::Status));
+    assert_eq!(status["connected"], true);
+    assert_eq!(status["leased"], true);
+    let mutation = runtime.block_on(server.lotus_debug(Parameters(DebugArgs {
+        session: target.id.clone(),
+        command: D::Advance { frames: 1 },
+    })));
+    assert_eq!(mutation.is_error, Some(true));
+    assert!(mutation.content[0]
+        .as_text()
+        .unwrap()
+        .text
+        .contains("debug lease held by another client"));
 
     *controller.inspection_selection.lock().unwrap() =
         InspectionSelection::first_page(Panel::Breakpoints);
@@ -123,8 +222,38 @@ fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, p
             .is_some_and(|summary| !summary.telemetry.desktop_debug_lease_blocked)
     });
     drop(socket);
-    drop(gdb);
-    drop(gdb_runtime);
+    let socket = attach(address);
+    assert_eq!(tool_json(mcp(GdbOperation::Status))["leased"], true);
+    drop(socket); // Disconnect without a protocol detach.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while tool_json(mcp(GdbOperation::Status))["leased"] == true {
+        assert!(
+            Instant::now() < deadline,
+            "GDB did not release the lease after disconnect"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let stopped = tool_json(mcp(GdbOperation::Stop));
+    assert_eq!(stopped["stopped"], true);
+    assert!(port_closed(address));
+
+    let started = tool_json(mcp(GdbOperation::Start));
+    let started_address: SocketAddr = started["address"].as_str().unwrap().parse().unwrap();
+    assert_eq!(listener(controller, target), started_address);
+    drop(server);
+    drop(runtime); // The desktop still owns the listener.
+    let _socket = attach(started_address);
+    gdb_action(controller, target, GdbAction::Stop);
+    wait(controller, |update| {
+        update
+            .gdb_status
+            .get(target)
+            .is_some_and(|status| status.state == lotus_gdb::State::Stopped)
+            && target
+                .resolve(&update.sessions)
+                .is_some_and(|summary| !summary.telemetry.desktop_debug_lease_blocked)
+    });
+    assert!(port_closed(started_address));
     controller
         .commands
         .send(Command::DebugAt {
@@ -347,6 +476,29 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             Panel::Gpu
         );
         check_gdb_ownership(&controller, &target, pc);
+        gdb_action(&controller, &target, GdbAction::Start { port: 0 });
+        let before_reset = listener(&controller, &target);
+        controller
+            .commands
+            .send(Command::Reset(id.clone()))
+            .unwrap();
+        wait(&controller, |update| {
+            target.resolve(&update.sessions).is_none()
+        });
+        wait_port_closed(before_reset);
+        gdb_action(&controller, &target, GdbAction::Start { port: 0 });
+        let replacement = {
+            let update = controller.latest.lock().unwrap();
+            update
+                .gdb_status
+                .keys()
+                .find(|current| current.id == id)
+                .unwrap()
+                .clone()
+        };
+        assert_ne!(replacement.epoch, target.epoch);
+        gdb_action(&controller, &replacement, GdbAction::Start { port: 0 });
+        let until_stop = listener(&controller, &replacement);
         controller.inspector.store(false, Ordering::Release);
         *controller.inspection_selection.lock().unwrap() =
             InspectionSelection::first_page(Panel::Result);
@@ -372,6 +524,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         wait(&controller, |update| {
             update.sessions.is_empty() && update.pending == 0
         });
+        wait_port_closed(until_stop);
         assert!(controller.latest.lock().unwrap().error.is_empty());
         drop(controller);
         let metadata: serde_json::Value = serde_json::from_slice(
@@ -383,4 +536,53 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
         std::fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+#[ignore = "requires LOTUS_AZAHAR_WORKER and LOTUS_FIXTURE"]
+fn gdb_reports_unsupported_on_azahar() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_AZAHAR_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_FIXTURE").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-gdb-azahar-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, &root);
+    config.allow_control = true;
+    config.assets.insert("fixture".into(), fixture);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    controller
+        .commands
+        .send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some("fixture".into()),
+        })
+        .unwrap();
+    wait(&controller, |update| !update.gdb_status.is_empty());
+    let target = controller
+        .latest
+        .lock()
+        .unwrap()
+        .gdb_status
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    {
+        let update = controller.latest.lock().unwrap();
+        assert_eq!(update.gdb_status[&target].backend, "AZAHAR");
+        assert_eq!(update.gdb_status[&target].backend_support(), Some(false));
+    }
+    gdb_action(&controller, &target, GdbAction::Start { port: 0 });
+    wait(&controller, |update| {
+        matches!(
+            update.gdb_feedback.get(&target),
+            Some(GdbFeedback::Failed { kind: ErrorKind::Unsupported, message })
+            if message.contains("requires the CITnLO backend")
+        )
+    });
+    assert_eq!(
+        controller.latest.lock().unwrap().gdb_status[&target].address,
+        None
+    );
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
 }

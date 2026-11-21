@@ -42,6 +42,7 @@ pub(super) enum GlobalCommand {
     Open,
     OpenTrace,
     DebuggerCommands,
+    Gdb,
     Minimize,
     ZoomWindow,
     Keyboard,
@@ -51,13 +52,14 @@ pub(super) enum GlobalCommand {
     Screens(ScreenLayout),
 }
 impl GlobalCommand {
-    const ALL: [Self; 16] = [
+    const ALL: [Self; 17] = [
         Self::Sidebar,
         Self::Inspector,
         Self::Settings,
         Self::Open,
         Self::OpenTrace,
         Self::DebuggerCommands,
+        Self::Gdb,
         Self::Minimize,
         Self::ZoomWindow,
         Self::Keyboard,
@@ -77,6 +79,7 @@ impl GlobalCommand {
             Self::Open => "file.open",
             Self::OpenTrace => "debug.trace.open",
             Self::DebuggerCommands => "debug.commands",
+            Self::Gdb => "debug.gdb",
             Self::Minimize => "window.minimize",
             Self::ZoomWindow => "window.zoom",
             Self::Keyboard => "help.keyboard",
@@ -115,6 +118,8 @@ impl GlobalCommand {
                 .enabled(view.controller.is_some()),
             Self::DebuggerCommands => CommandDescriptor::action(self.id(), "Debugger Commands")
                 .needs_input()
+                .enabled(view.inspection_target().is_some()),
+            Self::Gdb => CommandDescriptor::action(self.id(), "GDB")
                 .enabled(view.inspection_target().is_some()),
             Self::Minimize => CommandDescriptor::action(self.id(), "Minimize Window"),
             Self::ZoomWindow => CommandDescriptor::action(self.id(), "Zoom Window"),
@@ -356,6 +361,7 @@ impl LotusWindow {
             }
             GlobalCommand::OpenTrace => self.open_trace(cx),
             GlobalCommand::DebuggerCommands => self.show_panel(Panel::Commands),
+            GlobalCommand::Gdb => self.show_panel(Panel::Gdb),
             GlobalCommand::Minimize => window.minimize_window(),
             GlobalCommand::ZoomWindow => silvestris::native::zoom_window(window),
             GlobalCommand::Keyboard => {
@@ -654,6 +660,7 @@ impl LotusWindow {
         let can_debug = self.control && target.is_some();
         let mut entries = vec![
             MenuEntry::Command(GlobalCommand::DebuggerCommands.id().into()),
+            MenuEntry::Command(GlobalCommand::Gdb.id().into()),
             MenuEntry::Command(GlobalCommand::OpenTrace.id().into()),
             self.popup_action(
                 CommandDescriptor::action("inspector.clipboard", "Run Clipboard JSON")
@@ -724,6 +731,7 @@ impl LotusWindow {
                 label: "Debug".into(),
                 entries: vec![
                     global(GlobalCommand::DebuggerCommands),
+                    global(GlobalCommand::Gdb),
                     global(GlobalCommand::OpenTrace),
                 ],
             },

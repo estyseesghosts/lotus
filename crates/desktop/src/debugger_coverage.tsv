@@ -97,7 +97,7 @@ mcp	lotus_control	session controls	control	-	Run, pause, reset and stop
 mcp	lotus_create_session	session controls	control	-	Create or launch a card or secondary
 mcp-debug	lotus_debug	debug bridge	per operation	-	See the shared command inventory
 mcp	lotus_focus_session	workspace	presentation change	-	Select a session in the desktop
-mcp-debug	lotus_gdb	unavailable	control to start or stop	-	Dedicated lifecycle planned in #152
+mcp-debug	lotus_gdb	GDB inspector	control to start or stop	-	Shares the listener and client lease with the desktop (#152). CITnLO only.
 mcp	lotus_input	desktop input	control	-	Device input through the desktop router
 mcp	lotus_input_presets	settings window	read or control by operation	-	Preset library and editor
 mcp	lotus_list_cards	session status	read	-	Card sidebar

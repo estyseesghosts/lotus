@@ -20,6 +20,7 @@ path = "src/main.rs"
 image = { version = "=0.25.10", default-features = false }
 lotus-accuracy = { workspace = true }
 lotus-debugger = { workspace = true }
+lotus-gdb = { workspace = true }
 lotus-hardware = { workspace = true }
 lotus-mcp = { workspace = true }
 lotus-protocol = { workspace = true }
@@ -63,5 +64,4 @@ silvestris-ui = ["dep:silvestris"]
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
-lotus-gdb = { workspace = true }
 silvestris = { path = "../../vendor/silvestris/crates/silvestris", features = ["test-support"] }

@@ -32,7 +32,7 @@ enum Argument {
     Choice(usize),
 }
 
-fn field(
+pub(super) fn field(
     window: &mut Window,
     cx: &mut Context<LotusWindow>,
     label: &str,

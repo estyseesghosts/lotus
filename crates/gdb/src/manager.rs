@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-type Slot = tokio::sync::Mutex<Option<(Target, Server)>>;
+type Slot = tokio::sync::Mutex<Option<Server>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum State {
@@ -55,6 +55,7 @@ impl Status {
 pub struct Manager {
     host: Arc<Supervisor>,
     registry: Mutex<Registry>,
+    runtime: Option<tokio::runtime::Handle>,
 }
 
 #[derive(Default)]
@@ -68,7 +69,20 @@ impl Manager {
         Self {
             host,
             registry: Mutex::default(),
+            runtime: tokio::runtime::Handle::try_current().ok(),
         }
+    }
+
+    pub fn with_runtime(host: Arc<Supervisor>, runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            runtime: Some(runtime),
+            ..Self::new(host)
+        }
+    }
+
+    #[must_use]
+    pub fn host(&self) -> &Arc<Supervisor> {
+        &self.host
     }
 
     pub fn status(&self, target: &Target) -> io::Result<Status> {
@@ -83,8 +97,8 @@ impl Manager {
         if let Some(slot) = self.slot(&target.session) {
             match slot.try_lock() {
                 Ok(entry) => {
-                    if let Some((bound, server)) = &*entry {
-                        if bound == target {
+                    if let Some(server) = &*entry {
+                        if server.matches(target) {
                             if server.finished() {
                                 status.error = server.failure();
                             } else {
@@ -127,25 +141,27 @@ impl Manager {
         let bound = target.clone();
         // Once assigned, let the operation drain even if the originating MCP
         // request is cancelled or its transport disconnects during the probe.
-        tokio::spawn(async move {
-            if let Some((previous, server)) = &*entry {
-                if previous == &bound && !server.finished() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::AlreadyExists,
-                        format!("GDB server already started at {}", server.address),
-                    ));
+        self.runtime()?
+            .spawn(async move {
+                bound.check(&host)?;
+                if let Some(server) = &*entry {
+                    if !server.finished() {
+                        return Err(if server.matches(&bound) {
+                            io::Error::new(
+                                io::ErrorKind::AlreadyExists,
+                                format!("GDB server already started at {}", server.address),
+                            )
+                        } else {
+                            changing()
+                        });
+                    }
                 }
-                if !server.finished() {
-                    server.stop().await?;
-                }
-            }
-            *entry = None;
-            let server = Server::start_at(host, bound.clone(), port).await?;
-            *entry = Some((bound, server));
-            Ok(())
-        })
-        .await
-        .map_err(io::Error::other)??;
+                *entry = None;
+                *entry = Some(Server::start_at(host, bound, port).await?);
+                Ok(())
+            })
+            .await
+            .map_err(io::Error::other)??;
         self.status(&target)
     }
 
@@ -154,8 +170,21 @@ impl Manager {
         target.check(&self.host)?;
         if let Some(slot) = self.slot(&target.session) {
             let mut entry = slot.try_lock_owned().map_err(|_| changing())?;
-            if entry.as_ref().is_some_and(|(bound, _)| bound == target) {
-                tokio::spawn(async move { stop(&mut entry).await })
+            if let Some(server) = &*entry {
+                if !server.matches(target) {
+                    return if server.finished() {
+                        Ok(())
+                    } else {
+                        Err(changing())
+                    };
+                }
+                let host = self.host.clone();
+                let target = target.clone();
+                self.runtime()?
+                    .spawn(async move {
+                        target.check(&host)?;
+                        stop(&mut entry).await
+                    })
                     .await
                     .map_err(io::Error::other)??;
             }
@@ -194,6 +223,13 @@ impl Manager {
             .get(session)
             .cloned()
     }
+
+    fn runtime(&self) -> io::Result<tokio::runtime::Handle> {
+        self.runtime.clone().map_or_else(
+            || tokio::runtime::Handle::try_current().map_err(io::Error::other),
+            Ok,
+        )
+    }
 }
 
 fn changing() -> io::Error {
@@ -203,8 +239,8 @@ fn changing() -> io::Error {
     )
 }
 
-async fn stop(entry: &mut Option<(Target, Server)>) -> io::Result<()> {
-    if let Some((_, server)) = entry {
+async fn stop(entry: &mut Option<Server>) -> io::Result<()> {
+    if let Some(server) = entry {
         let result = server.stop().await;
         *entry = None;
         result?;

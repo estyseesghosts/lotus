@@ -97,21 +97,20 @@ impl LotusServer {
         frontend: Frontend,
         scenarios: BTreeMap<String, PathBuf>,
     ) -> Self {
-        let gdb = Arc::new(lotus_gdb::Manager::new(host.clone()));
-        Self::with_gdb(host, gdb, frontend, scenarios)
+        let gdb = Arc::new(lotus_gdb::Manager::new(host));
+        Self::with_gdb(gdb, frontend, scenarios)
     }
 
     /// Desktop embedding supplies the same GDB service that its controller uses.
     #[must_use]
     pub fn with_gdb(
-        host: Arc<Supervisor>,
         gdb: Arc<lotus_gdb::Manager>,
         frontend: Frontend,
         scenarios: BTreeMap<String, PathBuf>,
     ) -> Self {
         Self {
             tool_router: Self::tool_router(),
-            host: Some(host),
+            host: Some(gdb.host().clone()),
             gdb: Some(gdb),
             frontend,
             scenarios,

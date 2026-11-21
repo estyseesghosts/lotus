@@ -38,6 +38,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "settings window" => Some("settings_window.rs"),
             "debug bridge" if section == 1 => None,
             "palette" => Some("lotus_window/command_palette.rs"),
+            "GDB inspector" => Some("lotus_window/gdb_panel.rs"),
             "external only" | "unavailable" if *detail != "-" => None,
             _ => {
                 return Err(format!(

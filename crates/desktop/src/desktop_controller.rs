@@ -65,6 +65,10 @@ pub enum Command {
         command: DebugCommand,
     },
     CancelDebug(u64),
+    Gdb {
+        target: SessionTarget,
+        action: GdbAction,
+    },
     OpenTrace {
         path: PathBuf,
     },
@@ -82,6 +86,32 @@ pub enum Command {
     WorkspaceAt(lotus_session::workspace::Operation, u64),
     /// How the window resolved `Auto` for a split (lotus#69); display only.
     WorkspaceResolved(lotus_session::workspace::Resolved),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GdbAction {
+    Start { port: u16 },
+    Stop,
+    Status,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GdbFeedback {
+    Pending(GdbAction),
+    Failed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+}
+
+impl From<&SessionTarget> for lotus_gdb::Target {
+    fn from(target: &SessionTarget) -> Self {
+        Self {
+            session: target.id.clone(),
+            created_unix_ms: target.created_unix_ms,
+            epoch: target.epoch,
+        }
+    }
 }
 
 /// Whether the window also serves MCP.
@@ -174,6 +204,8 @@ pub struct Update {
     pub registers: Option<(SessionTarget, Value)>,
     pub inspection: Option<InspectionSnapshot>,
     debug_requests: VecDeque<DebugRequest>,
+    pub gdb_status: BTreeMap<SessionTarget, lotus_gdb::Status>,
+    pub gdb_feedback: BTreeMap<SessionTarget, GdbFeedback>,
     pub error: String,
     /// Worker operations of this window pending longer than one second.
     pub waiting: Vec<String>,
@@ -245,6 +277,7 @@ pub struct DesktopController {
     preview_visible: Arc<AtomicBool>,
     routing: Arc<InputRouting>,
     host: Arc<Supervisor>,
+    gdb: Arc<lotus_gdb::Manager>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -329,13 +362,19 @@ impl DesktopController {
         let presence = Arc::new(Presence::start());
         let ui = Arc::new(UiMetrics::default());
         let preview_visible = Arc::new(AtomicBool::new(true));
+        let runtime = tokio::runtime::Runtime::new()?;
         let routing = InputRouting::new(host.clone());
         let controllers = Controllers::start(routing.clone(), shutdown.clone());
+        let gdb = Arc::new(lotus_gdb::Manager::with_runtime(
+            host.clone(),
+            runtime.handle().clone(),
+        ));
         let context = Loops {
             controllers,
             ui: ui.clone(),
             presence: presence.clone(),
             host: host.clone(),
+            gdb: gdb.clone(),
             published: latest.clone(),
             inspector: inspector.clone(),
             inspection_selection: inspection_selection.clone(),
@@ -357,7 +396,6 @@ impl DesktopController {
         let thread = std::thread::Builder::new()
             .name("lotus-supervisor".into())
             .spawn(move || {
-                let runtime = tokio::runtime::Runtime::new().expect("supervisor runtime");
                 runtime.block_on(context.run(receiver, mcp));
             })?;
         Ok(Self {
@@ -370,6 +408,7 @@ impl DesktopController {
             ui,
             preview_visible,
             host,
+            gdb,
             shutdown,
             thread: Some(thread),
         })
@@ -385,6 +424,12 @@ impl DesktopController {
     #[must_use]
     pub fn host(&self) -> &Arc<Supervisor> {
         &self.host
+    }
+
+    /// An embedded MCP server shares the window's GDB listeners and sessions.
+    #[must_use]
+    pub fn mcp_server(&self) -> LotusServer {
+        windowed_mcp(self.gdb.clone())
     }
 
     pub(crate) fn set_preview_visible(&self, visible: bool) {
@@ -410,6 +455,7 @@ type ActiveDebug = BTreeMap<u64, (SessionTarget, DebugCancellation)>;
 #[derive(Clone)]
 struct Loops {
     host: Arc<Supervisor>,
+    gdb: Arc<lotus_gdb::Manager>,
     /// Physical controllers (lotus#59), routed by [`InputRouting`] (lotus#61).
     controllers: Option<Arc<Controllers>>,
     presence: Arc<Presence>,
@@ -475,6 +521,16 @@ impl Loops {
                 catalog_at = Some(Instant::now());
             }
             let sessions = self.host.summaries();
+            let gdb_status = sessions
+                .iter()
+                .filter_map(|summary| {
+                    let target = SessionTarget::from_summary(summary);
+                    self.gdb
+                        .status(&(&target).into())
+                        .ok()
+                        .map(|status| (target, status))
+                })
+                .collect();
             self.presence
                 .publish(presence::live_content(&sessions, |handle| {
                     content_names
@@ -502,6 +558,10 @@ impl Loops {
                         .unwrap_or_default();
                     self.reveal.store(true, Ordering::Release);
                 }
+                update.gdb_status = gdb_status;
+                update
+                    .gdb_feedback
+                    .retain(|target, _| target.resolve(&sessions).is_some());
                 update.sessions = sessions;
                 update.pending = self.pending.load(Ordering::Acquire);
                 update.waiting = waiting;
@@ -581,6 +641,7 @@ impl Loops {
         for task in background {
             task.abort();
         }
+        self.gdb.close().await;
         self.host.close().await;
     }
 
@@ -1012,6 +1073,10 @@ impl Loops {
                 self.cancel_debug(id);
                 continue;
             }
+            if let Command::Gdb { target, action } = command {
+                self.request_gdb(target, action);
+                continue;
+            }
             let trace_generation = matches!(command, Command::OpenTrace { .. })
                 .then(|| self.result_generation.fetch_add(1, Ordering::AcqRel) + 1);
             self.pending.fetch_add(1, Ordering::AcqRel);
@@ -1027,6 +1092,50 @@ impl Loops {
             });
         }
         true
+    }
+
+    fn request_gdb(&self, target: SessionTarget, action: GdbAction) {
+        let gdb_target = lotus_gdb::Target::from(&target);
+        if !gdb_target.current(&self.host) {
+            return;
+        }
+        {
+            let mut update = lock(&self.published);
+            if matches!(
+                update.gdb_feedback.get(&target),
+                Some(GdbFeedback::Pending(_))
+            ) {
+                return;
+            }
+            update
+                .gdb_feedback
+                .insert(target.clone(), GdbFeedback::Pending(action));
+        }
+        let loops = self.clone();
+        tokio::spawn(async move {
+            let result = match action {
+                GdbAction::Start { port } => {
+                    loops.gdb.start(gdb_target.clone(), port).await.map(|_| ())
+                }
+                GdbAction::Stop => loops.gdb.stop(&gdb_target).await,
+                GdbAction::Status => loops.gdb.status(&gdb_target).map(|_| ()),
+            };
+            let mut update = lock(&loops.published);
+            if gdb_target.current(&loops.host) && target.resolve(&update.sessions).is_some() {
+                match result {
+                    Ok(()) => {
+                        update.gdb_feedback.remove(&target);
+                    }
+                    Err(error) => {
+                        let feedback = GdbFeedback::Failed {
+                            kind: error.kind(),
+                            message: error.to_string(),
+                        };
+                        update.gdb_feedback.insert(target, feedback);
+                    }
+                }
+            }
+        });
     }
 
     fn start_debug(&self, target: SessionTarget, panel: Panel, command: DebugCommand) {
@@ -1280,7 +1389,7 @@ impl Loops {
                 host.run(&session, actor).await?;
             }
             Command::Select(_) | Command::Inspect(_) => {}
-            Command::DebugAt { .. } | Command::CancelDebug(_) => {
+            Command::DebugAt { .. } | Command::CancelDebug(_) | Command::Gdb { .. } => {
                 unreachable!("dispatched by drain_commands")
             }
             Command::OpenTrace { path } => {
@@ -1323,7 +1432,7 @@ impl Loops {
     }
 
     async fn serve_mcp(self) {
-        let server = LotusServer::shared(self.host.clone(), Frontend::Windowed, BTreeMap::new());
+        let server = windowed_mcp(self.gdb.clone());
         let link = match server.serve(rmcp::transport::stdio()).await {
             Ok(service) => {
                 lock(&self.published).mcp = McpLink::Attached;
@@ -1337,6 +1446,10 @@ impl Loops {
         };
         lock(&self.published).mcp = link;
     }
+}
+
+fn windowed_mcp(gdb: Arc<lotus_gdb::Manager>) -> LotusServer {
+    LotusServer::with_gdb(gdb, Frontend::Windowed, BTreeMap::new())
 }
 
 /// Published state is plain data replaced whole; recover rather than cascade.

@@ -8,7 +8,15 @@ use lotus_protocol::{
 };
 use lotus_session::supervisor::Supervisor;
 use serde_json::Value;
-use std::{collections::BTreeMap, io, net::SocketAddr, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    io,
+    net::SocketAddr,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -20,7 +28,8 @@ pub struct Server {
     pub address: SocketAddr,
     shutdown: tokio::sync::watch::Sender<bool>,
     done: tokio::sync::watch::Receiver<Option<Result<(), Failure>>>,
-    leased: Arc<std::sync::atomic::AtomicBool>,
+    leased: Arc<AtomicBool>,
+    binding: Arc<Binding>,
 }
 
 #[derive(Clone)]
@@ -35,6 +44,8 @@ impl Server {
     async fn start_at(host: Arc<Supervisor>, target: Target, port: u16) -> io::Result<Self> {
         host.require_control()?;
         target.check(&host)?;
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
+        let address = listener.local_addr()?;
         // The current workers do not advertise RSP separately. Probe the
         // operation that distinguishes CITnLO from the stock backend.
         if let Err(error) = host
@@ -56,15 +67,18 @@ impl Server {
                 error
             });
         }
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
-        let address = listener.local_addr()?;
         target.check(&host)?;
         let (shutdown, stopping) = tokio::sync::watch::channel(false);
         let (finished, done) = tokio::sync::watch::channel(None);
-        let leased = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let leased = Arc::new(AtomicBool::new(false));
+        let binding = Arc::new(Binding {
+            session: target.session,
+            created_unix_ms: target.created_unix_ms,
+            epoch: AtomicU64::new(target.epoch),
+        });
         let lifetime = Lifetime {
             host,
-            target,
+            binding: binding.clone(),
             stopping,
         };
         let connection_leased = leased.clone();
@@ -79,6 +93,7 @@ impl Server {
             shutdown,
             done,
             leased,
+            binding,
         })
     }
 
@@ -110,7 +125,12 @@ impl Server {
     }
 
     fn leased(&self) -> bool {
-        self.leased.load(std::sync::atomic::Ordering::Acquire)
+        self.leased.load(Ordering::Acquire)
+    }
+
+    fn matches(&self, target: &Target) -> bool {
+        self.binding.session == target.session
+            && self.binding.revision() == (target.created_unix_ms, target.epoch)
     }
 }
 
@@ -146,44 +166,69 @@ impl Target {
     }
 }
 
+struct Binding {
+    session: String,
+    created_unix_ms: u64,
+    epoch: AtomicU64,
+}
+
+impl Binding {
+    fn revision(&self) -> (u64, u64) {
+        (self.created_unix_ms, self.epoch.load(Ordering::Acquire))
+    }
+}
+
 #[derive(Clone)]
 struct Lifetime {
     host: Arc<Supervisor>,
-    target: Target,
+    binding: Arc<Binding>,
     stopping: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Lifetime {
+    fn current(&self) -> bool {
+        self.host
+            .debug_target_current(&self.binding.session, self.binding.revision())
+    }
+
     async fn ended(&mut self) {
         let mut poll = tokio::time::interval(std::time::Duration::from_millis(100));
         loop {
             tokio::select! {
                 _ = self.stopping.wait_for(|stopping| *stopping) => return,
-                _ = poll.tick() => {
-                    if !self.target.current(&self.host) {
-                        return;
-                    }
-                }
+                _ = poll.tick() => {}
+            }
+            if !self.current() {
+                return;
             }
         }
     }
 
     async fn debug(&self, command: D, owner: &str) -> io::Result<Value> {
-        self.host
+        let result = self
+            .host
             .debug_as_at(
-                &self.target.session,
-                (self.target.created_unix_ms, self.target.epoch),
+                &self.binding.session,
+                self.binding.revision(),
                 &command,
                 owner,
             )
-            .await
+            .await?;
+        // Native rewind moves the guest to a new epoch as part of this
+        // client's own lease-protected operation. Other epoch changes retire
+        // the listener and never update its binding.
+        if matches!(command, D::ReverseStep { .. } | D::ReverseContinue) {
+            let epoch = result["epoch"].as_u64().ok_or_else(bad)?;
+            self.binding.epoch.store(epoch, Ordering::Release);
+        }
+        Ok(result)
     }
 }
 
 async fn listen(
     listener: TcpListener,
     mut lifetime: Lifetime,
-    leased: Arc<std::sync::atomic::AtomicBool>,
+    leased: Arc<AtomicBool>,
 ) -> io::Result<()> {
     loop {
         let (socket, _) = tokio::select! {
@@ -204,7 +249,7 @@ async fn listen(
         {
             continue;
         }
-        leased.store(true, std::sync::atomic::Ordering::Release);
+        leased.store(true, Ordering::Release);
         let mut connection = Connection {
             socket,
             lifetime: lifetime.clone(),
@@ -217,7 +262,7 @@ async fn listen(
         };
         let detach = connection.serve().await.ok().flatten();
         let cleanup = connection.cleanup(detach.is_some()).await;
-        leased.store(false, std::sync::atomic::Ordering::Release);
+        leased.store(false, Ordering::Release);
         if let Some(reply) = detach {
             let _ = connection
                 .write(if cleanup.is_ok() { &reply } else { b"E01" })
@@ -241,7 +286,7 @@ struct Connection {
 impl Connection {
     async fn cleanup(&mut self, resume: bool) -> io::Result<()> {
         let mut result = Ok(());
-        if self.lifetime.target.current(&self.lifetime.host) {
+        if self.lifetime.current() {
             result = self.debug(D::Pause).await.map(|_| ());
             for id in self.breakpoints.values().copied() {
                 result = result.and(self.debug(D::BreakpointRemove { id }).await.map(|_| ()));
@@ -259,12 +304,12 @@ impl Connection {
             .lifetime
             .host
             .release_debug_lease_at(
-                &self.lifetime.target.session,
-                self.lifetime.target.created_unix_ms,
+                &self.lifetime.binding.session,
+                self.lifetime.binding.created_unix_ms,
                 &self.owner,
             )
             .await;
-        if self.lifetime.target.current(&self.lifetime.host) {
+        if self.lifetime.current() {
             result.and(released)
         } else {
             Ok(())
@@ -278,7 +323,9 @@ impl Connection {
     // Only interrupt network/event waits. Dropping an issued worker exchange
     // can leave replies queued in IPC ahead of the next command.
     async fn read(&mut self) -> io::Result<Vec<u8>> {
-        self.lifetime.target.check(&self.lifetime.host)?;
+        if !self.lifetime.current() {
+            return Err(disconnected());
+        }
         tokio::select! {
             biased;
             _ = self.lifetime.ended() => Err(disconnected()),
@@ -287,7 +334,9 @@ impl Connection {
     }
 
     async fn write(&mut self, reply: &[u8]) -> io::Result<()> {
-        self.lifetime.target.check(&self.lifetime.host)?;
+        if !self.lifetime.current() {
+            return Err(disconnected());
+        }
         tokio::select! {
             biased;
             _ = self.lifetime.ended() => Err(disconnected()),
@@ -658,7 +707,7 @@ impl Connection {
     async fn subscribe(&self) -> io::Result<tokio::sync::broadcast::Receiver<Value>> {
         self.lifetime
             .host
-            .subscribe(&self.lifetime.target.session)
+            .subscribe(&self.lifetime.binding.session)
             .await
     }
 

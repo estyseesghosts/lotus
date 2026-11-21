@@ -111,7 +111,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `lotus_capture` | external only | read | - | Raw artifacts are exposed to external clients |
 | `lotus_capture_image` | external only | read | - | Inline images are an MCP response format |
 | `lotus_debug` | debug bridge | per operation | - | See the shared command inventory |
-| `lotus_gdb` | unavailable | control to start or stop | - | Dedicated lifecycle planned in #152 |
+| `lotus_gdb` | [GDB inspector](../crates/desktop/src/lotus_window/gdb_panel.rs) | control to start or stop | - | Shares the listener and client lease with the desktop (#152). CITnLO only. |
 | `lotus_read_memory` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | Dedicated viewer planned in #145 |
 | `lotus_registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | CPU inspector currently reads core 0 |
 

@@ -89,8 +89,10 @@ pub enum Panel {
     Result,
     #[cfg(feature = "silvestris-ui")]
     Commands,
+    #[cfg(feature = "silvestris-ui")]
+    Gdb,
 }
-const COMMAND_PANEL_COUNT: usize = cfg!(feature = "silvestris-ui") as usize;
+const SILVESTRIS_PANEL_COUNT: usize = 2 * cfg!(feature = "silvestris-ui") as usize;
 impl Panel {
     /// Stable preference IDs (handbook 19); independent of display/order/index.
     pub fn id(self) -> &'static str {
@@ -109,13 +111,15 @@ impl Panel {
             Self::Result => "result",
             #[cfg(feature = "silvestris-ui")]
             Self::Commands => "commands",
+            #[cfg(feature = "silvestris-ui")]
+            Self::Gdb => "gdb",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.id() == id)
     }
-    pub const ALL: [Self; 12 + COMMAND_PANEL_COUNT] = [
+    pub const ALL: [Self; 12 + SILVESTRIS_PANEL_COUNT] = [
         Self::Cpu,
         Self::Threads,
         Self::Breakpoints,
@@ -130,11 +134,13 @@ impl Panel {
         Self::Result,
         #[cfg(feature = "silvestris-ui")]
         Self::Commands,
+        #[cfg(feature = "silvestris-ui")]
+        Self::Gdb,
     ];
     /// Order of the inspector's view pop-up: grouped as `group` lists them.
     /// Twelve views exceed a tab view's 2 to about 6 tabs, so the panel uses
     /// a pop-up menu at its top instead (HIG pp. 338, 341).
-    pub const MENU: [Self; 12 + COMMAND_PANEL_COUNT] = [
+    pub const MENU: [Self; 12 + SILVESTRIS_PANEL_COUNT] = [
         Self::Cpu,
         Self::Threads,
         Self::Breakpoints,
@@ -149,6 +155,8 @@ impl Panel {
         Self::Result,
         #[cfg(feature = "silvestris-ui")]
         Self::Commands,
+        #[cfg(feature = "silvestris-ui")]
+        Self::Gdb,
     ];
     pub fn at(index: usize) -> Self {
         Self::ALL.get(index).copied().unwrap_or(Self::Cpu)
@@ -169,6 +177,8 @@ impl Panel {
             Self::Result => "Result",
             #[cfg(feature = "silvestris-ui")]
             Self::Commands => "Commands",
+            #[cfg(feature = "silvestris-ui")]
+            Self::Gdb => "GDB",
         }
     }
     /// Destinations on the inspector rail, most used first; Ctrl+1..7 select them.
@@ -183,13 +193,15 @@ impl Panel {
         Self::States,
     ];
     /// The rest, behind the rail's overflow menu, grouped by `group`.
-    pub const OVERFLOW: [Self; 5 + COMMAND_PANEL_COUNT] = [
+    pub const OVERFLOW: [Self; 5 + SILVESTRIS_PANEL_COUNT] = [
         Self::Ipc,
         Self::Timeline,
         Self::Audio,
         Self::Settings,
         #[cfg(feature = "silvestris-ui")]
         Self::Commands,
+        #[cfg(feature = "silvestris-ui")]
+        Self::Gdb,
         Self::Result,
     ];
     pub fn group(self) -> &'static str {
@@ -200,7 +212,7 @@ impl Panel {
             Self::Logs | Self::Ipc | Self::Timeline => "TRACE",
             Self::States | Self::Settings | Self::Result => "SESSION",
             #[cfg(feature = "silvestris-ui")]
-            Self::Commands => "SESSION",
+            Self::Commands | Self::Gdb => "SESSION",
         }
     }
     pub fn icon(self) -> crate::icons::Icon {
@@ -220,6 +232,8 @@ impl Panel {
             Self::Result => Icon::Result,
             #[cfg(feature = "silvestris-ui")]
             Self::Commands => Icon::Result,
+            #[cfg(feature = "silvestris-ui")]
+            Self::Gdb => Icon::Breakpoints,
         }
     }
     /// Next or previous panel in rail-then-overflow order (Ctrl+] / Ctrl+[).
@@ -237,7 +251,7 @@ impl Panel {
     /// the view, the session or the paused frame changes.
     pub fn live(self) -> bool {
         #[cfg(feature = "silvestris-ui")]
-        if self == Self::Commands {
+        if matches!(self, Self::Commands | Self::Gdb) {
             return false;
         }
         !matches!(self, Self::Settings | Self::Memory | Self::Result)
@@ -265,7 +279,7 @@ impl Panel {
             Self::States => D::States,
             Self::Result => return None,
             #[cfg(feature = "silvestris-ui")]
-            Self::Commands => return None,
+            Self::Commands | Self::Gdb => return None,
         })
     }
 }

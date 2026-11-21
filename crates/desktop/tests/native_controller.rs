@@ -9,7 +9,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use lotus_desktop::desktop_controller::{Command, DesktopController, McpMode, Update};
-use lotus_mcp::server::{Frontend, LotusServer};
 use lotus_mcp::tool_arguments::{AdvanceArgs, SessionArgs};
 use lotus_protocol::envelope::SessionUuid;
 use lotus_session::supervisor::{HostConfig, SessionKind};
@@ -113,11 +112,7 @@ fn controller_runs_primary_and_secondary_sessions_shared_with_mcp() {
     });
 
     // MCP over the same supervisor sees both and drives the secondary.
-    let server = LotusServer::shared(
-        controller.host().clone(),
-        Frontend::Windowed,
-        BTreeMap::new(),
-    );
+    let server = controller.mcp_server();
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
     runtime.block_on(async {
         let status = server.lotus_status().await;

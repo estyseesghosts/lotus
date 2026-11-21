@@ -52,6 +52,8 @@ use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 #[cfg(feature = "silvestris-ui")]
 mod command_palette;
 #[cfg(feature = "silvestris-ui")]
+mod gdb_panel;
+#[cfg(feature = "silvestris-ui")]
 mod shared_commands;
 #[cfg(feature = "silvestris-ui")]
 mod shared_navigation;
@@ -197,6 +199,8 @@ pub struct LotusWindow {
     shared_commands: shared_commands::SharedCommands,
     #[cfg(feature = "silvestris-ui")]
     command_palettes: BTreeMap<SessionTarget, command_palette::CommandPalette>,
+    #[cfg(feature = "silvestris-ui")]
+    gdb_panel: gdb_panel::GdbPanel,
     #[cfg(feature = "silvestris-ui")]
     navigation: crate::navigation::Navigation,
     #[cfg(feature = "silvestris-ui")]
@@ -374,6 +378,8 @@ impl LotusWindow {
             shared_commands,
             #[cfg(feature = "silvestris-ui")]
             command_palettes: BTreeMap::new(),
+            #[cfg(feature = "silvestris-ui")]
+            gdb_panel: gdb_panel::GdbPanel::default(),
             #[cfg(feature = "silvestris-ui")]
             navigation: crate::navigation::Navigation::default(),
             #[cfg(feature = "silvestris-ui")]
@@ -689,6 +695,8 @@ impl LotusWindow {
             self.waiting.clone_from(&update.waiting);
             self.artifacts.clone_from(&update.artifacts);
             self.registers = update.registers.clone();
+            #[cfg(feature = "silvestris-ui")]
+            self.gdb_panel.refresh(&update);
 
             self.workspace.clone_from(&update.workspace);
             if update.inspected != self.inspected {
@@ -4082,6 +4090,10 @@ impl LotusWindow {
                     .and_then(|target| self.render_command_palette(target, cx)),
             );
         }
+        #[cfg(feature = "silvestris-ui")]
+        if current == Panel::Gdb {
+            panel = panel.child(self.render_gdb_panel(target.as_ref(), cx));
+        }
         if !commands.is_empty() {
             let mut actions = div()
                 .flex()
@@ -4245,7 +4257,9 @@ impl LotusWindow {
         }
         let status = match snapshot {
             #[cfg(feature = "silvestris-ui")]
-            None if current == Panel::Commands => return panel.children(utility),
+            None if matches!(current, Panel::Commands | Panel::Gdb) => {
+                return panel.children(utility);
+            }
             None if current == Panel::Result => {
                 Some("No command or imported trace to display".into())
             }
@@ -4680,6 +4694,8 @@ impl Render for LotusWindow {
         self.sync_shared_commands(_window, cx);
         #[cfg(feature = "silvestris-ui")]
         self.ensure_command_palette(_window, cx);
+        #[cfg(feature = "silvestris-ui")]
+        self.ensure_gdb_panel(_window, cx);
         #[cfg(feature = "silvestris-ui")]
         let content = self.render_shared_window(_window, cx);
         #[cfg(feature = "silvestris-ui")]
