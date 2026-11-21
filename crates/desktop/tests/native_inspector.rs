@@ -1,9 +1,12 @@
 //! Inspector/controller acceptance; no GUI input or screenshot access required.
 use lotus_desktop::{
-    desktop_controller::{Command, DesktopController, McpMode, Update},
+    desktop_controller::{Command, DebugStatus, DesktopController, McpMode, Update},
     inspection::{InspectionSelection, Panel},
 };
-use lotus_protocol::{debug::DebugCommand as D, envelope::SessionUuid};
+use lotus_protocol::{
+    debug::{DebugCommand as D, GpuCapture},
+    envelope::SessionUuid,
+};
 use lotus_session::supervisor::{HostConfig, SessionKind};
 use std::{
     collections::BTreeMap,
@@ -129,7 +132,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         controller
             .commands
             .send(Command::DebugAt {
-                target,
+                target: target.clone(),
                 panel: Panel::Result,
                 command: D::ReadMemory {
                     address: pc,
@@ -138,13 +141,82 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             })
             .unwrap();
         wait(&controller, |update| {
-            use lotus_desktop::desktop_controller::DebugStatus;
             update.debug_result(Panel::Result).is_some_and(|request| {
                 matches!(&request.status, DebugStatus::Finished { view, .. }
                     if view.rows.iter().any(|r| r.key == ".bytes[15]"))
             })
         });
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::first_page(Panel::Gpu);
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target: target.clone(),
+                panel: Panel::Gpu,
+                command: D::GpuConfigure {
+                    enabled: true,
+                    stop_events: vec![],
+                    capture: Some(GpuCapture::Draws),
+                    draw_range: None,
+                    max_draws: Some(8),
+                    resources: None,
+                },
+            })
+            .unwrap();
+        wait(&controller, |update| {
+            update
+                .debug_result(Panel::Gpu)
+                .is_some_and(|request| matches!(&request.status, DebugStatus::Finished { .. }))
+        });
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target: target.clone(),
+                panel: Panel::Gpu,
+                command: D::Advance { frames: 30 },
+            })
+            .unwrap();
+        wait(&controller, |update| {
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.panel == Panel::Gpu
+                    && snapshot.view.rows.iter().any(|row| row.action.is_some())
+            })
+        });
+        let command = {
+            let update = controller.latest.lock().unwrap();
+            update
+                .inspection
+                .as_ref()
+                .unwrap()
+                .view
+                .rows
+                .iter()
+                .find_map(|row| row.action.clone())
+                .unwrap()
+        };
+        assert!(matches!(command, D::GpuDraw { .. }));
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target,
+                panel: Panel::Gpu,
+                command,
+            })
+            .unwrap();
+        wait(&controller, |update| {
+            update.debug_result(Panel::Gpu).is_some_and(|request| {
+                matches!(request.command.as_ref(), D::GpuDraw { .. })
+                    && matches!(&request.status, DebugStatus::Finished { view, .. }
+                        if view.rows.iter().any(|row| row.key.starts_with(".capture.")))
+            })
+        });
+        assert_eq!(
+            controller.inspection_selection.lock().unwrap().panel,
+            Panel::Gpu
+        );
         controller.inspector.store(false, Ordering::Release);
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::first_page(Panel::Result);
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("large.jsonl");
         std::fs::write(

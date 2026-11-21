@@ -105,10 +105,12 @@ same typed API as CLI/MCP. Execution controls share debug leases. Capture/trace
 buttons explicitly enable instrumentation; GPU replay requires state restore or
 reset before CPU resume.
 
-Inspector data is fetched on the background runtime only while open. Visible
-panels refresh at most twice per second; imported/result views remain fixed.
+Inspector data is fetched on the background runtime only while open. Live
+panels refresh on a half-second cadence; imported/result views remain fixed.
 JSONL imports parse on a blocking worker, bounded by 64 MiB input, 100000 rows
-and 32 MiB retained text. GPUI `uniform_list` renders the visible range only.
+and 32 MiB retained text. Live event lists retain at most 128 rows per request.
+Draw lists retain at most 4096 headers per reply. The pinned CITnLO worker
+retains eight draws. The virtualized table renders the visible range only.
 Snapshot rows restore named states; frozen texture rows decode to bounded image
 previews. Selecting successive draws produces bounded structural state diffs.
 
@@ -116,9 +118,11 @@ Inspector actions keep their result and error in the panel where they started.
 Use **Show panel** to return to its live data and **Show result** to reopen the
 details. Clipboard commands and imported traces open Result. The inspector remembers
 each live session's page separately for Settings, IPC, Logs and Timeline.
-Paging and retained results survive a panel change, a split tile switch and a
-paused frame advance. Reset, reload, worker/backend replacement or session removal
-expires that guest's page history, results and images. Closing the window
+The GPU panel opens draw details in place and highlights the selected draw
+when you return to the list, while that draw is still retained by the worker.
+Paging, draw selection and retained results survive a panel change, a split tile
+switch and a paused frame advance. Reset, reload, worker/backend replacement or
+session removal expires that guest's selections, results and images. Closing the window
 clears this state. The saved inspector panel is a window preference.
 
 Polling replies carry the session identity, guest epoch, panel and requested

@@ -741,9 +741,14 @@ mod tests {
                 assert_eq!(view.inspection_offset(Some(&b), Panel::Logs), 0);
                 view.choose_inspection(Panel::Timeline);
                 assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), cursor);
+                view.choose_inspection(Panel::Gpu);
+                view.debug_command(&Some(b.clone()), Panel::Gpu, D::GpuDraw { draw: 19 });
+                assert_eq!(view.inspection_panel, Panel::Gpu);
+                view.choose_inspection(Panel::Timeline);
                 view.toggle_tile_inspector("a".into());
                 view.inspected = "a".into();
                 let a = view.inspection_target().unwrap();
+                assert!(view.inspector_state.panel(&a, Panel::Gpu).is_none());
                 assert_eq!(view.inspection_offset(Some(&a), Panel::Timeline), 0);
                 view.change_inspection_page(&a, Panel::Timeline, 0, Some(128));
                 view.change_inspection_page(&b, Panel::Timeline, cursor, None);
@@ -753,6 +758,13 @@ mod tests {
                 view.sessions[1].telemetry.frames += 1;
                 view.inspector_state.retain(&view.sessions);
                 assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), cursor);
+                assert_eq!(
+                    view.inspector_state
+                        .panel(&b, Panel::Gpu)
+                        .unwrap()
+                        .selected_draw,
+                    Some(19)
+                );
                 view.choose_inspection(Panel::Cpu);
                 let snapshot = InspectionSnapshot {
                     target: target.clone(),
@@ -795,6 +807,8 @@ mod tests {
                 view.retain_current_inspection(cx);
                 view.inspector_state.retain(&view.sessions);
                 let new_b = view.inspection_target().unwrap();
+                assert!(view.inspector_state.panel(&b, Panel::Gpu).is_none());
+                assert!(view.inspector_state.panel(&new_b, Panel::Gpu).is_none());
                 assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), 0);
                 assert_eq!(view.inspection_offset(Some(&new_b), Panel::Timeline), 0);
                 assert_eq!(view.inspection_offset(Some(&a), Panel::Timeline), 128);

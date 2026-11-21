@@ -277,6 +277,7 @@ impl InspectionSelection {
 pub(crate) struct PanelState {
     offset: u64,
     back: VecDeque<u64>,
+    pub(crate) selected_draw: Option<u64>,
 }
 
 impl PanelState {
@@ -336,6 +337,9 @@ pub struct Inspection {
 }
 const ROW_CAP: usize = 100_000;
 const TEXT_BUDGET: usize = 32 << 20;
+const SNAPSHOT_ROW_CAP: usize = 8192;
+const EVENT_PAGE_SIZE: usize = 128;
+const DRAW_ROW_CAP: usize = 4096;
 fn clipped(text: &str, limit: usize) -> String {
     if text.len() <= limit {
         return text.to_owned();
@@ -345,6 +349,25 @@ fn clipped(text: &str, limit: usize) -> String {
         end -= 1;
     }
     format!("{}…", &text[..end])
+}
+
+fn json_preview(value: &Value, limit: usize) -> String {
+    // The slice writer stops serialization at the display limit, including
+    // nested data in a capture. A whole artifact need not be encoded again.
+    let mut buffer = vec![0; limit];
+    let mut remaining = buffer.as_mut_slice();
+    let truncated = serde_json::to_writer(&mut remaining, value).is_err();
+    let written = limit - remaining.len();
+    buffer.truncate(written);
+    if !truncated {
+        return String::from_utf8(buffer).expect("JSON is UTF-8");
+    }
+    if let Err(incomplete) = std::str::from_utf8(&buffer) {
+        buffer.truncate(incomplete.valid_up_to());
+    }
+    let mut preview = String::from_utf8(buffer).expect("JSON preview ends at a UTF-8 boundary");
+    preview.push('…');
+    preview
 }
 fn lane(event: &Value) -> &'static str {
     match event["kind"].as_str().unwrap_or("") {
@@ -358,6 +381,7 @@ impl Inspection {
     pub fn from_value(value: &Value, panel: Panel) -> Self {
         let mut rows = Vec::new();
         let mut budget = TEXT_BUDGET;
+        let mut omitted = 0;
         fn flatten(
             value: &Value,
             key: String,
@@ -365,19 +389,31 @@ impl Inspection {
             budget: &mut usize,
             depth: u32,
         ) {
-            if rows.len() >= 8192 || *budget < 2048 {
+            if rows.len() >= SNAPSHOT_ROW_CAP || *budget < 2048 {
                 return;
             }
             if depth < 10 {
                 match value {
                     Value::Object(map) => {
                         for (name, value) in map {
-                            flatten(value, format!("{key}.{name}"), rows, budget, depth + 1);
+                            if rows.len() >= SNAPSHOT_ROW_CAP || *budget < 2048 {
+                                break;
+                            }
+                            flatten(
+                                value,
+                                format!("{key}.{}", clipped(name, 256)),
+                                rows,
+                                budget,
+                                depth + 1,
+                            );
                         }
                         return;
                     }
                     Value::Array(values) => {
                         for (i, value) in values.iter().enumerate() {
+                            if rows.len() >= SNAPSHOT_ROW_CAP || *budget < 2048 {
+                                break;
+                            }
                             flatten(value, format!("{key}[{i}]"), rows, budget, depth + 1);
                         }
                         return;
@@ -389,7 +425,7 @@ impl Inspection {
             let text = if key.contains("registers[") || key.ends_with(".cpsr") {
                 crate::lotus_window::hex_string(value)
             } else {
-                clipped(&value.to_string(), 1024)
+                json_preview(value, 1024)
             };
             *budget -= key.len() + text.len();
             rows.push(Row {
@@ -427,12 +463,13 @@ impl Inspection {
         }
         if matches!(panel, Panel::Timeline | Panel::Logs | Panel::Ipc) {
             if let Some(events) = value["events"].as_array() {
-                for event in events {
+                for event in events.iter().take(EVENT_PAGE_SIZE) {
                     if panel == Panel::Ipc && event["kind"] != "ipc" {
                         continue;
                     }
                     rows.push(Self::event(event));
                 }
+                omitted = events.len().saturating_sub(EVENT_PAGE_SIZE) as u64;
             }
         } else if panel == Panel::Settings {
             if let Some(settings) = value["settings"].as_array() {
@@ -466,7 +503,7 @@ impl Inspection {
             }
         } else if panel == Panel::Gpu {
             if let Some(draws) = value["draws"].as_array() {
-                for draw in draws {
+                for draw in draws.iter().take(DRAW_ROW_CAP) {
                     rows.push(Row {
                         lane: "GPU",
                         key: format!("draw {}", draw["draw"]),
@@ -477,10 +514,11 @@ impl Inspection {
                         action: draw["draw"].as_u64().map(|draw| D::GpuDraw { draw }),
                     });
                 }
+                omitted = draws.len().saturating_sub(DRAW_ROW_CAP) as u64;
             }
         } else {
             if let Some(resources) = value["capture"]["resources"].as_array() {
-                for resource in resources {
+                for resource in resources.iter().take(SNAPSHOT_ROW_CAP) {
                     if let (Some(address), Some(width), Some(height), Some(format)) = (
                         resource["address"].as_u64(),
                         resource["width"].as_u64(),
@@ -523,7 +561,11 @@ impl Inspection {
                 value["rasterizer_cache_flush"]
             ),
             next: value["next"].as_u64(),
-            lost: value["lost_total"].as_u64().unwrap_or(0),
+            lost: value["lost_total"]
+                .as_u64()
+                .or_else(|| value["lost_draws"].as_u64())
+                .unwrap_or(0)
+                .saturating_add(omitted),
             error: None,
         }
     }
@@ -570,8 +612,8 @@ impl Inspection {
                     if !same {
                         changes.push(format!(
                             "{key}[{i}]: {} -> {}",
-                            clipped(&a.get(i).unwrap_or(&Value::Null).to_string(), 256),
-                            clipped(&b.get(i).unwrap_or(&Value::Null).to_string(), 256)
+                            json_preview(a.get(i).unwrap_or(&Value::Null), 256),
+                            json_preview(b.get(i).unwrap_or(&Value::Null), 256)
                         ));
                         if changes.len() == 128 {
                             return changes;
@@ -585,8 +627,12 @@ impl Inspection {
     fn event(event: &Value) -> Row {
         Row {
             lane: lane(event),
-            key: format!("#{} · tick {}", event["sequence"], event["guest_ticks"]),
-            value: clipped(&event.to_string(), 1024),
+            key: format!(
+                "#{} · tick {}",
+                json_preview(&event["sequence"], 24),
+                json_preview(&event["guest_ticks"], 24)
+            ),
+            value: json_preview(event, 1024),
             action: None,
         }
     }
@@ -675,6 +721,28 @@ mod tests {
         assert_eq!(trace.rows.len(), 100000);
         assert_eq!(trace.lost, 1);
         assert_eq!(trace.rows[0].lane, "kernel");
+    }
+    #[test]
+    fn live_inspections_bound_retained_rows_and_json_previews() {
+        let draw = serde_json::json!({"draw": 42, "command": 11, "vertices": 8});
+        let gpu = Inspection::from_value(
+            &serde_json::json!({"draws": vec![draw; DRAW_ROW_CAP + 1], "lost_draws": 3}),
+            Panel::Gpu,
+        );
+        assert_eq!(gpu.rows.len(), DRAW_ROW_CAP);
+        assert_eq!(gpu.lost, 4);
+        assert!(matches!(gpu.rows[0].action, Some(D::GpuDraw { draw: 42 })));
+
+        let event = serde_json::json!({"sequence": u64::from(u32::MAX) + 1});
+        let events = Inspection::from_value(
+            &serde_json::json!({"events": vec![event; 1024], "next": u64::from(u32::MAX) + 1}),
+            Panel::Timeline,
+        );
+        assert_eq!(events.rows.len(), EVENT_PAGE_SIZE);
+        assert_eq!(events.lost, (1024 - EVENT_PAGE_SIZE) as u64);
+        assert_eq!(events.next, Some(u64::from(u32::MAX) + 1));
+        assert_eq!(json_preview(&serde_json::json!("αβ"), 4), "\"α…");
+        assert_eq!(json_preview(&serde_json::json!("αβ"), 6), "\"αβ\"");
     }
     #[test]
     fn settings_only_offer_typed_boolean_edits() {

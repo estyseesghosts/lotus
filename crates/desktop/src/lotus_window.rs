@@ -231,7 +231,7 @@ pub struct LotusWindow {
     registers: Option<(SessionTarget, Value)>,
     inspection: Option<InspectionSnapshot>,
     debug_request: Option<DebugRequest>,
-    hidden_debug_details: BTreeSet<u64>,
+    toggled_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
     inspector_state: InspectorState,
     surface_image: Option<Arc<RenderImage>>,
@@ -396,7 +396,7 @@ impl LotusWindow {
             inspection: None,
             inspector_state: InspectorState::default(),
             debug_request: None,
-            hidden_debug_details: BTreeSet::new(),
+            toggled_debug_details: BTreeSet::new(),
             inspection_panel: {
                 #[cfg(feature = "silvestris-ui")]
                 {
@@ -729,11 +729,11 @@ impl LotusWindow {
             } else {
                 BTreeMap::new()
             };
-            self.hidden_debug_details
+            self.toggled_debug_details
                 .retain(|id| update.debug_requests().any(|request| request.id == *id));
             self.debug_request = update.debug_result(self.inspection_panel).cloned();
             let details = self.debug_request.as_ref().and_then(|request| {
-                if self.hidden_debug_details.contains(&request.id) {
+                if !self.debug_details_visible(request) {
                     return None;
                 }
                 let DebugStatus::Finished { view, image } = &request.status else {
@@ -3515,6 +3515,14 @@ impl LotusWindow {
         }
     }
 
+    fn debug_details_visible(&self, request: &DebugRequest) -> bool {
+        let show_by_default = !matches!(
+            (request.panel, request.command.as_ref()),
+            (Panel::Gpu, D::GpuConfigure { .. })
+        );
+        show_by_default != self.toggled_debug_details.contains(&request.id)
+    }
+
     fn choose_inspection(&mut self, panel: Panel) {
         self.inspection_panel = panel;
         #[cfg(feature = "silvestris-ui")]
@@ -3627,6 +3635,9 @@ impl LotusWindow {
         }) else {
             return;
         };
+        if let (Panel::Gpu, D::GpuDraw { draw }) = (panel, &command) {
+            self.inspector_state.panel_mut(target, panel).selected_draw = Some(*draw);
+        }
         let target = target.clone();
         if panel == Panel::Result {
             self.choose_inspection(Panel::Result);
@@ -4133,16 +4144,16 @@ impl LotusWindow {
             }
             if current != Panel::Result && matches!(request.status, DebugStatus::Finished { .. }) {
                 let id = request.id;
-                let label = if self.hidden_debug_details.contains(&id) {
-                    "Show result"
-                } else {
+                let label = if self.debug_details_visible(request) {
                     "Show panel"
+                } else {
+                    "Show result"
                 };
                 status = status.child(
                     small_button(theme, "debug-details", label, Tone::Plain, true).on_click(
                         cx.listener(move |view, _, _, cx| {
-                            if !view.hidden_debug_details.remove(&id) {
-                                view.hidden_debug_details.insert(id);
+                            if !view.toggled_debug_details.remove(&id) {
+                                view.toggled_debug_details.insert(id);
                             }
                             cx.notify();
                         }),
@@ -4278,6 +4289,10 @@ impl LotusWindow {
         let rows = view.rows.clone();
         let weak = cx.entity().downgrade();
         let control = self.control;
+        let selected_draw = target
+            .as_ref()
+            .and_then(|target| self.inspector_state.panel(target, current))
+            .and_then(|panel| panel.selected_draw);
         #[cfg(not(feature = "silvestris-ui"))]
         use gpui::uniform_list as inspection_list;
         #[cfg(feature = "silvestris-ui")]
@@ -4294,6 +4309,8 @@ impl LotusWindow {
                                 .action
                                 .clone()
                                 .filter(|command| control || !command.mutates());
+                            let selected = matches!(&action, Some(D::GpuDraw { draw })
+                                if selected_draw == Some(*draw));
                             let tooltip = format!("{}\n{}", row.key, row.value);
                             #[cfg(feature = "silvestris-ui")]
                             let line = silvestris::controls::table::code_row(
@@ -4316,31 +4333,38 @@ impl LotusWindow {
                                     .text_xs()
                             };
                             with_tooltip(
-                                line.when(show_lane, |line| {
-                                    line.child(
+                                line.when(selected, |line| line.bg(theme.surface_active))
+                                    .when(show_lane, |line| {
+                                        line.child(
+                                            div()
+                                                .w(px(48.0))
+                                                .flex_none()
+                                                .text_color(theme.text_muted)
+                                                .child(row.lane),
+                                        )
+                                    })
+                                    .child(
                                         div()
-                                            .w(px(48.0))
+                                            .w(px(key_width))
                                             .flex_none()
-                                            .text_color(theme.text_muted)
-                                            .child(row.lane),
+                                            .truncate()
+                                            .child(row.key.clone()),
                                     )
-                                })
-                                .child(
-                                    div()
-                                        .w(px(key_width))
-                                        .flex_none()
-                                        .truncate()
-                                        .child(row.key.clone()),
-                                )
-                                .child(
-                                    div().flex_1().min_w_0().truncate().child(row.value.clone()),
-                                ),
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(row.value.clone()),
+                                    ),
                                 tooltip,
                             )
                             .when_some(action, |element, command| {
                                 element
                                     .cursor_pointer()
-                                    .hover(|style| style.bg(theme.surface_hover))
+                                    .when(!selected, |line| {
+                                        line.hover(|style| style.bg(theme.surface_hover))
+                                    })
                                     .on_click(move |_, _, cx| {
                                         let _ = weak.update(cx, |view, _| {
                                             view.debug_command(&target, current, command.clone())
