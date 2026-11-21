@@ -86,6 +86,90 @@ Guest repeatability (verified emulator, cause not found): `guest_ticks` is ident
   AZAHAR built with both value-initialization fixes (`794b84ca3`), t03 Vulkan, 5 trials (`runs/bench-async29-integration-794b`; before: `runs/bench-async29-integration`, `b4b9f0c`): deterministic async ends on 1 screen out of 5, as before; host async on 3 (before 4). Guest ticks were identical within each config both times, so the host-async spread is in what the guest drew, consistent with the async wake timing above.
   Decision: CITnLO's `DefaultProfile` turns `deterministic_async_operations` on; `settings_set` before `load` turns it off for a session (it is a boot setting). AZAHAR keeps the upstream default under ADR-010. **Proposed ADR-012** (owner decision): make it the default for both workers, so AZAHAR control runs in matrix comparisons are repeatable too; the cost above is the evidence. Not covered: games whose FS or AM operations take long on the host (large reads, CIA installs), where deterministic async stalls the emulation thread for the host duration instead of overlapping it.
 
+### #22 Parallel worker throughput under matched settings
+
+On Windows 11 with a Ryzen 5 3600, 40 GiB RAM and Radeon RX 9060 XT
+(32.0.32029.2010), the release MCP host ran t03 on CITnLO `a3994c1` and
+AZAHAR `5ecbd98`. Both workers were WinLibs UCRT GNU Release builds with
+Vulkan and software enabled and Qt, SDL2, OpenGL, Libretro and LTO disabled.
+Settings were Old 3DS, deterministic async HLE, fixed guest clock, no speed
+limiter and fresh shader storage. Each count had one six-second window after
+three seconds of warm-up. The harness measured 2.4% host CPU load before the
+sweep and 7.0% after (`runs/bp-matched-goal-01/report.json`, verified emulator).
+
+| Running workers | CITnLO aggregate fps | AZAHAR aggregate fps | Slowest CITnLO / AZAHAR worker fps |
+| --- | ---: | ---: | ---: |
+| 1 | 1834 | 1865 | 1834 / 1865 |
+| 2 | 3458 | 3565 | 1714 / 1765 |
+| 4 | 5204 | 5393 | 1299 / 1328 |
+| 8 | 7790 | 6777 | 953 / 835 |
+| 16 | 9703 | 8932 | 382 / 481 |
+
+The direct `bench.py` reference gave 1946 and 1812 fps at one worker. It
+advances a fixed 300 guest frames without the supervisor's free-running
+playback and probes. At four workers, the highest register RPC p95 across
+workers was 1.1 ms on CITnLO and 0.9 ms on AZAHAR. At 16 workers it was 17.3
+and 7.6 ms. The slowest workers delivered substantially less throughput at
+16 even though total throughput increased. All ten trials shut down cleanly,
+in at most 1.55 s. These single-window results describe scaling on this host.
+
+`bench_parallel.py` retains raw command, input, optional capture and status
+RPC times. It validates the actual worker identity and requested profile
+against the live session manifest, and reports an invalid trial if a
+running session stops advancing, leaves playback, changes epoch or reports
+failed probes. It checks that the worker accepted the capture mode, rewind
+options and event categories before timing them. The direct reference gets
+the same fixed clock, HLE mode and speed limit at boot. Windows process I/O
+includes IPC and device traffic. Poll and RPC latency are host measurements.
+Per-frame p95 and renderer-wide GPU wait time are unavailable from this
+interface.
+
+The Windows two-worker CI smoke exercises the screenshot resource-link
+response. The separate stall smoke suspends one of its two mock workers.
+Native checks also passed with t03 and the owned debugger fixture running
+side by side on New 3DS software (`runs/bp-software-mixed-goal-01`) and
+with four Vulkan CITnLO workers capturing screenshots while one ran rewind
+and three ran SVC/IPC tracing (`runs/bp-contention-goal-02`). The latter
+completed all 20 probe rounds, recorded 50 checkpoints and reported a
+register RPC p95 of 83 ms on the rewind worker and 0.94–1.25 ms on its
+siblings. Every worker shut down cleanly (verified emulator).
+
+### #24 PICA event history versus draw snapshots
+
+The same Windows host ran CITnLO `a3994c1` with t03, Old 3DS, Vulkan,
+deterministic async HLE and no limiter. Each cell is aggregate guest fps in
+one four-second window after one second of warm-up
+(`runs/bp-graphics-goal-03/report.json`, verified emulator).
+
+| Capture configuration | 1 worker | 2 workers | 4 workers |
+| --- | ---: | ---: | ---: |
+| Off | 1821 | 3436 | 5111 |
+| Batched counters | 1851 | 3590 | 5532 |
+| Draw metadata, PICA history enabled | 90 | 197 | 389 |
+| Draw metadata, PICA history disabled | 1441 | 2739 | 4691 |
+| Eight snapshots per worker, PICA history enabled | 100 | 193 | 383 |
+| Full snapshots, PICA history enabled | 127 | 172 | 391 |
+| Full snapshots, PICA history disabled | 1008 | 2052 | 3333 |
+
+With four workers, metadata-only capture with PICA history evicted 4.21
+million events from the bounded event history and produced zero snapshots.
+Disabling PICA history kept the per-command path and draw metadata active
+and recorded zero event-history evictions. The eight-snapshot mode took 32
+snapshots total, then counted 47,148 budget skips. The sweep retrieved no
+draw artifacts. The `gpu_events_no_pica_history` and
+`gpu_full_no_pica_history` modes leave the other history categories enabled.
+The throughput change points to event construction and retention as the
+first place to reduce steady-state overhead (#33). The no-history
+comparison still shows a cost for full snapshots (#24).
+
+`--first-config pica_events --gpu-metrics` ran one full-capture worker with
+three passive workers (`runs/bp-graphics-mixed-goal-02/report.json`,
+verified emulator). The capture worker advanced 95 fps and the passive
+workers advanced 1,354–1,403 fps with register RPC p95 at or below 0.7 ms.
+The report keeps command latency, CPU time, I/O
+bytes, and losses per worker. Draw-export serialization, flush wait time
+and bytes copied per draw still need separate measurements.
+
 ### #4 Matched PICA command path
 
 `tools/pica_path_acceptance.py` with `--integration <AZAHAR worker>` compares

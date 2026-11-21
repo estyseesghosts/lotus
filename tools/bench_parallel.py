@@ -2,8 +2,8 @@
 
 Each trial starts a fresh frontend (`lotus-mcp`, or `lotus-desktop --mcp` with session 0 focused
 so it is live-previewed) with its own host config and storage root, creates N secondary sessions
-(ROMs assigned round-robin), applies one tools/bench.py debug configuration to every session,
-plays them all continuously and waits out a warm-up. During the measured window, once per
+(ROMs assigned round-robin), starts playback, waits out a warm-up and applies the requested
+debug configuration. During the measured window, once per
 `--probe-interval` (default 0.25 s), it times per session one worker command (`lotus_registers`,
 a safe-point exchange) and one input (`lotus_input`, which also waits for the worker), then polls
 `lotus_status`. A fixed rate keeps the probe load per session the same at every N; probing as fast
@@ -12,11 +12,11 @@ takes longer than the interval the rate drops, and the report says so (`probe_ro
 
 Recorded per session: guest fps over the window (telemetry `frames`, presented frames), command
 and input round trips (p50/p95/max), supervision poll counters (busy and late polls, lateness and
-status-exchange times, from the session's supervision task), the worker's CPU seconds, disk bytes,
+status-exchange times, from the session's supervision task), the worker's CPU seconds, I/O bytes,
 working set and private bytes (GetProcessTimes, GetProcessIoCounters, K32GetProcessMemoryInfo),
 startup time and shader seed state, and guest ticks at the end. Per trial: aggregate fps, fps
 skew (max / min), available host RAM before and after, and host time to shut the frontend down
-with all sessions still running.
+with all sessions still running. Windows process I/O totals include pipes and other device I/O.
 
 Host throughput, guest progress and correctness are kept apart: fps and CPU are host measures;
 guest ticks are reported per session but never compared, because free-running sessions are not
@@ -26,6 +26,10 @@ failed allocations per session, and per trial the host policy's `gpu_memory` (sm
 device-local headroom, budget source, pressure) before and after the window. Budgets are the
 driver's only with `VK_EXT_memory_budget`; otherwise the source reads `vma_estimate`. Not
 measured: GPU wait time, host allocation counts.
+
+`--gpu-metrics` records CITnLO's capture counters immediately before and after
+the window without retrieving draw artifacts. `--first-config` gives session 0 a
+different debugger workload, for example full draw capture beside passive workers.
 
 Host policy (lotus#23): `--workload batch` (default) has no budgets, so every session may run
 the same expensive configuration and timings see no scheduling; `--workload interactive` applies
@@ -65,6 +69,7 @@ import ctypes.wintypes as wt
 import datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import statistics
@@ -77,6 +82,7 @@ from bench_frontends import Frontend  # noqa: E402
 from desktop_shots import window_of  # noqa: E402
 
 RENDERERS = {"vulkan": 2, "software": 0}
+INIT_TIME = 946684800  # 2000-01-01 UTC, the two pinned workers' fixed-clock default.
 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SUSPEND_RESUME = 0x1000, 0x0800
 
 
@@ -135,13 +141,17 @@ def call(frontend, name, arguments):
     start = time.perf_counter()
     result = frontend.call("tools/call", {"name": name, "arguments": arguments})
     elapsed = time.perf_counter() - start
-    text = result["content"][0]["text"] if result.get("content") else ""
+    # lotus_capture returns resource links; status and debug calls return text.
+    payload = next((block["text"] for block in result.get("content", [])
+                    if block.get("type") == "text"), None)
     if result.get("isError"):
-        return elapsed, None, text
+        return elapsed, None, payload or f"{name} returned an error without text"
+    if payload is None:
+        return elapsed, None, None
     try:
-        return elapsed, json.loads(text), None
+        return elapsed, json.loads(payload), None
     except json.JSONDecodeError:
-        return elapsed, text, None
+        return elapsed, payload, None
 
 
 def tool(frontend, name, arguments):
@@ -183,11 +193,43 @@ def preview_delta(before, after, elapsed):
     return result
 
 
+def counter_delta(before, after, keys):
+    return {key: after[key] - before[key] for key in keys if key in before and key in after}
+
+
+def gpu_counters(frontend, sessions, stalled, errors):
+    snapshots = {}
+    for session in sessions:
+        sid = session["id"]
+        if sid in stalled or session["idle"]:
+            continue
+        _, reply, error = call(frontend, "lotus_debug", {
+            "session": sid, "command": {"operation": "gpu_draws"}})
+        if error:
+            errors[sid].append(f"gpu_draws: {error}")
+        elif "counters" not in reply:
+            errors[sid].append("worker does not report PICA counters")
+        else:
+            snapshots[sid] = reply
+    return snapshots
+
+
+def gpu_capture_delta(before, after):
+    if before is None or after is None:
+        return None
+    return dict(command_path=after["command_path"],
+                **counter_delta(before["counters"], after["counters"],
+                                ("command_lists", "draw_calls", "fast_path_commands")),
+                snapshots_at_start=before.get("snapshots_taken"),
+                **counter_delta(before, after, ("lost_draws", "lost_vertices", "lost_resource_versions",
+                                                "snapshots_taken", "snapshots_skipped_budget")))
+
+
 def percentiles(values):
     if not values:
         return None
     ordered = sorted(values)
-    rank = lambda q: ordered[min(len(ordered) - 1, max(0, round(q * len(ordered) + 0.5) - 1))]
+    rank = lambda q: ordered[math.ceil(q * len(ordered)) - 1]
     return dict(p50_ms=round(rank(0.5) * 1e3, 2), p95_ms=round(rank(0.95) * 1e3, 2),
                 max_ms=round(ordered[-1] * 1e3, 2), count=len(ordered))
 
@@ -198,11 +240,13 @@ def frontend_for(kind, exes, config, root):
     return Frontend(command, env, root / "mcp.jsonl")
 
 
-def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, root):
+def trial(args, exes, kind, worker, build, roms, renderer, model, config_name, count, root):
     root.mkdir(parents=True, exist_ok=False)
     # The supervisor applies the profile with settings_set, which the mock does not answer.
     profile = {} if args.smoke else dict(frame_limit=args.frame_limit, graphics_api=RENDERERS[renderer],
-                                         is_new_3ds=model == "new", init_clock=bench.INIT_CLOCK_FIXED)
+                                         is_new_3ds=model == "new", init_clock=bench.INIT_CLOCK_FIXED,
+                                         init_time=INIT_TIME,
+                                         deterministic_async_operations=True)
     config = root / "host.json"
     config.write_text(json.dumps({
         "worker": str(worker), "storage_root": str(root / "storage"), "allow_control": True,
@@ -233,19 +277,27 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                 return dict(status="create_failed", error=error, sessions_created=len(sessions),
                             gpu_memory_after=gpu_policy(frontend))
             session = reply["session"]
-            sessions.append(dict(id=session, asset=asset, create_seconds=time.perf_counter() - created_at,
-                                 idle=index >= count))
+            session_row = dict(id=session, asset=asset, create_seconds=time.perf_counter() - created_at,
+                               idle=index >= count, config=(args.first_config or config_name)
+                               if index == 0 else config_name)
+            if not args.smoke:
+                record = root / "storage" / "scratch" / session / "native-manifest.json"
+                try:
+                    manifest = json.loads(record.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as error:
+                    return dict(status="invalid", error=f"could not read worker manifest: {error}")
+                identity = manifest["identity"]
+                source = identity["source"]
+                build_source = (build["build_manifest"] or {}).get("source")
+                if identity["worker_sha256"] != build["sha256"] or (build_source and build_source != source):
+                    return dict(status="invalid", error=f"worker identity does not match the recorded build: {identity}")
+                effective = {key: manifest["settings"].get(key) for key in profile}
+                if effective != profile:
+                    return dict(status="invalid", error=f"expected profile {profile}, got {effective}")
+                session_row.update(source=source, backend=identity["backend"], profile_hash=manifest["profile_hash"])
+            sessions.append(session_row)
         if kind == "desktop" or args.focus_priority:
             tool(frontend, "lotus_focus_session", {"session": sessions[0]["id"]})
-        for session in sessions:
-            for operation, params in ([] if args.smoke else bench.CONFIGS[config_name]):
-                _, reply, error = call(frontend, "lotus_debug", {"session": session["id"],
-                                                                 "command": {"operation": operation, **params}})
-                if error:
-                    return dict(status="unsupported", error=f"{operation}: {error}")
-                for key in ("interval_frames", "compression_level", "compression_queue"):
-                    if key in params and reply.get(key) != params[key]:
-                        return dict(status="unsupported", error=f"worker does not support rewind {key}")
         for session in sessions:
             if not session["idle"]:
                 tool(frontend, "lotus_control", {"session": session["id"], "operation": "run"})
@@ -256,8 +308,29 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                            pid=telemetry["pid"])
             processes.append(Process(telemetry["pid"]))
         time.sleep(args.warmup_seconds)
+        # Like bench.py, warm the guest first. Otherwise a bounded draw capture
+        # can use its entire snapshot budget before the measurement begins. The
+        # supervisor pauses playback for debugger mutations, so arm at rest and
+        # explicitly resume every worker that is meant to be running.
+        if not args.smoke:
+            for session in sessions:
+                if not session["idle"]:
+                    tool(frontend, "lotus_control", {"session": session["id"], "operation": "pause"})
+        for session in sessions:
+            for operation, params in ([] if args.smoke else bench.CONFIGS[session["config"]]):
+                _, reply, error = call(frontend, "lotus_debug", {"session": session["id"],
+                                                                 "command": {"operation": operation, **params}})
+                error = f"{operation}: {error}" if error else bench.configuration_mismatch(operation, params, reply)
+                if error:
+                    return dict(status="unsupported", error=error)
 
         stalled = {sessions[0]["id"]} if args.stall else set()
+        errors = {s["id"]: [] for s in sessions}
+        capture_before = gpu_counters(frontend, sessions, stalled, errors) if args.gpu_metrics else {}
+        if not args.smoke:
+            for session in sessions:
+                if not session["idle"]:
+                    tool(frontend, "lotus_control", {"session": session["id"], "operation": "run"})
         if args.stall:
             processes[0].suspend(True)
         ram_before = available_ram()
@@ -268,39 +341,48 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
         rounds, status_seconds = [], []
         commands = {s["id"]: [] for s in sessions}
         inputs = {s["id"]: [] for s in sessions}
-        errors = {s["id"]: [] for s in sessions}
         while time.perf_counter() - start < args.seconds:
-            round_start = time.perf_counter()
             if rounds:
-                time.sleep(max(0.0, rounds[-1]["start"] + args.probe_interval - round_start))
-                round_start = time.perf_counter()
-            for index, session in enumerate(sessions):
+                next_probe = min(rounds[-1]["start"] + args.probe_interval, start + args.seconds)
+                time.sleep(max(0.0, next_probe - time.perf_counter()))
+            round_start = time.perf_counter()
+            if round_start >= start + args.seconds:
+                break
+            probes = {}
+            for session in sessions:
                 if session["id"] in stalled:
                     continue
-                elapsed, reply, error = call(frontend, "lotus_registers", {"session": session["id"], "core": 0})
+                elapsed, _, error = call(frontend, "lotus_registers", {"session": session["id"], "core": 0})
                 (errors[session["id"]].append(error) if error else commands[session["id"]].append(elapsed))
+                probes[session["id"]] = dict(command_seconds=elapsed, command_error=error)
                 elapsed, _, error = call(frontend, "lotus_input", {
                     "session": session["id"], "owner": "live", "buttons": len(rounds) % 2, "x": 0, "y": 0,
                     "touch": False})
                 (errors[session["id"]].append(error) if error else inputs[session["id"]].append(elapsed))
+                probes[session["id"]].update(input_seconds=elapsed, input_error=error)
                 if args.capture:
-                    _, _, error = call(frontend, "lotus_capture", {"session": session["id"]})
+                    elapsed, _, error = call(frontend, "lotus_capture", {"session": session["id"]})
+                    probes[session["id"]].update(capture_seconds=elapsed, capture_error=error)
                     if error:
                         errors[session["id"]].append(error)
             polled = time.perf_counter()
             status = rows(frontend)
             status_seconds.append(time.perf_counter() - polled)
-            rounds.append(dict(start=round_start, t=round(polled - start, 3),
+            rounds.append(dict(start=round_start, t=round(polled - start, 3), probes=probes,
+                               status_seconds=status_seconds[-1],
                                round_seconds=round(polled - round_start, 4),
                                frames={s["id"]: status[s["id"]]["telemetry"]["frames"] for s in sessions}))
         elapsed = time.perf_counter() - start
         last = rows(frontend)
         usage_after = [p.usage() for p in processes]
+        capture_after = gpu_counters(frontend, sessions, stalled, errors) if args.gpu_metrics else {}
         # Checkpoint costs, pending compression and loss reasons per session (lotus#32).
         rewind = {}
-        if not args.smoke and any(op == "rewind_configure" for op, _ in bench.CONFIGS[config_name]):
+        if not args.smoke:
             for session in sessions:
-                if session["idle"] or (args.stall and session is sessions[0]):
+                if session["idle"] or session["id"] in stalled:
+                    continue
+                if not any(op == "rewind_configure" for op, _ in bench.CONFIGS[session["config"]]):
                     continue
                 _, reply, error = call(frontend, "lotus_debug", {"session": session["id"],
                                                                  "command": {"operation": "rewind_status"}})
@@ -320,13 +402,30 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                            for key in ("polls", "busy_polls", "late_polls", "continuations", "status_failures")}
             supervision.update(lateness_max_ms=t1["supervision"]["lateness_max_ms"],
                                status_max_ms=t1["supervision"]["status_max_ms"])
-            _, registers, _ = call(frontend, "lotus_registers", {"session": sid, "core": 0}) \
-                if sid not in stalled else (0, None, None)
+            registers = None
+            if sid not in stalled:
+                _, registers, error = call(frontend, "lotus_registers", {"session": sid, "core": 0})
+                if error:
+                    errors[sid].append(f"final registers: {error}")
+            if t0["state"] not in ("running", "paused") or t1["state"] not in ("running", "paused"):
+                errors[sid].append(f"unexpected worker state: {t0['state']} -> {t1['state']}")
+            if t0["epoch"] != t1["epoch"]:
+                errors[sid].append(f"worker epoch changed: {t0['epoch']} -> {t1['epoch']}")
+            if not args.smoke and t1["renderer"] != renderer:
+                errors[sid].append(f"requested {renderer}, worker reported {t1['renderer']}")
+            if sid not in stalled and not session["idle"]:
+                if not t1["playing"]:
+                    errors[sid].append("worker did not stay in playback")
+                if t1["frames"] <= t0["frames"]:
+                    errors[sid].append("worker made no frame progress")
             results.append(dict(
                 session, stalled=sid in stalled, fps=(t1["frames"] - t0["frames"]) / elapsed,
                 state=t1["state"], failure=t1.get("failure"), renderer=t1["renderer"],
                 renderer_fallback=t1["renderer_fallback"],
                 gpu_memory=device_local(t1.get("gpu_memory")),
+                gpu_capture=gpu_capture_delta(capture_before.get(sid), capture_after.get(sid)),
+                event_losses=counter_delta(t0.get("events") or {}, t1.get("events") or {},
+                                           ("history_lost_total", "pending_lost_total")),
                 preview=preview_delta(t0.get("preview"), t1.get("preview"), elapsed),
                 command=percentiles(commands[sid]), input=percentiles(inputs[sid]),
                 errors=errors[sid][:4], error_count=len(errors[sid]), supervision=supervision,
@@ -345,7 +444,9 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
         if frontend.process.returncode != 0:
             return dict(status="shutdown_failed", error=f"exit {frontend.process.returncode}",
                         shutdown_seconds=shutdown_seconds)
-        return dict(status="ok", seconds=elapsed, sessions=results, aggregate_fps=sum(running),
+        invalid = [f"{r['id']}: {r['errors'][0]}" for r in results if r["error_count"]]
+        return dict(status="invalid" if invalid else "ok", error="; ".join(invalid) if invalid else None,
+                    seconds=elapsed, sessions=results, aggregate_fps=sum(running),
                     fps_skew=max(running) / min(running) if running and min(running) > 0 else None,
                     min_fps=min(running) if running else None, status_poll=percentiles(status_seconds),
                     host_ram_available_before=ram_before, host_ram_available_after=ram_after,
@@ -353,7 +454,7 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                     gpu_allocation_failures=sum((r["gpu_memory"] or {}).get("allocation_failures", 0)
                                                 for r in results),
                     shutdown_seconds=shutdown_seconds, probe_rounds=len(rounds),
-                    probe_rounds_expected=int(elapsed / args.probe_interval) + 1, rounds=rounds)
+                    probe_rounds_expected=math.ceil(args.seconds / args.probe_interval), rounds=rounds)
     finally:
         for process in processes:
             try:
@@ -371,10 +472,14 @@ def reference(args, worker, rom, renderer, model, config_name, root):
     bench.py leaves `frame_limit` at the worker default (100 %); the reference applies this
     run's limit so its fps is comparable with the 1-session row."""
     frames = 300
-    operations = [("settings_set", dict(name="frame_limit", value=args.frame_limit))] + bench.CONFIGS[config_name]
-    result = bench.trial(worker, rom, root, renderer, model == "new", operations,
-                         warmup=60, frames=frames, capture_every=0)
-    return {key: result.get(key) for key in ("status", "fps", "host_seconds", "usage")}
+    try:
+        result = bench.trial(worker, rom, root, renderer, model == "new", bench.CONFIGS[config_name],
+                             warmup=60, frames=frames, capture_every=0, frame_limit=args.frame_limit,
+                             boot=(("deterministic_async_operations", True), ("init_time", INIT_TIME)))
+    except AssertionError as error:
+        return dict(status="unsupported" if config_name in bench.CITNLO_ONLY else "failed",
+                    error=str(error))
+    return {key: result.get(key) for key in ("status", "fps", "host_seconds", "usage", "source")}
 
 
 def svg(points, title):
@@ -426,6 +531,8 @@ def main():
     parser.add_argument("--idle", type=int, default=0, help="extra sessions kept loaded and paused")
     parser.add_argument("--stall", action="store_true")
     parser.add_argument("--capture", action="store_true")
+    parser.add_argument("--gpu-metrics", action="store_true", help="sample CITnLO PICA counters outside the timed window")
+    parser.add_argument("--first-config", choices=list(bench.CONFIGS), help="debug configuration for session 0 only")
     parser.add_argument("--shader-cache", choices=["cold", "seeded"], default="cold")
     parser.add_argument("--frame-limit", type=float, default=0, help="percent; 0 = unthrottled")
     parser.add_argument("--reference", action="store_true")
@@ -444,6 +551,12 @@ def main():
     # supervisor.rs accepts at most 16 sessions, including paused sessions.
     if args.idle < 0 or any(count < 1 or count + args.idle > 16 for count in counts):
         parser.error("each --workers count must be positive and total sessions including --idle must be at most 16")
+    if args.stall and min(counts) < 2:
+        parser.error("--stall needs at least two running sessions")
+    if min(args.seconds, args.probe_interval, args.repeats) <= 0 or args.warmup_seconds < 0:
+        parser.error("measurement duration, probe interval and repeats must be positive, and warmup nonnegative")
+    if args.reference and (args.first_config or args.shader_cache != "cold"):
+        parser.error("--reference requires one config for all sessions and a cold shader cache")
     renderers = args.renderer or ["vulkan"]
     models = args.model or ["old"]
     configs = args.config or ["off"]
@@ -468,7 +581,9 @@ def main():
         roms={name: dict(sha256=digest(path)) for name, path in roms},
         fixed=dict(warmup_seconds=args.warmup_seconds, seconds=args.seconds, repeats=args.repeats,
                    frame_limit=args.frame_limit, shader_cache=args.shader_cache, stall=args.stall, idle=args.idle,
-                   capture=args.capture, smoke=args.smoke, init_clock="FixedTime",
+                   capture=args.capture, smoke=args.smoke, init_clock="FixedTime", init_time=INIT_TIME,
+                   deterministic_async_operations=True if not args.smoke else None, gpu_metrics=args.gpu_metrics,
+                   first_config=args.first_config,
                    probe_interval=args.probe_interval, workload=args.workload,
                    focus_priority=args.focus_priority),
         build_differences=bench.build_differences({name: dict(build_manifest=bench.manifest(path))
@@ -488,7 +603,8 @@ def main():
                         for count in counts:
                             for repeat in range(args.repeats):
                                 root = out / name / kind / renderer / model / config_name / f"n{count}-{repeat}"
-                                result = trial(args, exes, kind, worker, roms, renderer, model, config_name,
+                                result = trial(args, exes, kind, worker, report["workers"][name],
+                                               roms, renderer, model, config_name,
                                                count, root)
                                 entry = dict(worker=name, frontend=kind, renderer=renderer, model=model,
                                              config=config_name, sessions_requested=count, repeat=repeat, **result)
@@ -502,12 +618,10 @@ def main():
     report["host_busy"] = any(v > bench.BUSY for v in loads)
     (out / "report.json").write_text(json.dumps(report, indent=2))
     write_summary(out, report, loads)
-    if args.smoke:
-        bad = [t for t in report["trials"] if t["status"] != "ok"
-               or any(s["error_count"] or (s["fps"] <= 0 and not s["idle"]) for s in t["sessions"]
-                      if not s["stalled"])]
-        if bad:
-            raise SystemExit(f"smoke failed: {json.dumps(bad)[:2000]}")
+    allowed = {"ok"} if args.smoke else {"ok", "unsupported"}
+    failed = [row for row in report["trials"] + report["references"] if row["status"] not in allowed]
+    if failed or not any(row["status"] == "ok" for row in report["trials"]):
+        raise SystemExit(f"benchmark did not complete successfully (see {out / 'report.json'})")
 
 
 def write_summary(out, report, loads):
@@ -515,6 +629,8 @@ def write_summary(out, report, loads):
     lines = [f"# Parallel sessions {report['started']}", ""]
     if report["host_busy"]:
         lines += [f"**Not comparable: host CPU load {loads} exceeded {bench.BUSY:.0%}.**", ""]
+    if report["build_differences"] and not report["fixed"]["smoke"]:
+        lines += [f"Build differences and missing provenance: {json.dumps(report['build_differences'])}", ""]
     lines += [f"Host: {host.get('cpu_name') or host['processor']}, {host.get('cpu_count')} logical CPUs, GPU "
               + (", ".join(f"{g.get('Name')} ({g.get('DriverVersion')})" for g in host.get("gpus") or []) or "unknown"),
               "Workers: " + ", ".join(f"{n} {w['sha256'][:16]}" for n, w in report["workers"].items()),
@@ -551,12 +667,32 @@ def write_summary(out, report, loads):
                      f"{t['shutdown_seconds']:.2f} |")
         points.append((f"{t['worker']} {t['frontend']} {t['renderer']} {t['model']} {t['config']}",
                        t["sessions_requested"], t["aggregate_fps"]))
+    if report["fixed"]["gpu_metrics"]:
+        lines += ["", "PICA counters per trial, summed over the measured workers. Losses count "
+                  "evictions from bounded history. See report.json for each worker's configuration and CPU time.", "",
+                  "| worker | frontend | config | N | paths | draws | snapshots before / added | budget skips | draw / event history losses |",
+                  "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+        for t in report["trials"]:
+            if t["status"] != "ok":
+                continue
+            measured = [s for s in t["sessions"] if s["gpu_capture"] is not None]
+            counters = [s["gpu_capture"] for s in measured]
+            paths = ", ".join(sorted({c["command_path"] for c in counters}))
+            totals = {key: sum(c[key] for c in counters) if all(key in c and c[key] is not None for c in counters)
+                      else "—" for key in ("draw_calls", "snapshots_at_start", "snapshots_taken",
+                                           "snapshots_skipped_budget", "lost_draws")}
+            history_losses = [s["event_losses"].get("history_lost_total") for s in measured]
+            events = sum(history_losses) if all(n is not None for n in history_losses) else "—"
+            lines.append(f"| {t['worker']} | {t['frontend']} | {t['config']} | {t['sessions_requested']} | {paths} | "
+                         f"{totals['draw_calls']} | {totals['snapshots_at_start']} / {totals['snapshots_taken']} | "
+                         f"{totals['snapshots_skipped_budget']} | {totals['lost_draws']} / {events} |")
     if report["references"]:
         lines += ["", "tools/bench.py single-worker reference (no supervisor, run_until steps):", "",
-                  "| worker | renderer | model | config | fps |", "| --- | --- | --- | --- | --- |"]
+                  "| worker | renderer | model | config | fps / status |", "| --- | --- | --- | --- | --- |"]
         for r in report["references"]:
+            result = f"{r['fps']:.1f}" if r["status"] == "ok" else r["status"]
             lines.append(f"| {r['worker']} | {r['renderer']} | {r['model']} | {r['config']} | "
-                         f"{(r.get('fps') or float('nan')):.1f} |")
+                         f"{result} |")
     idle = [(t, s) for t in report["trials"] if t["status"] == "ok" for s in t["sessions"] if s["idle"]]
     if idle:
         lines += ["", f"Paused sessions ({report['fixed']['idle']} per trial), not counted above:", "",

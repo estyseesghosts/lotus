@@ -56,6 +56,7 @@ UNHIT = 0x0F000000  # execute breakpoints here are never reached by 3DSX homebre
 # but an armed watchpoint switches CITnLO to instruction stepping ("execution_mode").
 TEXT_BASE = 0x00100000
 REWIND_FAST_LEVEL = 1  # zstd level for the *_fast rewind configs; default checkpoints use 3
+HISTORY_WITHOUT_PICA = ("stopped", "log", "native_log", "svc", "ipc")
 CONFIGS = {
     "off": [],
     "svc_ipc_trace": [("trace", dict(enabled=True))],
@@ -64,6 +65,10 @@ CONFIGS = {
     # GPU capture levels (lotus#24); older CITnLO workers ignore `capture` and run full.
     **{f"gpu_{level}": [("gpu_configure", dict(enabled=True, stop_events=[], capture=level))]
        for level in ("counters", "events")},
+    **{f"gpu_{level}_no_pica_history": [
+        ("events_configure", dict(notify=["stopped"], history=list(HISTORY_WITHOUT_PICA))),
+        ("gpu_configure", dict(enabled=True, stop_events=[], capture=level)),
+    ] for level in ("events", "full")},
     "gpu_draws_8": [("gpu_configure", dict(enabled=True, stop_events=[], capture="draws", max_draws=8))],
     "rewind_frames": [("rewind_configure", dict(enabled=True, capacity=32, budget_mib=64))],
     **{f"rewind_interval_{n}": [("rewind_configure", dict(enabled=True, capacity=32, budget_mib=64,
@@ -193,6 +198,22 @@ def build_differences(workers_meta):
 IDENTITY = ("sysdata", "nand")
 
 
+def configuration_mismatch(operation, params, reply):
+    """Older workers may silently ignore an option; never time a different workload."""
+    checked = {
+        "rewind_configure": ("interval_frames", "compression_level", "compression_queue"),
+        "gpu_configure": ("capture", "draw_range", "max_draws", "resources"),
+    }
+    if operation == "events_configure":
+        for key in ("notify", "history"):
+            if key in params and set(reply.get(key, ())) != set(params[key]):
+                return f"{operation}: requested {key}={params[key]!r}, worker reported {reply.get(key)!r}"
+    for key in checked.get(operation, ()):
+        if key in params and reply.get(key) != params[key]:
+            return f"{operation}: requested {key}={params[key]!r}, worker reported {reply.get(key)!r}"
+    return None
+
+
 def identity_template(worker, rom, root, new_3ds):
     peer = Peer(worker, root)
     try:
@@ -232,10 +253,9 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
         peer.call("run_until", {"frames": warmup})
         for operation, params in operations:
             reply = peer.debug(operation, **params)
-            # Older workers ignore unknown parameters; refuse rather than mislabel the trial.
-            for key in ("interval_frames", "compression_level", "compression_queue"):
-                if key in params and reply.get(key) != params[key]:
-                    raise AssertionError(f"worker does not support rewind {key}")
+            mismatch = configuration_mismatch(operation, params, reply)
+            if mismatch:
+                raise AssertionError(mismatch)
         before = process_usage(peer.process)
         start = time.perf_counter()
         done = 0
