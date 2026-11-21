@@ -373,6 +373,26 @@ pub struct Inspection {
     pub lost: u64,
     pub error: Option<(io::ErrorKind, String)>,
     pub gpu: Option<GpuActivity>,
+    pub draws: Option<Arc<Vec<DrawHeader>>>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct DrawHeader {
+    pub draw: u64,
+    pub command: Option<u64>,
+    /// Number of retained vertex inputs reported by GpuDraws.
+    pub vertices: Option<u32>,
+    pub snapshot: Option<bool>,
+}
+
+impl DrawHeader {
+    pub(crate) fn status(&self) -> &'static str {
+        match self.snapshot {
+            Some(true) => "Snapshot",
+            Some(false) => "Metadata only",
+            None => "Unknown",
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -438,6 +458,7 @@ fn lane(event: &Value) -> &'static str {
 impl Inspection {
     pub fn from_value(value: &Value, panel: Panel) -> Self {
         let mut rows = Vec::new();
+        let mut draw_headers = None;
         let mut budget = TEXT_BUDGET;
         let mut omitted = 0;
         fn flatten(
@@ -482,6 +503,11 @@ impl Inspection {
             let key = clipped(&key, 256);
             let text = if key.contains("registers[") || key.ends_with(".cpsr") {
                 crate::lotus_window::hex_string(value)
+            } else if key.starts_with(".capture.resources[") && key.ends_with(".data_hex") {
+                value.as_str().map_or_else(
+                    || "Unavailable".into(),
+                    |hex| format!("{} encoded bytes", hex.len() / 2),
+                )
             } else {
                 json_preview(value, 1024)
             };
@@ -561,47 +587,41 @@ impl Inspection {
             }
         } else if panel == Panel::Gpu {
             if let Some(draws) = value["draws"].as_array() {
-                for draw in draws.iter().take(DRAW_ROW_CAP) {
-                    rows.push(Row {
-                        lane: "GPU",
-                        key: format!("draw {}", draw["draw"]),
-                        value: format!(
-                            "command {} · {} vertices · inspect frozen state",
-                            draw["command"], draw["vertices"]
-                        ),
-                        action: draw["draw"].as_u64().map(|draw| D::GpuDraw { draw }),
-                    });
-                }
-                omitted = draws.len().saturating_sub(DRAW_ROW_CAP) as u64;
+                let headers: Vec<_> = draws
+                    .iter()
+                    .take(DRAW_ROW_CAP)
+                    .filter_map(|draw| DrawHeader::deserialize(draw).ok())
+                    .collect();
+                omitted = draws.len().saturating_sub(headers.len()) as u64;
+                draw_headers = Some(Arc::new(headers));
             }
         } else {
-            if let Some(resources) = value["capture"]["resources"].as_array() {
-                for resource in resources.iter().take(SNAPSHOT_ROW_CAP) {
-                    if let (Some(address), Some(width), Some(height), Some(format)) = (
-                        resource["address"].as_u64(),
-                        resource["width"].as_u64(),
-                        resource["height"].as_u64(),
-                        resource["format"].as_u64(),
-                    ) {
+            // A captured address is metadata. Surface reads guest memory at the
+            // time it runs, so a capture must never link to that operation.
+            let capture = &value["capture"];
+            if let (Some(draw), Some(vertices)) =
+                (capture["draw"].as_u64(), capture["vertices"].as_array())
+            {
+                // The worker retains at most eight shader inputs per draw.
+                for (index, input) in vertices.iter().take(8).enumerate() {
+                    if input["input_f32_bits"].is_array() {
                         rows.push(Row {
-                            lane: "texture",
-                            key: format!("0x{address:08x}"),
-                            value: format!("{width}x{height} format {format} · view surface"),
-                            action: Some(D::Surface {
-                                address: address as u32,
-                                width: width as u32,
-                                height: height as u32,
-                                format: format as u32,
+                            lane: "shader",
+                            key: format!("Vertex {index}"),
+                            value: "Trace captured vertex input".into(),
+                            action: Some(D::ShaderTrace {
+                                draw,
+                                vertex: index as u32,
                             }),
                         });
                     }
                 }
-                if let Some(draw) = value["capture"]["draw"].as_u64() {
+                if rows.is_empty() && capture["registers"].is_array() {
                     rows.push(Row {
                         lane: "shader",
-                        key: format!("draw {draw}"),
-                        value: "Trace vertex 0 from frozen inputs".into(),
-                        action: Some(D::ShaderTrace { draw, vertex: 0 }),
+                        key: "Vertex inputs".into(),
+                        value: "Unavailable · capture with hardware shaders disabled".into(),
+                        action: None,
                     });
                 }
             }
@@ -630,6 +650,7 @@ impl Inspection {
             } else {
                 None
             },
+            draws: draw_headers,
         }
     }
 
@@ -641,6 +662,7 @@ impl Inspection {
             lost: 0,
             error: Some((error.kind(), error.to_string())),
             gpu: None,
+            draws: None,
         }
     }
     pub fn draw_diff(before: &Value, after: &Value) -> Vec<String> {
@@ -736,6 +758,7 @@ impl Inspection {
             lost,
             error: None,
             gpu: None,
+            draws: None,
         })
     }
 }
@@ -794,9 +817,11 @@ mod tests {
             &serde_json::json!({"draws": vec![draw; DRAW_ROW_CAP + 1], "lost_draws": 3}),
             Panel::Gpu,
         );
-        assert_eq!(gpu.rows.len(), DRAW_ROW_CAP);
+        let draws = gpu.draws.unwrap();
+        assert_eq!(draws.len(), DRAW_ROW_CAP);
         assert_eq!(gpu.lost, 4);
-        assert!(matches!(gpu.rows[0].action, Some(D::GpuDraw { draw: 42 })));
+        assert_eq!(draws[0].draw, 42);
+        assert_eq!(draws[0].status(), "Unknown");
 
         let event = serde_json::json!({"sequence": u64::from(u32::MAX) + 1});
         let events = Inspection::from_value(
@@ -808,6 +833,37 @@ mod tests {
         assert_eq!(events.next, Some(u64::from(u32::MAX) + 1));
         assert_eq!(json_preview(&serde_json::json!("αβ"), 4), "\"α…");
         assert_eq!(json_preview(&serde_json::json!("αβ"), 6), "\"αβ\"");
+    }
+    #[test]
+    fn a_frozen_resource_cannot_open_a_live_surface() {
+        let view = Inspection::from_value(
+            &serde_json::json!({"capture":{"draw": 42, "resources": [{
+                "address": 1234, "width": 8, "height": 8, "format": 0, "data_hex": "abc123"
+            }]}}),
+            Panel::Result,
+        );
+        assert!(view.rows.iter().all(|row| row.action.is_none()));
+        assert!(view.rows.iter().any(|row| row.value == "3 encoded bytes"));
+    }
+    #[test]
+    fn shader_trace_actions_identify_each_retained_input() {
+        let view = Inspection::from_value(
+            &serde_json::json!({"capture":{"draw": 42, "vertices": [
+                {"input_f32_bits": [[1, 2, 3, 4]]},
+                {},
+                {"input_f32_bits": [[4, 3, 2, 1]]}
+            ]}}),
+            Panel::Result,
+        );
+        let vertices: Vec<_> = view
+            .rows
+            .iter()
+            .filter_map(|row| match row.action {
+                Some(D::ShaderTrace { draw: 42, vertex }) => Some(vertex),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(vertices, [0, 2]);
     }
     #[test]
     fn settings_only_offer_typed_boolean_edits() {

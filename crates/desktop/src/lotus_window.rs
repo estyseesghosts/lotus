@@ -4295,7 +4295,14 @@ impl LotusWindow {
                     Some(format!("Read-only · {message}"))
                 }
                 Some((_, message)) => Some(message.clone()),
-                None if snapshot.view.rows.is_empty() && snapshot.view.lost == 0 => {
+                None if snapshot.view.rows.is_empty()
+                    && snapshot
+                        .view
+                        .draws
+                        .as_ref()
+                        .is_none_or(|draws| draws.is_empty())
+                    && snapshot.view.lost == 0 =>
+                {
                     Some("No entries on this page".into())
                 }
                 None => None,
@@ -4315,6 +4322,11 @@ impl LotusWindow {
         let view = &snapshot
             .expect("a populated inspector view has a snapshot")
             .view;
+        if let (Some(draws), Some(target)) = (&view.draws, &target) {
+            return panel
+                .child(self.render_draw_table(draws.clone(), view.lost, target, cx))
+                .children(utility);
+        }
         panel = panel
             .child(
                 div()
@@ -4349,10 +4361,6 @@ impl LotusWindow {
         let rows = view.rows.clone();
         let weak = cx.entity().downgrade();
         let control = self.control;
-        let selected_draw = target
-            .as_ref()
-            .and_then(|target| self.inspector_state.panel(target, current))
-            .and_then(|panel| panel.selected_draw);
         #[cfg(not(feature = "silvestris-ui"))]
         use gpui::uniform_list as inspection_list;
         #[cfg(feature = "silvestris-ui")]
@@ -4369,8 +4377,6 @@ impl LotusWindow {
                                 .action
                                 .clone()
                                 .filter(|command| control || !command.mutates());
-                            let selected = matches!(&action, Some(D::GpuDraw { draw })
-                                if selected_draw == Some(*draw));
                             let tooltip = format!("{}\n{}", row.key, row.value);
                             #[cfg(feature = "silvestris-ui")]
                             let line = silvestris::controls::table::code_row(
@@ -4393,38 +4399,31 @@ impl LotusWindow {
                                     .text_xs()
                             };
                             with_tooltip(
-                                line.when(selected, |line| line.bg(theme.surface_active))
-                                    .when(show_lane, |line| {
-                                        line.child(
-                                            div()
-                                                .w(px(48.0))
-                                                .flex_none()
-                                                .text_color(theme.text_muted)
-                                                .child(row.lane),
-                                        )
-                                    })
-                                    .child(
+                                line.when(show_lane, |line| {
+                                    line.child(
                                         div()
-                                            .w(px(key_width))
+                                            .w(px(48.0))
                                             .flex_none()
-                                            .truncate()
-                                            .child(row.key.clone()),
+                                            .text_color(theme.text_muted)
+                                            .child(row.lane),
                                     )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(row.value.clone()),
-                                    ),
+                                })
+                                .child(
+                                    div()
+                                        .w(px(key_width))
+                                        .flex_none()
+                                        .truncate()
+                                        .child(row.key.clone()),
+                                )
+                                .child(
+                                    div().flex_1().min_w_0().truncate().child(row.value.clone()),
+                                ),
                                 tooltip,
                             )
                             .when_some(action, |element, command| {
                                 element
                                     .cursor_pointer()
-                                    .when(!selected, |line| {
-                                        line.hover(|style| style.bg(theme.surface_hover))
-                                    })
+                                    .hover(|style| style.bg(theme.surface_hover))
                                     .on_click(move |_, _, cx| {
                                         let _ = weak.update(cx, |view, _| {
                                             view.debug_command(&target, current, command.clone())
@@ -4438,6 +4437,112 @@ impl LotusWindow {
                 .min_h_0(),
             )
             .children(utility)
+    }
+
+    fn render_draw_table(
+        &self,
+        draws: Arc<Vec<inspection::DrawHeader>>,
+        lost: u64,
+        target: &SessionTarget,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        fn columns(values: [String; 4]) -> gpui::Div {
+            let mut row = div().h_full().w_full().px_2().flex().gap_2().items_center();
+            for (index, value) in values.into_iter().enumerate() {
+                row = row.child(with_tooltip(
+                    div()
+                        .id(("draw-column", index))
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .child(value.clone()),
+                    value,
+                ));
+            }
+            row
+        }
+        let theme = theme::palette(cx);
+        let target = target.clone();
+        let selected = self
+            .inspector_state
+            .panel(&target, Panel::Gpu)
+            .and_then(|state| state.selected_draw);
+        let weak = cx.entity().downgrade();
+        #[cfg(not(feature = "silvestris-ui"))]
+        use gpui::uniform_list as draw_list;
+        #[cfg(feature = "silvestris-ui")]
+        use silvestris::controls::table::virtual_table as draw_list;
+        div()
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .text_xs()
+            .child(div().py_1().text_color(theme.text_secondary).child(format!(
+                "{} draws · {} lost",
+                draws.len(),
+                lost
+            )))
+            .child(
+                div()
+                    .id("gpu-draw-columns")
+                    .h(px(24.0))
+                    .flex_none()
+                    .text_color(theme.text_secondary)
+                    .child(columns(
+                        ["Draw ID", "Command", "Saved inputs", "Capture"].map(str::to_owned),
+                    )),
+            )
+            .child(
+                draw_list("gpu-draw-table", draws.len(), move |range, _, _| {
+                    range
+                        .map(|index| {
+                            let header = &draws[index];
+                            let draw = header.draw;
+                            let target = Some(target.clone());
+                            let weak = weak.clone();
+                            div()
+                                .id(("gpu-draw", index))
+                                .h(px(28.0))
+                                .flex()
+                                .items_center()
+                                .font_family(theme.mono)
+                                .text_xs()
+                                .cursor_pointer()
+                                .when(selected != Some(draw), |row| {
+                                    row.hover(|style| style.bg(theme.surface_hover))
+                                })
+                                .child(
+                                    columns([
+                                        draw.to_string(),
+                                        header
+                                            .command
+                                            .map_or_else(|| "—".into(), |id| id.to_string()),
+                                        header
+                                            .vertices
+                                            .map_or_else(|| "—".into(), |count| count.to_string()),
+                                        header.status().into(),
+                                    ])
+                                    .when(selected == Some(draw), |cells| {
+                                        cells.bg(theme.surface_active)
+                                    }),
+                                )
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak.update(cx, |view, cx| {
+                                        view.debug_command(
+                                            &target,
+                                            Panel::Gpu,
+                                            D::GpuDraw { draw },
+                                        );
+                                        cx.notify();
+                                    });
+                                })
+                        })
+                        .collect()
+                })
+                .flex_1()
+                .min_h_0(),
+            )
     }
 
     /// Utilities that are not tied to the selected view.

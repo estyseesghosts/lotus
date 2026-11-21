@@ -461,7 +461,14 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         wait(&controller, |update| {
             update.inspection.as_ref().is_some_and(|snapshot| {
                 snapshot.panel == Panel::Gpu
-                    && snapshot.view.rows.iter().any(|row| row.action.is_some())
+                    && snapshot.view.draws.as_ref().is_some_and(|draws| {
+                        !draws.is_empty()
+                            && draws.iter().all(|draw| {
+                                draw.command.is_some()
+                                    && draw.vertices.is_some()
+                                    && draw.snapshot.is_some()
+                            })
+                    })
                     && snapshot.view.gpu.as_ref().is_some_and(|gpu| {
                         gpu.command_path == "per_command"
                             && gpu.snapshots_taken == Some(8)
@@ -476,9 +483,12 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
                 .as_ref()
                 .unwrap()
                 .view
-                .rows
+                .draws
+                .as_ref()
+                .unwrap()
                 .iter()
-                .find_map(|row| row.action.clone())
+                .map(|header| D::GpuDraw { draw: header.draw })
+                .next()
                 .unwrap()
         };
         assert!(matches!(command, D::GpuDraw { .. }));

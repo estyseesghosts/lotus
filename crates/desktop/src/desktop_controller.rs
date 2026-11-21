@@ -1310,26 +1310,34 @@ impl Loops {
         cancellation: &DebugCancellation,
     ) -> io::Result<(Inspection, Option<DebugImage>)> {
         cancellation.check()?;
-        if matches!(
-            command,
-            DebugCommand::GpuDraw { .. } | DebugCommand::ShaderTrace { .. }
-        ) {
-            if let Some(uri) = value["artifacts"][0]["uri"].as_str() {
-                let bytes = self.host.read_debug_artifact(uri, 16 << 20, cancellation)?;
-                cancellation.check()?;
-                let capture: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-                cancellation.check()?;
-                if matches!(command, DebugCommand::GpuDraw { .. }) {
-                    let mut previous = lock(&self.previous_draw);
-                    if let Some((_, before)) = previous.as_ref().filter(|(id, _)| id == target) {
-                        value["draw_changes"] =
-                            serde_json::to_value(Inspection::draw_diff(before, &capture))
-                                .map_err(io::Error::other)?;
-                    }
-                    *previous = Some((target.clone(), capture.clone()));
-                }
-                value["capture"] = capture;
+        if let DebugCommand::GpuDraw { draw } | DebugCommand::ShaderTrace { draw, .. } = command {
+            let artifact = &value["artifacts"][0];
+            let uri = artifact["uri"]
+                .as_str()
+                .filter(|_| artifact["session"].as_str() == Some(&target.id))
+                .ok_or_else(|| io::Error::other("Capture artifact unavailable for this session"))?;
+            let bytes = self.host.read_debug_artifact(uri, 16 << 20, cancellation)?;
+            cancellation.check()?;
+            let capture: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+            cancellation.check()?;
+            if capture["draw"].as_u64() != Some(*draw)
+                || matches!(command, DebugCommand::ShaderTrace { vertex, .. }
+                    if capture["vertex"].as_u64() != Some(u64::from(*vertex)))
+            {
+                return Err(io::Error::other(
+                    "Capture artifact does not match the requested draw or vertex",
+                ));
             }
+            if matches!(command, DebugCommand::GpuDraw { .. }) {
+                let mut previous = lock(&self.previous_draw);
+                if let Some((_, before)) = previous.as_ref().filter(|(id, _)| id == target) {
+                    value["draw_changes"] =
+                        serde_json::to_value(Inspection::draw_diff(before, &capture))
+                            .map_err(io::Error::other)?;
+                }
+                *previous = Some((target.clone(), capture.clone()));
+            }
+            value["capture"] = capture;
         }
         let mut image = None;
         if matches!(command, DebugCommand::Surface { .. }) {
