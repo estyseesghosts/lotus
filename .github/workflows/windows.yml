@@ -105,8 +105,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo test --locked --release -p lotus-desktop --test '*'
           exit $LASTEXITCODE
-      - name: Parallel session smoke (mock workers)
+      - name: Benchmark regressions and parallel session smoke
         run: |
+          python tests/test_native_bench.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Set-Content build/mock.rom 'mock'
           python tools/bench_parallel.py --smoke --capture --server target/release/lotus-mcp.exe --worker mock=target/release/lotus-mock-native.exe --rom "mock=$PWD/build/mock.rom" --workers 2 --output build/bench-parallel-smoke
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

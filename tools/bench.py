@@ -3,14 +3,14 @@
 Each trial boots a fresh worker in a fresh root, applies the renderer/model settings before
 load, warms up, applies the configuration's debug operations, then times a fixed number of
 frames in `run_until` calls. Recorded per trial: host wall seconds, worker CPU seconds and
-disk bytes (Windows GetProcessTimes/GetProcessIoCounters, whole process lifetime), guest
+I/O bytes (Windows GetProcessTimes/GetProcessIoCounters, deltas for the measured window), guest
 ticks and both screen hashes after the window. Host seconds are wall-clock on this machine:
 not guest time, not hardware cycles.
 
 Comparability rules (enforced, see `compare`): ratios are only computed between trials with
 the same ROM SHA-256, renderer, model, warm-up, frames and capture cadence. Guest identity
 (ticks + screens) is checked against the same worker's `off` run in that group, and across
-workers against the first worker given. A mismatch is reported, never averaged away.
+workers against the first worker given. Trials alternate worker order every repeat.
 
 Metadata (report.json `host`, `workers`): CPU, GPU and driver, RAM, OS build, each worker's
 SHA-256, source SHA and build manifest (CMake flags, compiler). Build differences between
@@ -51,6 +51,10 @@ from native_debug_probe import Peer  # noqa: E402
 
 INIT_CLOCK_FIXED = 1  # Settings::InitClock::FixedTime; init_time keeps its default
 RENDERERS = {"software": 0, "vulkan": 2}  # Settings::GraphicsAPI values used by settings_set
+PROFILE_KEYS = ("graphics_api", "resolution_factor", "use_hw_shader", "use_disk_shader_cache",
+                "is_new_3ds", "use_cpu_jit", "cpu_clock_percentage", "deterministic_async_operations",
+                "audio_emulation", "output_type", "volume", "frame_limit", "init_clock",
+                "init_ticks_type", "init_ticks_override", "init_time")
 UNHIT = 0x0F000000  # execute breakpoints here are never reached by 3DSX homebrew (outside its code)
 # Memory::PROCESS_IMAGE_VADDR (src/core/memory.h), where the 3DSX loader puts .text; never written,
 # but an armed watchpoint switches CITnLO to instruction stepping ("execution_mode").
@@ -98,6 +102,10 @@ BOOT_CONFIGS = {
     "host_async": [("deterministic_async_operations", False)],
 }
 BUSY = 0.15  # whole-host CPU load above which timings are labelled not comparable
+
+
+class UnsupportedConfiguration(Exception):
+    """A worker explicitly refused or did not implement a requested debug option."""
 
 
 class Counters(ctypes.Structure):
@@ -230,40 +238,63 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
     spawned = time.perf_counter()
     peer = Peer(worker, root)
     try:
+        hello = peer.call("hello")
+        startup_seconds = time.perf_counter() - spawned
         if shaders:  # warm disk shader cache; it is read at load, so copying before load is enough
             shutil.copytree(shaders, root / "shaders")
         for name in IDENTITY if identity else ():  # also read at load
             shutil.copytree(identity / name, root / name, dirs_exist_ok=True)
-        hello = peer.call("hello")
-        startup_seconds = time.perf_counter() - spawned
-        peer.debug("settings_set", name="graphics_api", value=RENDERERS[renderer])
-        peer.debug("settings_set", name="is_new_3ds", value=new_3ds)
         # SystemTime seeds the guest date/time from the host clock (shared_page.cpp:40-58), so
         # trials booted at different host seconds can diverge with identical guest ticks.
-        peer.debug("settings_set", name="init_clock", value=INIT_CLOCK_FIXED)
+        requested = dict(graphics_api=RENDERERS[renderer], is_new_3ds=new_3ds, init_clock=INIT_CLOCK_FIXED)
         if frame_limit is not None:
-            peer.debug("settings_set", name="frame_limit", value=frame_limit)
-        for setting, value in boot:
+            requested["frame_limit"] = frame_limit
+        requested.update(boot)
+        for setting, value in requested.items():
             peer.debug("settings_set", name=setting, value=value)
         loading = time.perf_counter()
         peer.call("load", {"path": str(rom)})
         load_seconds = time.perf_counter() - loading
         for address, value in pokes:  # guest workload switches, set before warm-up
             peer.debug("write_memory", address=address, bytes=list(value.to_bytes(4, "little")))
-        peer.call("run_until", {"frames": warmup})
+        profile = {}
+        offset = 0
+        while offset is not None:
+            page = peer.debug("settings_list", offset=offset, limit=32)
+            profile.update({entry["name"]: entry["value"] for entry in page["settings"]
+                            if entry["name"] in PROFILE_KEYS or entry["name"] in requested})
+            offset = page["next"]
+        if any(key not in profile or profile[key] != value for key, value in requested.items()):
+            raise AssertionError(f"loaded profile {profile!r} does not match {requested!r}")
+        # The native worker accepts up to 600 frames per request and can also
+        # return early with status=ok after a debugger stop.
+        frame = 0
+        while frame < warmup:
+            target = min(frame + 600, warmup)
+            warmed = peer.call("run_until", {"frames": target - frame})
+            if warmed.get("frames") != target:
+                raise AssertionError(f"early warm-up stop at {warmed.get('frames')}, expected {target}")
+            frame = target
         for operation, params in operations:
-            reply = peer.debug(operation, **params)
+            reply = peer.call("debug", dict(operation=operation, **params), expected=None)
+            if peer.status == "unsupported":
+                raise UnsupportedConfiguration(f"{operation}: {reply!r}")
+            if peer.status != "ok":
+                raise AssertionError(f"{operation}: {peer.status}, {reply!r}")
             mismatch = configuration_mismatch(operation, params, reply)
             if mismatch:
-                raise AssertionError(mismatch)
+                raise UnsupportedConfiguration(mismatch)
         before = process_usage(peer.process)
         start = time.perf_counter()
         done = 0
         while done < frames:
-            step = min(10, frames - done, capture_every or 10)
-            peer.call("run_until", {"frames": step}, expected=None)
-            if peer.status != "ok":
-                return dict(status=peer.status, frames_done=done,
+            until_capture = capture_every - done % capture_every if capture_every else 10
+            step = min(10, frames - done, until_capture)
+            result = peer.call("run_until", {"frames": step}, expected=None) or {}
+            if peer.status != "ok" or result.get("frames") != frame + done + step:
+                return dict(status=peer.status if peer.status != "ok" else "early_stop",
+                            frames_done=max(0, result.get("frames", frame + done) - frame),
+                            stop=result.get("stop"), last_error=result.get("last_error"),
                             host_seconds_lower_bound=time.perf_counter() - start)
             done += step
             if capture_every and done % capture_every == 0:
@@ -292,7 +323,7 @@ def trial(worker, rom, root, renderer, new_3ds, operations, warmup, frames, capt
             restored = peer.debug("rewind_status")
             rewind = dict(status=status, reverse_step_seconds=reverse_step_seconds,
                           restore_ns=restored.get("restore_ns", 0) - status.get("restore_ns", 0))
-        return dict(status="ok", host_seconds=seconds, fps=frames / seconds, guest_ticks=ticks,
+        return dict(status="ok", host_seconds=seconds, fps=frames / seconds, guest_ticks=ticks, profile=profile,
                     screens=screens, usage=usage, source=hello.get("source"),
                     backend_name=hello.get("backend_name"), startup_seconds=startup_seconds,
                     load_seconds=load_seconds, rewind=rewind, guest=guest)
@@ -321,9 +352,12 @@ def summarize(runs):
         cpu = [r["usage"]["cpu_seconds"] for r in runs if r["status"] == "ok" and r["usage"]]
         if cpu:
             entry["median_cpu_seconds"] = statistics.median(cpu)
-        writes = [r["usage"]["io_write_bytes"] for r in runs if r["status"] == "ok" and r["usage"]]
-        if writes:
-            entry["median_io_write_bytes"] = statistics.median(writes)
+        for key in ("io_read_bytes", "io_write_bytes"):
+            values = [r["usage"][key] for r in runs if r["status"] == "ok" and r["usage"]]
+            if values:
+                entry[f"median_{key}"] = statistics.median(values)
+        profiles = [r["profile"] for r in runs if r["status"] == "ok"]
+        entry["effective_profile"] = profiles[0] if all(p == profiles[0] for p in profiles) else None
         for key in ("startup_seconds", "load_seconds"):
             values = [r[key] for r in runs if r["status"] == "ok" and key in r]
             if values:
@@ -350,8 +384,10 @@ def summarize(runs):
 
 
 def identity(runs):
-    ok = [(r["guest_ticks"], r["screens"]) for r in runs if r["status"] == "ok"]
-    return ok[0] if ok and all(item == ok[0] for item in ok) else None
+    if not runs or any(r["status"] != "ok" for r in runs):
+        return None
+    states = [(r["guest_ticks"], r["screens"], r["guest"]) for r in runs]
+    return states[0] if all(item == states[0] for item in states) else None
 
 
 def compare(results, workers):
@@ -376,8 +412,19 @@ def compare(results, workers):
                 ref = by_worker.get(reference_worker, {}).get(config)
                 if name != reference_worker and ref and "median_host_seconds" in ref and \
                         "median_host_seconds" in entry:
-                    entry[f"ratio_vs_{reference_worker}"] = round(
-                        entry["median_host_seconds"] / ref["median_host_seconds"], 3)
+                    profile = entry["effective_profile"]
+                    baseline = ref["effective_profile"]
+                    if profile is None or baseline is None:
+                        entry["profile_comparison"] = "settings varied across repeats"
+                    else:
+                        differences = {key: {reference_worker: baseline.get(key), name: profile.get(key)}
+                                       for key in baseline.keys() | profile.keys()
+                                       if baseline.get(key) != profile.get(key)}
+                        if differences:
+                            entry["profile_differences"] = differences
+                        elif entry["completed"] == entry["trials"] and ref["completed"] == ref["trials"]:
+                            entry[f"ratio_vs_{reference_worker}"] = round(
+                                entry["median_host_seconds"] / ref["median_host_seconds"], 3)
                     entry[f"guest_identical_to_{reference_worker}"] = (
                         identity(runs) == ref["_identity"] if identity(runs) else None)
         for by_config in by_worker.values():
@@ -401,13 +448,26 @@ def main():
     parser.add_argument("--require-idle", action="store_true", help="refuse to run on a busy host")
     parser.add_argument("--allow-debug-build", action="store_true")
     parser.add_argument("--frame-limit", type=int, help="percent, 0 unthrottled; default keeps the worker's 100")
+    parser.add_argument("--setting", action="append", default=[], metavar="NAME=JSON",
+                        help="apply the same native setting to every worker before loading")
     parser.add_argument("--poke", action="append", default=[], metavar="SYMBOL=VALUE",
                         help="write a u32 guest variable (from <rom>.elf) after load, e.g. churn=1")
     parser.add_argument("--read", action="append", default=[], metavar="SYMBOL",
                         help="record a u32 guest variable after the window, e.g. generation_done")
     args = parser.parse_args()
+    if args.repeats < 1 or args.frames < 1 or args.warmup < 0 or args.capture_every < 0:
+        parser.error("repeats and frames must be positive, warmup and capture-every nonnegative")
     workers = [(spec.split("=", 1)[0], Path(spec.split("=", 1)[1]).resolve()) for spec in args.worker]
+    if len({name for name, _ in workers}) != len(workers):
+        parser.error("worker labels must be unique")
     rom = args.rom.resolve()
+    try:
+        common_settings = {key: json.loads(value) for key, value in
+                           (setting.split("=", 1) for setting in args.setting)}
+    except ValueError as error:
+        parser.error(f"invalid --setting NAME=JSON: {error}")
+    if {"graphics_api", "is_new_3ds", "frame_limit", "init_clock"} & common_settings.keys():
+        parser.error("renderer, console model, frame limit and fixed clock are controlled by benchmark options")
     pokes, reads = [], []
     if args.poke or args.read:
         from debugger_acceptance import symbols
@@ -434,7 +494,7 @@ def main():
         rom=dict(path=str(rom), sha256=hashlib.sha256(rom.read_bytes()).hexdigest()),
         fixed=dict(new_3ds=args.new_3ds, warmup_frames=args.warmup, frames=args.frames,
                    repeats=args.repeats, capture_every=args.capture_every, shader_cache=args.shader_cache,
-                   pokes=args.poke, reads=args.read, frame_limit=args.frame_limit,
+                   pokes=args.poke, reads=args.read, frame_limit=args.frame_limit, settings=common_settings,
                    profile="worker DefaultProfile plus graphics_api/is_new_3ds/init_clock=FixedTime via settings_set; "
                            "sysdata and nand copied from one template boot (same MAC and console ID)"),
         workers=workers_meta,
@@ -446,28 +506,35 @@ def main():
     if args.shader_cache == "warm" and "vulkan" in renderers:
         for name, worker in workers:
             root = out / "prime" / name
-            trial(worker, rom, root, "vulkan", args.new_3ds, [], args.warmup, args.frames, 0, identity=console)
+            prime = trial(worker, rom, root, "vulkan", args.new_3ds, [], args.warmup, args.frames, 0,
+                          identity=console, boot=common_settings, frame_limit=args.frame_limit)
+            if prime["status"] != "ok" or not (root / "shaders").is_dir():
+                raise SystemExit(f"{name}: failed to prime Vulkan shaders: {prime['status']}")
             primed[name] = root / "shaders"
     for renderer in renderers:
-        for name, worker in workers:
-            for config in configs:
-                skipped = None
-                runs = []
-                for index in range(args.repeats):
+        for config in configs:
+            boot = common_settings | dict(BOOT_CONFIGS.get(config, ()))
+            runs_by_worker = {name: [] for name, _ in workers}
+            skipped_by_worker = {}
+            for index in range(args.repeats):
+                start = index % len(workers)
+                for name, worker in workers[start:] + workers[:start]:
+                    if name in skipped_by_worker:
+                        continue
                     root = out / renderer / name / config / str(index)
                     try:
-                        runs.append(trial(worker, rom, root, renderer, args.new_3ds, CONFIGS.get(config, []),
-                                          args.warmup, args.frames, args.capture_every,
-                                          primed.get(name) if renderer == "vulkan" else None,
-                                          console, pokes, reads, BOOT_CONFIGS.get(config, ()),
-                                          args.frame_limit))
-                    except AssertionError as error:  # typed refusal, e.g. CITnLO-only operation
-                        skipped = str(error)[:300]
-                        break
-                if skipped:
-                    entry = dict(skipped=skipped)
-                    if config not in CITNLO_ONLY:
-                        raise SystemExit(f"{name}/{renderer}/{config} failed: {skipped}")
+                        runs_by_worker[name].append(trial(
+                            worker, rom, root, renderer, args.new_3ds, CONFIGS.get(config, []),
+                            args.warmup, args.frames, args.capture_every,
+                            primed.get(name) if renderer == "vulkan" else None,
+                            console, pokes, reads, boot, args.frame_limit))
+                    except UnsupportedConfiguration as error:
+                        if config not in CITNLO_ONLY:
+                            raise SystemExit(f"{name}/{renderer}/{config} failed: {error}") from error
+                        skipped_by_worker[name] = str(error)[:300]
+            for name, runs in runs_by_worker.items():
+                if name in skipped_by_worker:
+                    entry = dict(skipped=skipped_by_worker[name], runs_detail=runs)
                 else:
                     entry = summarize(runs)
                     entry["runs_detail"] = runs
@@ -515,30 +582,38 @@ def main():
         lines += ["", "Build differences between workers (cross-worker ratios include them):"]
         lines += [f"- {key}: " + ", ".join(f"{w}={v}" for w, v in values.items())
                   for key, values in report["build_differences"].items()]
+    profile_notes = [f"- {renderer}/{name}/{config}: {e.get('profile_differences', e.get('profile_comparison'))}"
+                     for renderer, by_worker in report["results"].items()
+                     for name, by_config in by_worker.items() for config, e in by_config.items()
+                     if "profile_differences" in e or "profile_comparison" in e]
+    if profile_notes:
+        lines += ["", "Effective settings prevented a cross-worker ratio for these rows:", *profile_notes]
     reference = workers[0][0]
     lines += ["", f"Shader cache: {args.shader_cache} (Vulkan only). A CITnLO worker's `off` has the "
                   "debugger attached with every feature disabled (the passive-debugger case).", "",
               f"ROM {report['rom']['sha256'][:16]}, {'New' if args.new_3ds else 'Old'} 3DS, "
               f"warm-up {args.warmup}, {args.frames} frames x {args.repeats}, capture every {args.capture_every or '-'}, frame limit {'worker default' if args.frame_limit is None else f'{args.frame_limit} %'}", "",
               f"| renderer | worker | config | median s | fps | spread s | ratio vs off | ratio vs {reference} "
-              "| guest identical | startup s |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+              "| guest identical | startup s | completed |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for renderer, by_worker in report["results"].items():
         for name, by_config in by_worker.items():
             for config, e in by_config.items():
                 if "skipped" in e:
-                    lines.append(f"| {renderer} | {name} | {config} | skipped | | | | | | |")
+                    lines.append(f"| {renderer} | {name} | {config} | skipped | | | | | | | |")
                     continue
                 median = e.get("median_host_seconds")
-                lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
+                lines.append("| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |".format(
                     renderer, name, config,
                     f"{median:.3f}" if median else f">= {e['host_seconds_lower_bound']:.1f}",
                     f"{args.frames / median:.1f}" if median else "",
                     f"{e['min_host_seconds']:.3f}-{e['max_host_seconds']:.3f}" if median else "",
                     e.get("ratio_vs_off", e.get("ratio_vs_off_lower_bound", "")),
                     e.get(f"ratio_vs_{reference}", ""),
-                    e.get("guest_identical_to_off", "") if config != "off" else e["guest_repeatable"],
-                    f"{e['median_startup_seconds']:.2f}" if "median_startup_seconds" in e else ""))
+                    e.get("guest_identical_to_off", "") if config != "off" else
+                    e.get(f"guest_identical_to_{reference}", e["guest_repeatable"]),
+                    f"{e['median_startup_seconds']:.2f}" if "median_startup_seconds" in e else "",
+                    f"{e['completed']}/{e['trials']}"))
     rewind_rows = [(renderer, name, config, e["rewind"]) for renderer, by_worker in report["results"].items()
                    for name, by_config in by_worker.items() for config, e in by_config.items() if e.get("rewind")]
     if rewind_rows:
