@@ -74,6 +74,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import bench  # noqa: E402
 from bench_frontends import Frontend  # noqa: E402
+from desktop_shots import window_of  # noqa: E402
 
 RENDERERS = {"vulkan": 2, "software": 0}
 PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SUSPEND_RESUME = 0x1000, 0x0800
@@ -169,6 +170,19 @@ def rows(frontend):
     return {row["id"]: row for row in tool(frontend, "lotus_status", {})["sessions"]}
 
 
+def preview_delta(before, after, elapsed):
+    if before is None or after is None:
+        return None
+    result = {key: after[key] - before[key] for key in ("requests", "new_frames", "reused")}
+    result["new_frames_per_second"] = result["new_frames"] / elapsed
+    result["max_age_frames_since_start"] = after["age_max_frames"]
+    initial, final = before.get("worker"), after.get("worker")
+    result["worker"] = None if initial is None or final is None else {
+        key: final[key] - initial[key] for key in final if key in initial
+    }
+    return result
+
+
 def percentiles(values):
     if not values:
         return None
@@ -198,9 +212,14 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
         "policy": {"workload": args.workload, "focus_priority": args.focus_priority}}))
     frontend = frontend_for(kind, exes, config, root)
     processes = []
+    hwnd = None
     try:
         if kind == "desktop":
-            time.sleep(3)  # window creation; the MCP surface answers before it is shown
+            deadline = time.monotonic() + 30
+            while (hwnd := window_of(frontend.process.pid)) is None:
+                if time.monotonic() >= deadline:
+                    return dict(status="window_missing", error="desktop never showed a window")
+                time.sleep(0.2)
         if args.shader_cache == "seeded":
             primer = tool(frontend, "lotus_create_session", {"kind": "secondary", "asset": roms[0][0]})["session"]
             tool(frontend, "lotus_run_until", {"session": primer, "frames": 120})
@@ -308,6 +327,7 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                 state=t1["state"], failure=t1.get("failure"), renderer=t1["renderer"],
                 renderer_fallback=t1["renderer_fallback"],
                 gpu_memory=device_local(t1.get("gpu_memory")),
+                preview=preview_delta(t0.get("preview"), t1.get("preview"), elapsed),
                 command=percentiles(commands[sid]), input=percentiles(inputs[sid]),
                 errors=errors[sid][:4], error_count=len(errors[sid]), supervision=supervision,
                 usage=None if not (before and after) else dict(
@@ -320,8 +340,11 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                 guest_ticks=(registers or {}).get("guest_ticks"), rewind=rewind.get(sid)))
         running = [r["fps"] for r in results if not (r["stalled"] or r["idle"])]
         closing = time.perf_counter()
-        frontend.close()
+        frontend.close(hwnd)
         shutdown_seconds = time.perf_counter() - closing
+        if frontend.process.returncode != 0:
+            return dict(status="shutdown_failed", error=f"exit {frontend.process.returncode}",
+                        shutdown_seconds=shutdown_seconds)
         return dict(status="ok", seconds=elapsed, sessions=results, aggregate_fps=sum(running),
                     fps_skew=max(running) / min(running) if running and min(running) > 0 else None,
                     min_fps=min(running) if running else None, status_poll=percentiles(status_seconds),
@@ -339,7 +362,7 @@ def trial(args, exes, kind, worker, roms, renderer, model, config_name, count, r
                 pass
             process.close()
         if frontend.process.poll() is None:
-            frontend.close()
+            frontend.close(hwnd)
 
 
 def reference(args, worker, rom, renderer, model, config_name, root):
@@ -499,13 +522,13 @@ def write_summary(out, report, loads):
               "Host throughput (fps = presented guest frames per host second). Guest ticks are in report.json, "
               "per session, and are not comparable across free-running sessions.", "",
               "| worker | frontend | renderer | model | config | N | aggregate fps | per-session min / median / max | "
-              "skew | cmd p50 / p95 ms | input p95 ms | late polls | CPU s/s per worker | working set MiB | GPU high-water MiB / failed allocs | shutdown s |",
-              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
+              "skew | cmd p50 / p95 ms | input p95 ms | late polls | CPU s/s per worker | working set MiB | GPU high-water MiB / failed allocs | preview fps / waits | shutdown s |",
+              "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     points = []
     for t in report["trials"]:
         head = f"| {t['worker']} | {t['frontend']} | {t['renderer']} | {t['model']} | {t['config']} | {t['sessions_requested']} |"
         if t["status"] != "ok":
-            lines.append(head + f" {t['status']}: {t.get('error', '')} |" + " |" * 9)
+            lines.append(head + f" {t['status']}: {t.get('error', '')} |" + " |" * 10)
             continue
         live = [s for s in t["sessions"] if not (s["stalled"] or s["idle"])]
         fps = [s["fps"] for s in live]
@@ -513,6 +536,10 @@ def write_summary(out, report, loads):
         command = [s["command"] for s in live if s["command"]]
         inputs = [s["input"]["p95_ms"] for s in live if s["input"]]
         usage = [s["usage"] for s in live if s["usage"]]
+        previews = [s["preview"] for s in live if s["preview"] and s["preview"]["requests"]]
+        live_preview = sum(p["new_frames_per_second"] for p in previews)
+        waits = [p["worker"]["gpu_waits"] for p in previews if p["worker"] is not None]
+        wait_label = sum(waits) if waits and len(waits) == len(previews) else "—"
         lines.append(head + f" {t['aggregate_fps']:.1f} | {min(fps):.1f} / {median(fps):.1f} / {max(fps):.1f} | "
                      f"{t['fps_skew'] or float('nan'):.2f} | "
                      f"{median([c['p50_ms'] for c in command]):.1f} / {max([c['p95_ms'] for c in command] or [float('nan')]):.1f} | "
@@ -520,7 +547,8 @@ def write_summary(out, report, loads):
                      f"{median([u['cpu_seconds'] / t['seconds'] for u in usage]):.2f} | "
                      f"{median([u['working_set_bytes'] / 2**20 for u in usage]):.0f} | "
                      f"{max([s['gpu_memory']['block_bytes_high_water'] / 2**20 for s in live if s.get('gpu_memory')] or [float('nan')]):.0f}"
-                     f" / {t.get('gpu_allocation_failures', 0)} | {t['shutdown_seconds']:.2f} |")
+                     f" / {t.get('gpu_allocation_failures', 0)} | {live_preview:.1f} / {wait_label} | "
+                     f"{t['shutdown_seconds']:.2f} |")
         points.append((f"{t['worker']} {t['frontend']} {t['renderer']} {t['model']} {t['config']}",
                        t["sessions_requested"], t["aggregate_fps"]))
     if report["references"]:

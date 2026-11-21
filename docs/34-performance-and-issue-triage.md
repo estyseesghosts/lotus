@@ -150,6 +150,30 @@ candidate build. The package and candidate use different host and worker
 revisions, so their throughput difference cannot isolate the cost of the wait
 change (`runs/r06-frontends-candidate/report.json`, verified emulator).
 
+### #25 Concurrent Vulkan previews
+
+`tools/bench_parallel.py` measures per-worker preview requests, reused frames,
+readbacks, GPU waits and copied bytes. The desktop trial now waits for a
+visible window, closes it before closing stdio and checks the process exit
+code. Closing only stdio had hit the tool's 20-second kill deadline.
+
+Windows 11, Ryzen 5 3600, Radeon RX 9060 XT (32.0.32029.2010), CITnLO
+`a3994c1` (WinLibs UCRT GNU Release, Vulkan and software enabled), t03, Old
+3DS, unthrottled. Each row is one 12-second sample after a three-second
+warm-up. Host CPU load was 1% before and 3% after.
+
+| Workers | Aggregate guest fps, headless / desktop | Highest register RPC p95 across workers, headless / desktop | Fresh previews/s | Live preview GPU waits |
+| --- | ---: | ---: | ---: | ---: |
+| 1 | 1830 / 1648 | 0.8 / 1.2 ms | 24.6 | 0 |
+| 2 | 3479 / 3244 | 0.8 / 1.2 ms | 25.1 | 0 |
+| 4 | 5461 / 4972 | 1.1 / 1.4 ms | 25.4 | 0 |
+
+The headless and unselected workers received zero preview requests. All
+six frontends exited cleanly in 0.15–0.52 seconds. The desktop trials
+reused 21, 14 and 10 previous frames and reported zero busy-slot skips
+(`runs/r25-preview-sweep-clean/report.json`, verified emulator). A forced
+GPU delay and a saturated staging ring still need qualification.
+
 ### #32 Async rewind compression
 
 CITnLO `0ce7886` serializes at the existing emulation-thread safe point and
