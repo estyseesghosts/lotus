@@ -1022,15 +1022,18 @@ overrides → host configuration `profile`. `crates/session/src/settings_store.r
   `unset` removes one and inheritance resumes, `reset` empties the file. The card
   file sits beside `sdmc/`, `nand/` and `sysdata/`; secondaries copy only those
   (`GUEST_DIRS`), so it never reaches scratch.
-- **Sessions.** A session resolves its settings at creation: a primary from
-  global + its card, a cloned secondary from global + its parent card, a
-  parentless secondary from global. Saved changes never touch a running worker.
-  A primary's report lists them under `pending` until its card next starts. A
-  secondary keeps its creation snapshot. Its runtime changes are applied to the
-  worker immediately (the worker refuses non-live classes while running) and
-  vanish with it; `unset` re-applies the creation value. A primary session is
-  changed through its card. Checkpoint-restored sessions run with the
-  checkpoint's settings and refuse changes.
+- **Sessions.** Each session resolves its settings at creation. A primary
+  uses its card and the global defaults. A secondary uses its parent card,
+  if any, and the global defaults, then keeps those worker settings for its
+  lifetime. A secondary's temporary overrides apply through the native
+  worker, which refuses non-live settings while content is loaded.
+- **Apply classes (#52).** Card edits and inherited global live settings
+  reach mounted primary workers at a safe point in the host that owns them.
+  Boot and renderer edits apply the next time the card starts a worker.
+  Explicit CFG edits use the worker's CFG savedata API before loading
+  content. Clearing the saved CFG override lets future starts use the card's
+  guest savedata. Input settings continue to update the input router at once.
+  The Settings window marks pending values on mounted cards.
 - **Managed.** Host `profile` keys win everywhere and refuse edits at every
   target. A saved entry they shadow is reported as a problem and kept.
   `lotus.host.*` stay in the host JSON and `lotus.desktop.*` in `desktop.json`;
@@ -1045,17 +1048,28 @@ overrides → host configuration `profile`. `crates/session/src/settings_store.r
   and never written.
 - **Frontends.** `lotus_settings` and `lotus_settings_change` (MCP);
   `ctr-cli settings show|set|unset|reset <host-config> global|card:<name>`.
+  For a session, `settings` shows worker-reported values and
+  `desired_settings` shows the saved or runtime profile. A mounted card
+  reports the saved profile under `settings` and worker values under
+  `effective_settings`. `pending_details` gives the apply class, current
+  value and next action. Writes return `changes` with `applied`, `pending`
+  or `rejected` per setting and session. A failed live write leaves the
+  desired value saved and reports the worker error. A standalone CLI
+  invocation saves values for future starts.
   Changes need `allow_control`. Portable builds keep `storage_root` at
   `<data>/<backend>/sessions` (`packaging/windows/launch.ps1`), so both files
   stay in the data directory (`data/` in the release folder by default),
   separately per backend.
 
-Evidence: **verified emulator** (mock worker) in
-`crates/session/tests/settings_layers.rs`, unit tests in `settings_store.rs`,
-plus CLI and MCP tests. `debug settings_set` still writes a worker directly
-and is not recorded as a runtime override. Portable packaging was not rebuilt
-for this change (source inspected). The MCP group has no settings until automation settings (#56) land. Input
-layout keys share these files and layers but never reach a worker.
+Evidence: `tests/test_mcp_settings_apply.py` passed with Windows GNU Release
+CITnLO `a3994c1` and AZAHAR `5ecbd98` on t03. It checked live volume during
+play, an unaffected sibling, staged renderer resolution and console model,
+CFG language persisted across stop/start, and inert and unsupported choices.
+`crates/session/tests/settings_layers.rs` covers a worker refusing a live
+edit and applying the saved value at the next start. The standalone CLI
+reported a saved edit as pending. `debug settings_set` remains a direct
+worker command. Input-layout keys share the same files and layers and are
+consumed by the host input router.
 
 ## Discord Rich Presence
 

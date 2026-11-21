@@ -50,6 +50,8 @@ pub enum Layer {
     Global,
     Card,
     Runtime,
+    /// The worker reported a value different from the saved or runtime profile.
+    Worker,
     /// Host configuration `profile`; read-only here.
     Managed,
 }
@@ -147,6 +149,7 @@ impl Resolution {
                 Layer::Runtime => InputLayer::Session,
                 // The host profile accepts worker settings only (`validate_profile`).
                 Layer::Managed => InputLayer::Global,
+                Layer::Worker => continue,
             };
             if entry.value.is_null() {
                 continue;

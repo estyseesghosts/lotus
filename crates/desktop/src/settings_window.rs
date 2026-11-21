@@ -24,7 +24,7 @@ use gpui::{
 };
 #[cfg(not(feature = "silvestris-ui"))]
 use gpui::{Stateful, StatefulInteractiveElement};
-use lotus_session::supervisor::{SettingsTarget, Supervisor};
+use lotus_session::supervisor::{SettingStatus, SettingsTarget, Supervisor};
 use lotus_session::telemetry::Actor;
 use lotus_settings::{Availability, Descriptor, Group, Kind, Owner, Registry, Scope};
 use serde_json::Value;
@@ -339,7 +339,16 @@ impl SettingsWindow {
             let result = saving.await;
             let _ = this.update(cx, |view, cx| {
                 if view.target == ui_target {
-                    view.error = result.err().map(|error| error.to_string());
+                    view.error = match result {
+                        Err(error) => Some(error.to_string()),
+                        Ok(changes) => changes
+                            .into_iter()
+                            .find(|change| change.status == SettingStatus::Rejected)
+                            .and_then(|change| change.reason)
+                            .map(|reason| {
+                                format!("Saved for the next start. Live update failed. {reason}")
+                            }),
+                    };
                     view.refresh(cx);
                 }
             });
@@ -414,6 +423,31 @@ impl SettingsWindow {
                     Ok(())
                 }
             }
+        }
+    }
+
+    fn pending_note(&self, key: &str) -> Option<String> {
+        let report = self.report.as_ref()?;
+        if let Some(cards) = report["pending_cards"][key].as_array() {
+            return Some(if cards.len() == 1 {
+                "Restart required on one mounted card.".into()
+            } else {
+                format!("Restart required on {} mounted cards.", cards.len())
+            });
+        }
+        let details = &report["pending_details"][key];
+        if details["status"] != "pending" {
+            return None;
+        }
+        let effective = &details["effective"];
+        if effective.is_null() {
+            Some("Applies at the next start.".into())
+        } else if details["apply"] == "live" {
+            Some(format!("Saved. Current worker value is {effective}."))
+        } else {
+            Some(format!(
+                "Restart required. Current worker value is {effective}."
+            ))
         }
     }
 
@@ -655,6 +689,9 @@ impl SettingsWindow {
                             .text_color(theme.text_muted)
                             .child(descriptor.description.clone()),
                     )
+                    .when_some(self.pending_note(&key), |row, note| {
+                        row.child(div().text_xs().text_color(theme.text_muted).child(note))
+                    })
                     .child(
                         div()
                             .text_xs()
@@ -698,12 +735,12 @@ impl SettingsWindow {
             list = list.child(self.render_row(descriptor, cx));
         }
         let note = match &self.target {
-            Target::Global => "Defaults for every card and new secondary session. Worker \
-                settings apply to sessions started afterwards; input layouts apply at once."
+            Target::Global => "Defaults for cards and new secondary sessions. Live settings update \
+                mounted cards that inherit the value. Other worker settings apply at the next start."
                 .to_string(),
             Target::Card(card) => format!(
-                "Saved overrides of card {card}; unset values inherit Global. Worker \
-                 settings apply when its primary next starts; input layouts apply at once."
+                "Overrides for card {card}. Unset values inherit Global. Live settings update \
+                 the mounted worker. Other worker settings apply at the next start."
             ),
         };
         let body = div()

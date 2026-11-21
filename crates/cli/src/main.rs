@@ -89,26 +89,34 @@ fn main() -> Result<()> {
             let key = args.get(4);
             tokio::runtime::Runtime::new()?.block_on(async {
                 let host = Supervisor::new(config)?;
-                match operation {
-                    "show" => {}
+                let changes = match operation {
+                    "show" => None,
                     "set" => {
                         let value: serde_json::Value =
                             serde_json::from_str(args.get(5).context(USAGE)?)
                                 .context("the value must be JSON, e.g. 100, true or \"text\"")?;
-                        host.set_setting(&target, key.context(USAGE)?, Some(value), Actor::Host)
-                            .await?;
+                        Some(
+                            host.set_setting(
+                                &target,
+                                key.context(USAGE)?,
+                                Some(value),
+                                Actor::Host,
+                            )
+                            .await?,
+                        )
                     }
-                    "unset" => {
+                    "unset" => Some(
                         host.set_setting(&target, key.context(USAGE)?, None, Actor::Host)
-                            .await?;
-                    }
-                    "reset" => host.reset_settings(&target, Actor::Host).await?,
+                            .await?,
+                    ),
+                    "reset" => Some(host.reset_settings(&target, Actor::Host).await?),
                     _ => bail!("{USAGE}"),
+                };
+                let mut report = host.settings(&target).await?;
+                if let Some(changes) = changes {
+                    report["changes"] = serde_json::to_value(changes)?;
                 }
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&host.settings(&target).await?)?
-                );
+                println!("{}", serde_json::to_string_pretty(&report)?);
                 anyhow::Ok(())
             })?;
         }

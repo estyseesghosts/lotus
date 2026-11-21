@@ -4,7 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use lotus_session::supervisor::{HostConfig, SessionKind, SettingsTarget, Supervisor};
+use lotus_session::supervisor::{
+    HostConfig, SessionKind, SettingStatus, SettingsTarget, Supervisor,
+};
 use lotus_session::telemetry::Actor;
 use serde_json::{json, Value};
 
@@ -93,17 +95,32 @@ async fn cards_inherit_global_and_secondaries_keep_their_snapshot() {
     assert_eq!(worker_settings(&card_root("a"))[key], json!(50));
     assert_eq!(worker_settings(&card_root("b"))[key], json!(150));
 
-    // A global change reaches inheriting cards for their next start, never a running worker.
+    // A global live change reaches only the mounted card that inherits the value.
     fixture
         .set(&SettingsTarget::Global, key, Some(json!(200)))
         .await;
-    assert_eq!(worker_settings(&card_root("b"))[key], json!(150));
+    assert_eq!(worker_settings(&card_root("b"))[key], json!(200));
+    assert_eq!(worker_settings(&card_root("a"))[key], json!(50));
     let report = fixture.host.settings(&session(&b)).await.unwrap();
-    assert_eq!(report["pending"], json!([key]));
-    assert_eq!(report["settings"][key]["value"], json!(150));
+    assert_eq!(report["pending"], json!([]));
+    assert_eq!(report["settings"][key]["value"], json!(200));
     let report = fixture.host.settings(&session(&a)).await.unwrap();
     assert_eq!(report["pending"], json!([]));
     assert_eq!(report["session"]["card"], json!("a"));
+
+    let change = fixture
+        .host
+        .set_setting(&card("b"), "graphics_api", Some(json!(0)), Actor::Host)
+        .await
+        .unwrap();
+    assert_eq!(change[0].status, SettingStatus::Pending);
+    let report = fixture.host.settings(&card("b")).await.unwrap();
+    assert_eq!(report["settings"]["graphics_api"]["value"], json!(0));
+    assert_eq!(
+        report["effective_settings"]["graphics_api"]["value"],
+        json!(2)
+    );
+    assert_eq!(report["pending"], json!(["graphics_api"]));
 
     // A primary session is edited through its card.
     let error = fixture
@@ -198,6 +215,38 @@ async fn cards_inherit_global_and_secondaries_keep_their_snapshot() {
         .unwrap();
     let report = restarted.settings(&card("b")).await.unwrap();
     assert_eq!(report["settings"][key]["source"], json!("default"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rejected_live_update_keeps_saved_value_and_old_effective_value() {
+    let fixture = host("rejected", |_| {});
+    let target = card("a");
+    fixture.set(&target, "volume", Some(json!(0.25))).await;
+    let id = fixture
+        .create(SessionKind::Primary { card: "a".into() })
+        .await;
+    let refusal = fixture.store.join("cards/a/mock-reject-debug");
+    std::fs::write(&refusal, "").unwrap();
+    let changes = fixture
+        .host
+        .set_setting(&target, "volume", Some(json!(0.75)), Actor::Host)
+        .await
+        .unwrap();
+    assert_eq!(changes[0].status, SettingStatus::Rejected);
+    assert!(changes[0].reason.as_ref().unwrap().contains("Unsupported"));
+    let report = fixture.host.settings(&target).await.unwrap();
+    assert_eq!(report["settings"]["volume"]["value"], json!(0.75));
+    assert_eq!(report["effective_settings"]["volume"]["value"], json!(0.25));
+    assert_eq!(report["pending"], json!(["volume"]));
+    fixture.host.stop(&id, Actor::Host).await.unwrap();
+    std::fs::remove_file(refusal).unwrap();
+    let replacement = fixture
+        .create(SessionKind::Primary { card: "a".into() })
+        .await;
+    let report = fixture.host.settings(&target).await.unwrap();
+    assert_eq!(report["effective_settings"]["volume"]["value"], json!(0.75));
+    assert_eq!(report["pending"], json!([]));
+    fixture.host.stop(&replacement, Actor::Host).await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

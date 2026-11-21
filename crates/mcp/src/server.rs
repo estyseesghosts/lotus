@@ -241,7 +241,7 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Effective worker settings and input layout keys (lotus.input.*) of a target (global, card, or session) with each value's source: default, global, card, runtime, or managed (host configuration profile, not editable). Lists ignored saved entries and unreadable files under problems. For a primary session, pending lists saved worker changes that apply at its card's next start."
+        description = "Read saved global or card settings, or effective settings reported by a session. Mounted cards and sessions list desired settings and pending changes with the current value and next action. Ignored entries and unreadable files appear under problems."
     )]
     pub async fn lotus_settings(
         &self,
@@ -252,7 +252,7 @@ impl LotusServer {
     }
 
     #[tool(
-        description = "Change settings. Global and card overrides are saved and apply to sessions started afterwards, never to running workers. A secondary session's override is applied to its worker now and discarded when it ends; the worker refuses non-live settings while running. Input layout keys (lotus.input.*: preset, bind.<action>, stick dead zone/sensitivity/inversion, threshold) are never sent to a worker and reach running sessions' input routing at once, at every target. Primary sessions are changed through their card. Requires host control permission."
+        description = "Save global or card overrides and apply live settings to affected mounted primary workers. Boot, renderer and guest CFG changes take effect at the next card start. Secondary session overrides are temporary and the worker refuses non-live changes while loaded. Input layouts update at once. Returns per-setting applied, pending or rejected outcomes. Requires host control permission."
     )]
     pub async fn lotus_settings_change(
         &self,
@@ -266,20 +266,22 @@ impl LotusServer {
                     .as_deref()
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "key is required"))
             };
-            match args.operation {
+            let changes = match args.operation {
                 SettingsOperation::Set => {
                     let value = args.value.clone().ok_or_else(|| {
                         io::Error::new(io::ErrorKind::InvalidInput, "value is required for set")
                     })?;
                     host.set_setting(&target, key()?, Some(value), Actor::Mcp)
-                        .await?;
+                        .await?
                 }
                 SettingsOperation::Unset => {
-                    host.set_setting(&target, key()?, None, Actor::Mcp).await?;
+                    host.set_setting(&target, key()?, None, Actor::Mcp).await?
                 }
                 SettingsOperation::Reset => host.reset_settings(&target, Actor::Mcp).await?,
-            }
-            host.settings(&target).await
+            };
+            let mut report = host.settings(&target).await?;
+            report["changes"] = serde_json::to_value(changes).map_err(io::Error::other)?;
+            Ok(report)
         }
         .await;
         tool_result(result)

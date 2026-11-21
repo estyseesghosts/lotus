@@ -210,8 +210,10 @@ The gear in the sidebar footer or Ctrl+, opens Settings; a card's gear opens
 it on that card. There is one window: opening it again focuses it. Pick
 **Global** or a card on the left, then a group. Each row shows where its value
 comes from; **Reset to Global** (on a card) or **Reset to default** removes the value saved
-at that level. Worker settings apply to sessions started afterwards; input
-layouts and window preferences apply at once. Host settings and `managed`
+at that level. Live settings update affected mounted primary sessions.
+Boot, renderer and CFG changes show **Restart required**. Stop and start
+the card to apply them. Input layouts and window preferences apply at once.
+Host settings and `managed`
 values are read-only, and so is everything but window preferences when the host
 does not allow control. Text, list and binding values cannot be edited here
 yet (#54); use the CLI or MCP. Esc closes it.

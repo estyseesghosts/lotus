@@ -144,6 +144,21 @@ fn is_input(key: &str) -> bool {
         .is_some_and(|d| d.owner == lotus_settings::Owner::Input)
 }
 
+fn same_setting(key: &str, left: &serde_json::Value, right: &serde_json::Value) -> bool {
+    if left == right {
+        return true;
+    }
+    // Native float settings are backed by single-precision settings bindings.
+    if lotus_settings::Registry::builtin()
+        .get(key)
+        .is_some_and(|descriptor| matches!(descriptor.kind, lotus_settings::Kind::Float { .. }))
+    {
+        return matches!((left.as_f64(), right.as_f64()),
+            (Some(left), Some(right)) if left as f32 == right as f32);
+    }
+    false
+}
+
 /// Parse a `--asset-dir handle=path` command-line override.
 pub fn parse_asset_dir(argument: &str) -> Result<(String, PathBuf), String> {
     match argument.split_once('=') {
@@ -174,6 +189,22 @@ pub enum SettingsTarget {
     Card { card: String },
     /// A running session: read for any, change for a secondary only.
     Session { session: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SettingStatus {
+    Applied,
+    Pending,
+    Rejected,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SettingChange {
+    pub key: String,
+    pub session: Option<String>,
+    pub status: SettingStatus,
+    pub reason: Option<String>,
 }
 
 /// Identity of a session as listed by every frontend.
@@ -327,6 +358,8 @@ pub struct Supervisor {
     focused: Mutex<Option<String>>,
     /// Saved global and card settings (lotus#51).
     settings: crate::settings_store::SettingsStore,
+    /// Keep saves and subsequent live updates in the same order within this host.
+    settings_edits: tokio::sync::Mutex<()>,
     /// Bumped by every settings or input-preset change, so a frontend knows when to
     /// re-resolve input layouts (lotus#63).
     settings_revision: AtomicU64,
@@ -395,6 +428,7 @@ impl Supervisor {
             workspace: Mutex::default(),
             workspace_resolved: Mutex::default(),
             workspace_available: AtomicBool::new(false),
+            settings_edits: tokio::sync::Mutex::new(()),
             settings_revision: AtomicU64::new(0),
         })
     }
@@ -703,6 +737,7 @@ impl Supervisor {
         });
         handle.start();
         reservation.commit(handle);
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
         Ok(info)
     }
 
@@ -718,6 +753,7 @@ impl Supervisor {
         handle.cancel_input(true);
         native.load(&content).await?;
         lock(&handle.info).asset = Some(asset.to_string());
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
         handle.record(actor, "load");
         Ok(handle.info())
     }
@@ -733,13 +769,10 @@ impl Supervisor {
         ))
     }
 
-    /// Effective worker settings of a target with each value's source (lotus#51).
-    ///
-    /// For a session: what it runs with (creation snapshot plus a secondary's runtime
-    /// overrides) and `pending`, the keys whose saved value changed since a primary started.
-    /// Saved changes never reach a running worker; they apply when its card next starts.
+    /// Saved settings for a global/card target and observed settings for a session.
+    /// A mounted card also reports its worker's effective values and pending changes.
     pub async fn settings(&self, target: &SettingsTarget) -> io::Result<serde_json::Value> {
-        use crate::settings_store::{Layer, Resolution};
+        use crate::settings_store::Resolution;
         let report = |resolution: &Resolution, extra: serde_json::Value| {
             let mut value = serde_json::to_value(resolution).map_err(io::Error::other)?;
             if let (Some(value), serde_json::Value::Object(extra)) = (value.as_object_mut(), extra)
@@ -752,78 +785,207 @@ impl Supervisor {
             Ok(value)
         };
         match target {
-            SettingsTarget::Global => report(&self.settings.resolve(None)?, serde_json::json!({})),
+            SettingsTarget::Global => {
+                let desired = self.settings.resolve(None)?;
+                let mut pending: BTreeMap<String, Vec<serde_json::Value>> = BTreeMap::new();
+                for id in self.sessions() {
+                    let Ok(handle) = self.handle(&id) else {
+                        continue;
+                    };
+                    let SessionKind::Primary { card } = handle.info().kind else {
+                        continue;
+                    };
+                    let card_settings = self.settings.resolve(Some(&card))?;
+                    let (_, view) = self.session_settings(&handle, &card_settings, true).await?;
+                    if let Some(changes) = view["pending_details"].as_object() {
+                        for (key, entry) in changes {
+                            if card_settings.settings[key].source
+                                != crate::settings_store::Layer::Card
+                            {
+                                let mut entry = entry.clone();
+                                entry["card"] = card.clone().into();
+                                pending.entry(key.clone()).or_default().push(entry);
+                            }
+                        }
+                    }
+                }
+                report(&desired, serde_json::json!({ "pending_cards": pending }))
+            }
             SettingsTarget::Card { card } => {
                 self.known_card(card)?;
-                let mounted = lock(&self.registry).mounted.get(card).cloned();
-                report(
-                    &self.settings.resolve(Some(card))?,
-                    serde_json::json!({ "mounted_by": mounted }),
-                )
+                let desired = self.settings.resolve(Some(card))?;
+                let handle = {
+                    let registry = lock(&self.registry);
+                    registry
+                        .mounted
+                        .get(card)
+                        .and_then(|id| registry.sessions.get(id))
+                        .cloned()
+                };
+                let mut extra = serde_json::json!({ "mounted_by": null });
+                if let Some(handle) = handle {
+                    let (effective, mut session) =
+                        self.session_settings(&handle, &desired, true).await?;
+                    session["mounted_by"] = handle.info().id.into();
+                    session["effective_settings"] =
+                        serde_json::to_value(effective.settings).map_err(io::Error::other)?;
+                    extra = session;
+                }
+                report(&desired, extra)
             }
             SettingsTarget::Session { session } => {
                 let handle = self.handle(session)?;
                 let info = handle.info();
-                let settings = lock(&handle.settings).clone();
-                let Some(mut effective) = settings.snapshot else {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Unsupported,
-                        "this session was restored from a checkpoint and runs with its settings",
-                    ));
-                };
-                effective.apply_runtime(&settings.runtime);
-                let pending: Vec<String> = match &info.kind {
-                    SessionKind::Primary { card } => {
-                        let now = self.settings.resolve(Some(card))?;
-                        now.settings
-                            .iter()
-                            .filter(|(key, _)| !is_input(key))
-                            .filter(|(key, entry)| {
-                                effective.settings.get(*key).map(|e| &e.value) != Some(&entry.value)
-                            })
-                            .map(|(key, _)| key.clone())
-                            .collect()
-                    }
-                    // A secondary keeps its creation snapshot by design.
-                    SessionKind::Secondary { .. } => Vec::new(),
-                };
-                let runtime: Vec<&String> = effective
-                    .settings
-                    .iter()
-                    .filter(|(_, entry)| entry.source == Layer::Runtime)
-                    .map(|(key, _)| key)
-                    .collect();
-                let runtime = serde_json::to_value(runtime).map_err(io::Error::other)?;
-                report(
-                    &effective,
-                    serde_json::json!({ "session": info, "pending": pending, "runtime": runtime }),
-                )
+                let saved = self.settings.resolve(info.card())?;
+                let primary = matches!(info.kind, SessionKind::Primary { .. });
+                let (effective, mut extra) =
+                    self.session_settings(&handle, &saved, primary).await?;
+                extra["session"] = serde_json::to_value(info).map_err(io::Error::other)?;
+                report(&effective, extra)
             }
         }
     }
 
-    /// Set (`Some`) or remove (`None`) one override. Global and card values are saved and
-    /// apply to sessions started afterwards. A secondary's value is applied to its worker
-    /// now and kept until the secondary ends; removing it re-applies its creation value.
+    async fn session_settings(
+        &self,
+        handle: &SessionHandle,
+        saved: &crate::settings_store::Resolution,
+        primary: bool,
+    ) -> io::Result<(crate::settings_store::Resolution, serde_json::Value)> {
+        use crate::settings_store::Layer;
+        use lotus_settings::{Apply, Registry};
+
+        let native = handle.native.lock().await;
+        let session = lock(&handle.settings).clone();
+        let mut effective = session.snapshot.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "this session was restored from a checkpoint and runs with its settings",
+            )
+        })?;
+        let mut desired = if primary {
+            saved.clone()
+        } else {
+            effective.clone()
+        };
+        // Input settings resolve from the current saved layers on every revision.
+        for (key, entry) in &saved.settings {
+            if is_input(key) {
+                effective.settings.insert(key.clone(), entry.clone());
+                desired.settings.insert(key.clone(), entry.clone());
+            }
+        }
+        effective.apply_runtime(&session.runtime);
+        desired.apply_runtime(&session.runtime);
+        let available = native.state().is_active() && !handle.is_closed();
+        let mut pending = BTreeMap::new();
+        effective.settings.retain(|key, entry| {
+            if is_input(key) {
+                return true;
+            }
+            let observed = available
+                .then(|| native.settings_values().get(key))
+                .flatten();
+            if let Some(next) = desired.settings.get(key).filter(|_| primary) {
+                let class = Registry::builtin().get(key).map(|d| d.apply);
+                let next_value = self.next_setting_value(&native, key, next);
+                let changed = !same_setting(key, &entry.value, &next.value)
+                    || (entry.source == Layer::Default) != (next.source == Layer::Default)
+                    || (class == Some(Apply::CfgSavedata) && entry.source == Layer::Default);
+                let inherit_cfg =
+                    class == Some(Apply::CfgSavedata) && next.source == Layer::Default;
+                if changed
+                    && !inherit_cfg
+                    && !observed.is_some_and(|v| same_setting(key, v, next_value))
+                {
+                    let reason = match class {
+                        Some(Apply::CfgSavedata) => {
+                            "Updated in guest CFG savedata before the next start."
+                        }
+                        _ => "The saved value applies the next time this card starts.",
+                    };
+                    pending.insert(
+                        key.clone(),
+                        serde_json::json!({
+                            "status": "pending",
+                            "apply": class,
+                            "effective": observed,
+                            "desired": next_value,
+                            "next_action": "start_card",
+                            "reason": reason,
+                        }),
+                    );
+                }
+            }
+            if let Some(observed) = observed {
+                if !same_setting(key, observed, &entry.value) {
+                    entry.source = Layer::Worker;
+                }
+                entry.value = observed.clone();
+                true
+            } else {
+                false
+            }
+        });
+        let pending_keys: Vec<_> = pending.keys().collect();
+        let runtime: Vec<_> = session.runtime.keys().collect();
+        Ok((
+            effective,
+            serde_json::json!({
+                "desired_settings": desired.settings,
+                "pending": pending_keys,
+                "pending_details": pending,
+                "runtime": runtime,
+            }),
+        ))
+    }
+
+    fn next_setting_value<'a>(
+        &self,
+        native: &'a NativeSession,
+        key: &str,
+        entry: &'a crate::settings_store::Entry,
+    ) -> &'a serde_json::Value {
+        if entry.source == crate::settings_store::Layer::Default
+            && !(key == "graphics_api" && self.config.prefer_vulkan)
+        {
+            return native.startup_defaults().get(key).unwrap_or(&entry.value);
+        }
+        &entry.value
+    }
+
+    /// Save or clear one override. Live changes reach the affected mounted primary.
+    /// A secondary override is local to that session.
     pub async fn set_setting(
         &self,
         target: &SettingsTarget,
         key: &str,
         value: Option<serde_json::Value>,
         actor: Actor,
-    ) -> io::Result<()> {
+    ) -> io::Result<Vec<SettingChange>> {
         use crate::settings_store::Store;
         self.require_control()?;
         let result = match target {
-            SettingsTarget::Global => self.settings.set(&Store::Global, key, value),
-            SettingsTarget::Card { card } => {
-                self.known_card(card)?;
-                self.settings.set(&Store::Card(card.clone()), key, value)
-            }
-            SettingsTarget::Session { session } => {
-                self.set_runtime(session, [(key.to_string(), value)], actor)
+            SettingsTarget::Global => {
+                self.change_saved(&Store::Global, Some((key, value)), actor)
                     .await
             }
+            SettingsTarget::Card { card } => {
+                self.known_card(card)?;
+                self.change_saved(&Store::Card(card.clone()), Some((key, value)), actor)
+                    .await
+            }
+            SettingsTarget::Session { session } => self
+                .set_runtime(session, [(key.to_string(), value)], actor)
+                .await
+                .map(|()| {
+                    vec![SettingChange {
+                        key: key.into(),
+                        session: Some(session.clone()),
+                        status: SettingStatus::Applied,
+                        reason: None,
+                    }]
+                }),
         };
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
         result
@@ -831,24 +993,221 @@ impl Supervisor {
 
     /// Remove every override of a target: a saved file's entries, or a secondary's runtime
     /// overrides (re-applying its creation values).
-    pub async fn reset_settings(&self, target: &SettingsTarget, actor: Actor) -> io::Result<()> {
+    pub async fn reset_settings(
+        &self,
+        target: &SettingsTarget,
+        actor: Actor,
+    ) -> io::Result<Vec<SettingChange>> {
         use crate::settings_store::Store;
         self.require_control()?;
         let result = match target {
-            SettingsTarget::Global => self.settings.reset(&Store::Global),
+            SettingsTarget::Global => self.change_saved(&Store::Global, None, actor).await,
             SettingsTarget::Card { card } => {
                 self.known_card(card)?;
-                self.settings.reset(&Store::Card(card.clone()))
+                self.change_saved(&Store::Card(card.clone()), None, actor)
+                    .await
             }
             SettingsTarget::Session { session } => {
                 let handle = self.handle(session)?;
                 let keys: Vec<String> = lock(&handle.settings).runtime.keys().cloned().collect();
-                self.set_runtime(session, keys.into_iter().map(|key| (key, None)), actor)
+                self.set_runtime(session, keys.iter().cloned().map(|key| (key, None)), actor)
                     .await
+                    .map(|()| {
+                        keys.into_iter()
+                            .map(|key| SettingChange {
+                                key,
+                                session: Some(session.clone()),
+                                status: SettingStatus::Applied,
+                                reason: None,
+                            })
+                            .collect()
+                    })
             }
         };
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
         result
+    }
+
+    async fn change_saved(
+        &self,
+        store: &crate::settings_store::Store,
+        edit: Option<(&str, Option<serde_json::Value>)>,
+        actor: Actor,
+    ) -> io::Result<Vec<SettingChange>> {
+        use crate::settings_store::{check, Layer, Store};
+        use lotus_settings::{Apply, Registry, Scope};
+
+        let _edit_guard = self.settings_edits.lock().await;
+        let card = match store {
+            Store::Global => None,
+            Store::Card(card) => Some(card.as_str()),
+        };
+        let previous = self.settings.resolve(card)?;
+        let mounted: Vec<_> = lock(&self.registry)
+            .sessions
+            .values()
+            .filter_map(|handle| {
+                let SessionKind::Primary { card: name } = handle.info().kind else {
+                    return None;
+                };
+                (card.is_none_or(|card| card == name) && !handle.is_closed())
+                    .then(|| (name, Arc::clone(handle)))
+            })
+            .collect();
+        let mut affected = Vec::with_capacity(mounted.len());
+        for (name, handle) in mounted {
+            let before = self.settings.resolve(Some(&name))?;
+            if let Some((key, Some(value))) = edit.as_ref().filter(|(key, _)| {
+                !is_input(key)
+                    && !(card.is_none()
+                        && before.settings.get(*key).is_some_and(|entry| {
+                            matches!(entry.source, Layer::Card | Layer::Managed)
+                        }))
+            }) {
+                let native = handle.native.lock().await;
+                check(
+                    key,
+                    value,
+                    if card.is_some() {
+                        Scope::Primary
+                    } else {
+                        Scope::Global
+                    },
+                    native.branch(),
+                )?;
+                if native.state().is_active()
+                    && native.branch().is_some()
+                    && !native.settings_values().contains_key(*key)
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Unsupported,
+                        format!("mounted worker does not report {key}"),
+                    ));
+                }
+            }
+            affected.push((name, handle, before));
+        }
+        match &edit {
+            Some((key, value)) => self.settings.set(store, key, value.clone())?,
+            None => self.settings.reset(store)?,
+        }
+
+        let saved = self.settings.resolve(card)?;
+        let affected = affected
+            .into_iter()
+            .map(|(name, handle, before)| Ok((handle, before, self.settings.resolve(Some(&name))?)))
+            .collect::<io::Result<Vec<_>>>()?;
+        let keys: Vec<&str> = match &edit {
+            Some((key, _)) => vec![key],
+            None => saved
+                .settings
+                .iter()
+                .filter(|(key, entry)| previous.settings.get(*key) != Some(*entry))
+                .map(|(key, _)| key.as_str())
+                .collect(),
+        };
+        let mut changes = Vec::new();
+        for key in keys {
+            let Some(descriptor) = Registry::builtin().get(key) else {
+                continue;
+            };
+            let mut matched = false;
+            for (handle, before, after) in &affected {
+                let Some(next) = after.settings.get(key) else {
+                    continue;
+                };
+                if before.settings.get(key) == Some(next)
+                    && matches!(next.source, Layer::Card | Layer::Managed)
+                    && card.is_none()
+                {
+                    continue;
+                }
+                matched = true;
+                let (status, reason) = match self
+                    .apply_saved_setting(handle, key, next, descriptor.apply, actor)
+                    .await
+                {
+                    Ok(SettingStatus::Pending) => (
+                        SettingStatus::Pending,
+                        Some("Saved for the next card start.".into()),
+                    ),
+                    Ok(status) => (status, None),
+                    Err(error) => (SettingStatus::Rejected, Some(error.to_string())),
+                };
+                changes.push(SettingChange {
+                    key: key.into(),
+                    session: Some(handle.info().id),
+                    status,
+                    reason,
+                });
+            }
+            if !matched {
+                changes.push(SettingChange {
+                    key: key.into(),
+                    session: None,
+                    status: if descriptor.apply == Apply::Routing {
+                        SettingStatus::Applied
+                    } else {
+                        SettingStatus::Pending
+                    },
+                    reason: (descriptor.apply != Apply::Routing)
+                        .then(|| "Saved for future session starts.".into()),
+                });
+            }
+        }
+        Ok(changes)
+    }
+
+    async fn apply_saved_setting(
+        &self,
+        handle: &SessionHandle,
+        key: &str,
+        next: &crate::settings_store::Entry,
+        apply: lotus_settings::Apply,
+        actor: Actor,
+    ) -> io::Result<SettingStatus> {
+        use crate::settings_store::Layer;
+        use lotus_settings::Apply;
+
+        if apply == Apply::Routing || (apply == Apply::CfgSavedata && next.source == Layer::Default)
+        {
+            return Ok(SettingStatus::Applied);
+        }
+        let mut native = handle.native.lock().await;
+        if handle.is_closed() || !native.state().is_active() {
+            return Ok(SettingStatus::Pending);
+        }
+        let requested = self.next_setting_value(&native, key, next).clone();
+        let matches_worker = |native: &NativeSession| {
+            native
+                .settings_values()
+                .get(key)
+                .is_some_and(|value| same_setting(key, value, &requested))
+        };
+        if apply != Apply::Live {
+            return Ok(if matches_worker(&native) {
+                SettingStatus::Applied
+            } else {
+                SettingStatus::Pending
+            });
+        }
+        if !matches_worker(&native) {
+            check_lease(handle, actor_client(actor))?;
+            let value = serde_json::from_value(requested.clone()).map_err(io::Error::other)?;
+            native
+                .apply_profile(&BTreeMap::from([(key.to_string(), value)]))
+                .await?;
+            if !matches_worker(&native) {
+                return Err(io::Error::other(
+                    "Worker reported a different effective value.",
+                ));
+            }
+        }
+        if let Some(snapshot) = &mut lock(&handle.settings).snapshot {
+            snapshot.settings.insert(key.into(), next.clone());
+        }
+        handle.record(actor, "settings");
+        Ok(SettingStatus::Applied)
     }
 
     /// Changes so far to settings and input presets; see [`Supervisor::input_layout`].
@@ -1038,7 +1397,9 @@ impl Supervisor {
         pause_if_running(&mut native).await?;
         handle.record(actor, "reset");
         handle.cancel_input(true);
-        native.reset().await
+        let result = native.reset().await?;
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
+        Ok(result)
     }
 
     pub async fn input(
@@ -1196,6 +1557,7 @@ impl Supervisor {
         let mut registry = lock(&self.registry);
         registry.sessions.remove(id);
         registry.mounted.retain(|_, owner| owner != id);
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
         drop(registry);
         self.budgets.release(id);
         let mut focused = lock(&self.focused);
@@ -1642,10 +2004,15 @@ impl Supervisor {
         }
         match command {
             DebugCommand::Status => native.status().await,
-            DebugCommand::Reset => native.reset().await,
+            DebugCommand::Reset => {
+                let result = native.reset().await?;
+                self.settings_revision.fetch_add(1, Ordering::AcqRel);
+                Ok(result)
+            }
             DebugCommand::Load { asset } => {
                 let result = native.load(&self.resolve_asset(asset)?).await?;
                 lock(&handle.info).asset = Some(asset.clone());
+                self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 Ok(result)
             }
             DebugCommand::Continue => {
@@ -1657,6 +2024,12 @@ impl Supervisor {
             DebugCommand::Advance { frames } => native.advance(*frames).await,
             _ => {
                 let mut result = native.debug(command).await?;
+                if matches!(
+                    command,
+                    DebugCommand::SettingsSet { .. } | DebugCommand::SystemRegenerate { .. }
+                ) {
+                    self.settings_revision.fetch_add(1, Ordering::AcqRel);
+                }
                 self.import_debug_artifacts(id, &handle.root, &mut result)?;
                 if let Some(symbols) = lock(&handle.symbols).as_ref() {
                     if let Some(frames) = result

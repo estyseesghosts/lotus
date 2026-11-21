@@ -497,13 +497,13 @@ impl SettingsWindow {
         let mut out = vec![note(
             match &self.target {
                 Target::Global => {
-                    "Defaults for every card and new secondary session. Worker settings \
-                    apply to sessions started afterwards; input layouts apply at once."
+                    "Defaults for cards and new secondary sessions. Live settings update \
+                    mounted cards that inherit the value. Other worker settings apply at the next start."
                         .into()
                 }
                 Target::Card(card) => format!(
-                    "Saved overrides of card {card}; unset values use the global defaults. Worker \
-                     settings apply when its primary next starts; input layouts apply at once."
+                    "Overrides for card {card}. Unset values inherit Global. Live settings update \
+                     the mounted worker. Other worker settings apply at the next start."
                 ),
             },
             c.text_secondary,
@@ -739,7 +739,7 @@ impl SettingsWindow {
         // Window-wide reasons (no host, read-only host) are stated once in
         // status_notes; rows add only their own.
         let window_wide = self.host.is_none() || !self.control;
-        let note = match editable {
+        let mut note = match editable {
             Err(reason)
                 if !(window_wide && matches!(descriptor.owner, Owner::Azahar | Owner::Input)) =>
             {
@@ -747,6 +747,12 @@ impl SettingsWindow {
             }
             _ => descriptor.description.clone(),
         };
+        if let Some(pending) = self.pending_note(&key) {
+            if !note.is_empty() {
+                note.push(' ');
+            }
+            note.push_str(&pending);
+        }
         if !note.trim().is_empty() {
             row = row.note(note);
         }

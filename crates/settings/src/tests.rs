@@ -154,8 +154,10 @@ fn values_are_checked_against_type_range_and_choices() {
     assert!(check("cpu_clock_percentage", json!(401)).is_err());
     assert!(check("cpu_clock_percentage", json!(4)).is_err());
     assert!(check("cpu_clock_percentage", json!(50.5)).is_err());
-    // Enum: GraphicsAPI choices from settings.h.
+    // Native settings_set rejects OpenGL, even though the core enum includes it.
+    check("graphics_api", json!(0)).expect("software");
     check("graphics_api", json!(2)).expect("vulkan");
+    assert!(check("graphics_api", json!(1)).is_err());
     assert!(check("graphics_api", json!(99)).is_err());
     // Float.
     check("volume", json!(0.5)).expect("float");

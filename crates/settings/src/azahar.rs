@@ -104,10 +104,15 @@ fn kind(entry: &Entry) -> Kind {
         "integer" => Kind::Integer {
             min: bound("min").as_i64(),
             max: bound("max").as_i64(),
-            choices: entry
-                .choices
-                .as_array()
-                .map(|c| c.iter().filter_map(Value::as_i64).collect()),
+            choices: if entry.name == "graphics_api" {
+                // The native settings_set handler permits software and Vulkan only.
+                Some(vec![0, 2])
+            } else {
+                entry
+                    .choices
+                    .as_array()
+                    .map(|c| c.iter().filter_map(Value::as_i64).collect())
+            },
             nullable: false,
         },
         "float" => Kind::Float {

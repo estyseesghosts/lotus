@@ -1,4 +1,5 @@
 //! Shared native operations used by desktop, CLI and MCP.
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
@@ -93,6 +94,8 @@ pub struct NativeSession {
     worker: ControlledWorker,
     root: PathBuf,
     profile_hash: String,
+    settings_values: BTreeMap<String, Value>,
+    startup_defaults: BTreeMap<String, Value>,
     identity: Value,
     /// Set by [`Self::prefer_vulkan`]: a typed Vulkan failure at load falls back to software.
     vulkan_fallback_armed: bool,
@@ -150,6 +153,8 @@ impl NativeSession {
             worker,
             root,
             profile_hash: String::new(),
+            settings_values: BTreeMap::new(),
+            startup_defaults: BTreeMap::new(),
             identity: serde_json::json!({"source":reply.data["source"], "backend":reply.data["backend_name"],
             "worker_sha256":file_hash(executable)?}),
             vulkan_fallback_armed: false,
@@ -175,6 +180,7 @@ impl NativeSession {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = session.worker.kill_switch();
         if reply.data["debug_api"] == true {
             session.refresh_profile().await?;
+            session.startup_defaults = session.settings_values.clone();
         }
         Ok(session)
     }
@@ -315,9 +321,8 @@ impl NativeSession {
         Ok(())
     }
 
-    async fn refresh_profile(&mut self) -> io::Result<()> {
-        use sha2::{Digest, Sha256};
-        let mut values = std::collections::BTreeMap::new();
+    async fn read_settings(&mut self) -> io::Result<BTreeMap<String, Value>> {
+        let mut values = BTreeMap::new();
         let mut offset = 0u32;
         loop {
             let schema = self.operation(Method::Debug,
@@ -337,6 +342,20 @@ impl NativeSession {
                 _ => return Err(io::Error::other("invalid settings cursor")),
             }
         }
+        Ok(values)
+    }
+
+    pub(crate) fn settings_values(&self) -> &BTreeMap<String, Value> {
+        &self.settings_values
+    }
+
+    pub(crate) fn startup_defaults(&self) -> &BTreeMap<String, Value> {
+        &self.startup_defaults
+    }
+
+    async fn refresh_profile(&mut self) -> io::Result<()> {
+        use sha2::{Digest, Sha256};
+        let values = self.read_settings().await?;
         self.profile_hash = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&values).map_err(io::Error::other)?)
@@ -371,6 +390,7 @@ impl NativeSession {
             }
             None => Value::Null,
         };
+        self.settings_values = values;
         fs::write(
             path,
             serde_json::to_vec_pretty(&manifest).map_err(io::Error::other)?,
@@ -378,11 +398,30 @@ impl NativeSession {
         Ok(())
     }
 
+    /// Collect boot-time changes, including CFG, without changing the checkpoint profile hash.
+    async fn observe_boot_settings(&mut self) {
+        if self.settings_api {
+            match self.read_settings().await {
+                Ok(values) => self.settings_values = values,
+                Err(error) => {
+                    self.settings_values.clear();
+                    eprintln!("lotus: could not read settings after boot: {error}");
+                }
+            }
+        }
+    }
+
     pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<Value> {
         self.worker.subscribe()
     }
 
     pub async fn load(&mut self, path: &Path) -> io::Result<Value> {
+        let loaded = self.load_content(path).await?;
+        self.observe_boot_settings().await;
+        Ok(loaded)
+    }
+
+    async fn load_content(&mut self, path: &Path) -> io::Result<Value> {
         let params = serde_json::json!({"path": native_path(path)?});
         if !self.vulkan_fallback_armed {
             return self.operation(Method::Load, params).await;
@@ -454,7 +493,9 @@ impl NativeSession {
     }
 
     pub async fn reset(&mut self) -> io::Result<Value> {
-        self.operation(Method::Reset, Value::Null).await
+        let reset = self.operation(Method::Reset, Value::Null).await?;
+        self.observe_boot_settings().await;
+        Ok(reset)
     }
 
     /// Make the card on disk match the guest's writes; requires a paused worker. Fails with
