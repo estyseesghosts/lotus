@@ -62,6 +62,14 @@ The packaged AZAHAR focus test saw real Alt+Tab away and back, title-click
 activation, minimize and restore. Installed preview followed published
 preview within two sequences, matching the legacy baseline's maximum lag.
 
+A second Windows run of `tests/test_focus_cycle.py` used the published 0.1.0
+ZIP, t03 and both packaged workers. After Alt+Tab back, CITnLO advanced
+123 guest frames, published 53 previews and rendered 43 times. AZAHAR
+advanced 123 frames, published 51 previews and rendered 42 times. Both
+stopped preview requests while minimized and resumed after restore.
+Installed preview lag stayed within one sequence. The reported freeze
+did not reproduce and its cause remains open in #74.
+
 The Windows workspace suite passed 298 tests and Clippy passed. The native
 controller and inspector tests passed separately for each worker, along with
 the packaged debugger acceptance and a clean 51-test legacy desktop run.

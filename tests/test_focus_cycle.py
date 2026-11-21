@@ -154,11 +154,13 @@ def run(client, output):
                 "foreground": user32.GetForegroundWindow() == hwnd,
                 "minimized": bool(user32.IsIconic(hwnd)),
                 "guest": guest,
+                "controller_ticks": metrics.get("ticks", 0),
                 "published": metrics.get("published_preview_sequence", 0),
                 "preview_requests": metrics.get("preview", {}).get("count", 0),
                 "installed": ui.get("installed_preview_sequence", 0),
                 "renders": ui.get("renders", 0),
                 "polls": ui.get("polls_completed", 0),
+                "polls_started": ui.get("polls_started", 0),
                 "polls_recovered": ui.get("polls_recovered", 0),
                 "poll_age_ms": ui.get("poll_age_ms"),
                 "activations": ui.get("activations", 0),
@@ -205,12 +207,18 @@ def verdicts(samples):
     for phase in phases:
         # The first sample of a phase still straddles the focus change.
         rows = [sample for sample in samples if sample["phase"] == phase][1:]
+        if len(rows) < 2:
+            failures.append(f"{phase}: insufficient status samples")
+            continue
         first, last = rows[0], rows[-1]
         minimized = all(row["minimized"] for row in rows)
         required = ("guest", "polls") if minimized else STAGES
         stopped = [stage for stage in required if last[stage] <= first[stage]]
         lag = max(row["published"] - row["installed"] for row in rows)
-        stale = max(row["poll_age_ms"] or 1e9 for row in rows)
+        stale = max(
+            float("inf") if row["poll_age_ms"] is None else row["poll_age_ms"]
+            for row in rows
+        )
         problems = []
         if stopped:
             problems.append(f"stopped: {', '.join(stopped)}")
