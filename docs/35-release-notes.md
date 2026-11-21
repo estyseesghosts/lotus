@@ -4,6 +4,27 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## v0.1.1 (2026-11-21)
+
+Pins unchanged from v0.1.0: integration (AZAHAR) `5ecbd982`, experimental
+(CITnLO) `a3994c1d`.
+
+- Card and inherited global live settings apply to mounted primary sessions;
+  boot, renderer and CFG edits are staged and marked **Restart required**.
+  Writes report `applied`, `pending` or `rejected` per setting (#52, see
+  [30](30-sessions-and-interface.md)).
+- `lotus_capture_image` returns labeled lossless PNG images of both screens,
+  `scale` 1–4 (#49, see [23](23-local-mcp.md)).
+- `rewind_memory_mib` policy limit for rewind recording reservations,
+  default 1536 MiB interactive (#32).
+- `snapshot_queue_limit` bounds waiting snapshot requests (default 16);
+  reset and content load release rewind and GPU-capture slots (#23).
+- Worker executable hash cache keys on file identity and change time, so a
+  same-length, same-mtime replacement is rehashed (#30).
+- Benchmark tooling: parallel workload validation, shader-cache cold/seeded
+  arms, live-preview cost, and stock Azahar comparison (#10, #22, #25, #30).
+  Shader seeding stays opt-in. Native LTO remains off (#11).
+
 ## v0.1.0
 
 Silvestris is the default desktop and Settings renderer. New profiles use

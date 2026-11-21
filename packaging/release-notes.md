@@ -1,10 +1,22 @@
-LOTUS 0.1.0 uses Silvestris for the desktop and Settings. New profiles use
-Aqua Light. Settings → General switches Style and Appearance without closing
-your sessions. Saved themes, pane sizes and visibility are retained.
+LOTUS 0.1.1 applies live setting changes to running cards. Volume and other
+live settings reach mounted sessions at once. Boot, renderer and CFG changes
+are marked **Restart required** in Settings and apply the next time the card
+starts. MCP and CLI setting writes report each change as applied, pending or
+rejected.
 
-Both native runtimes keep continuous Vulkan previews nonblocking between run
-batches and report Windows adapter memory pressure for session admission.
-CITnLO supports background rewind compression with a configurable queue.
+The new MCP tool `lotus_capture_image` returns both screens as lossless PNG
+images, with an optional 1–4× scale. `lotus_capture` still returns raw BGRA
+artifacts.
+
+Session policy adds `rewind_memory_mib`, which limits the memory reserved
+for rewind recording (default 1536 MiB in interactive mode), and
+`snapshot_queue_limit`, which bounds queued snapshot requests (default 16).
+Reset and content load now release rewind and GPU-capture slots. Worker
+executable hashes are cached by file identity, so a replaced worker is always
+rehashed.
+
+Both native runtimes are unchanged from 0.1.0: AZAHAR `5ecbd982` and CITnLO
+`a3994c1d`.
 
 On Windows x64, extract the ZIP and run `LOTUS.cmd` with your own
 `.3dsx` homebrew. `LOTUS-AZAHAR.cmd` selects the upstream-tracking
@@ -14,5 +26,5 @@ local MCP server, both runtimes, fonts, license notices and build manifests.
 
 Windows requires Windows 11 x64 and Direct3D 11. Linux requires glibc 2.39 or
 newer. The packages are unsigned.
-See [the integration evidence](https://github.com/estyseesghosts/lotus/blob/v0.1.0/docs/38-silvestris-adoption.md)
-for the tested desktop, input, worker and package paths.
+See [the release notes](https://github.com/estyseesghosts/lotus/blob/v0.1.1/docs/35-release-notes.md)
+for details and linked evidence.
