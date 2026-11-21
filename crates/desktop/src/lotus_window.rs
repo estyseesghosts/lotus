@@ -10,7 +10,7 @@
 //! from [`crate::layout`] for the space actually available. The window only
 //! renders snapshots and sends commands; see [`crate::desktop_controller`].
 use std::cell::Cell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -29,7 +29,9 @@ use lotus_session::workspace::{self, Axis, Layout, Operation, Snapshot, Viewport
 use lotus_session::SessionState;
 use serde_json::Value;
 
-use crate::desktop_controller::{Command, DesktopController, McpLink, McpMode};
+use crate::desktop_controller::{
+    Command, DebugRequest, DebugStatus, DesktopController, McpLink, McpMode,
+};
 use crate::gauges;
 use crate::icons::{icon, Icon};
 use crate::inspection::{self, InspectionSnapshot, Panel, SessionTarget};
@@ -226,6 +228,8 @@ pub struct LotusWindow {
     resolved_sent: Cell<Option<workspace::Resolved>>,
     registers: Option<(SessionTarget, Value)>,
     inspection: Option<InspectionSnapshot>,
+    debug_request: Option<DebugRequest>,
+    hidden_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
     surface_image: Option<Arc<RenderImage>>,
     surface_target: Option<SessionTarget>,
@@ -388,6 +392,8 @@ impl LotusWindow {
             resolved_sent: Cell::new(None),
             registers: None,
             inspection: None,
+            debug_request: None,
+            hidden_debug_details: BTreeSet::new(),
             inspection_panel: {
                 #[cfg(feature = "silvestris-ui")]
                 {
@@ -662,7 +668,7 @@ impl LotusWindow {
             self.controllers = controllers;
         }
         let target = self.keyboard_target();
-        let (previews, selected, surface) = {
+        let (previews, selected, snapshot, surface) = {
             let mut update = ui.lock_update(&latest);
             self.sessions = update.sessions.clone();
             self.cards = update.cards.clone();
@@ -674,7 +680,7 @@ impl LotusWindow {
             self.waiting.clone_from(&update.waiting);
             self.artifacts.clone_from(&update.artifacts);
             self.registers = update.registers.clone();
-            self.set_inspection(update.inspection.clone(), cx);
+
             self.workspace.clone_from(&update.workspace);
             if update.inspected != self.inspected {
                 self.inspected.clone_from(&update.inspected);
@@ -720,8 +726,34 @@ impl LotusWindow {
             } else {
                 BTreeMap::new()
             };
-            (previews, update.selected.clone(), update.debug_image.take())
+            self.hidden_debug_details
+                .retain(|id| update.debug_requests().any(|request| request.id == *id));
+            self.debug_request = update.debug_result(self.inspection_panel).cloned();
+            let details = self.debug_request.as_ref().and_then(|request| {
+                if self.hidden_debug_details.contains(&request.id) {
+                    return None;
+                }
+                let DebugStatus::Finished { view, image } = &request.status else {
+                    return None;
+                };
+                Some((
+                    (Some(request.target.clone()), request.panel, view.clone()),
+                    image.clone(),
+                ))
+            });
+            let (snapshot, surface) = match details {
+                Some((snapshot, image)) => {
+                    let changed = self
+                        .inspection
+                        .as_ref()
+                        .is_none_or(|old| !Arc::ptr_eq(&old.2, &snapshot.2));
+                    (Some(snapshot), image.filter(|_| changed))
+                }
+                None => (update.inspection.clone(), None),
+            };
+            (previews, update.selected.clone(), snapshot, surface)
         };
+        self.set_inspection(snapshot, cx);
         if selected != self.selected {
             self.selected = selected;
         }
@@ -737,8 +769,10 @@ impl LotusWindow {
             if let Some(old) = self.surface_image.take() {
                 cx.drop_image(old, None);
             }
-            if let Some(pixels) = RgbaImage::from_raw(surface.width, surface.height, surface.bgra) {
-                self.surface_target = Some(surface.target);
+            if let Some(pixels) =
+                RgbaImage::from_raw(surface.width, surface.height, surface.bgra.clone())
+            {
+                self.surface_target = Some(surface.target.clone());
                 self.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(pixels)])));
             }
         }
@@ -3532,17 +3566,22 @@ impl LotusWindow {
             .map(SessionTarget::from_summary)
     }
 
-    fn debug_command(&mut self, target: &Option<SessionTarget>, command: D) {
+    fn debug_command(&mut self, target: &Option<SessionTarget>, panel: Panel, command: D) {
         let Some(target) = target.as_ref().filter(|target| {
-            self.control
-                && target.resolve(&self.sessions).is_some()
+            target.resolve(&self.sessions).is_some()
                 && self.inspection_target().as_ref() == Some(*target)
         }) else {
             return;
         };
         let target = target.clone();
-        self.choose_inspection(Panel::Result, 0);
-        self.send(Command::DebugAt { target, command });
+        if panel == Panel::Result {
+            self.choose_inspection(Panel::Result, 0);
+        }
+        self.send(Command::DebugAt {
+            target,
+            panel,
+            command,
+        });
     }
     fn open_trace(&mut self, cx: &mut Context<Self>) {
         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -3982,7 +4021,7 @@ impl LotusWindow {
                     small_button(theme, format!("debug-{label}"), label, tone, self.control)
                         .on_click(cx.listener(move |view, _, _, _| {
                             if view.control {
-                                view.debug_command(&target, command.clone());
+                                view.debug_command(&target, current, command.clone());
                             }
                         })),
                 );
@@ -3997,6 +4036,52 @@ impl LotusWindow {
         let utility: Option<gpui::Empty> = None;
         #[cfg(not(feature = "silvestris-ui"))]
         let utility = (self.menu == Menu::InspectorUtility).then(|| self.render_utility_menu(cx));
+        if let Some(request) = self
+            .debug_request
+            .as_ref()
+            .filter(|request| request.panel == current && Some(&request.target) == target.as_ref())
+        {
+            use std::io::ErrorKind;
+            let message = match &request.status {
+                DebugStatus::Running => "Running debugger command…".into(),
+                DebugStatus::Finished { .. } => "Command completed".into(),
+                DebugStatus::Failed { kind, message } => match kind {
+                    ErrorKind::PermissionDenied => format!("Control unavailable · {message}"),
+                    ErrorKind::Unsupported => format!("Unsupported · {message}"),
+                    _ => message.clone(),
+                },
+                DebugStatus::Expired => "Session or guest changed".into(),
+            };
+            let mut status = div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .px_2()
+                .py_1()
+                .gap_2()
+                .text_xs()
+                .text_color(theme.text_secondary)
+                .child(div().min_w_0().child(message));
+            if current != Panel::Result && matches!(request.status, DebugStatus::Finished { .. }) {
+                let id = request.id;
+                let label = if self.hidden_debug_details.contains(&id) {
+                    "Show result"
+                } else {
+                    "Show panel"
+                };
+                status = status.child(
+                    small_button(theme, "debug-details", label, Tone::Plain, true).on_click(
+                        cx.listener(move |view, _, _, cx| {
+                            if !view.hidden_debug_details.remove(&id) {
+                                view.hidden_debug_details.insert(id);
+                            }
+                            cx.notify();
+                        }),
+                    ),
+                );
+            }
+            panel = panel.child(status);
+        }
         let view = self.inspection.as_ref().filter(|snapshot| {
             snapshot.1 == current
                 && inspection::snapshot_current(snapshot, &self.inspected, &self.sessions)
@@ -4040,21 +4125,20 @@ impl LotusWindow {
                         )
                     }),
             );
-        if current == Panel::Result {
-            if let Some(image) = &self.surface_image {
-                panel = panel.child(
-                    gpui::img(image.clone())
-                        .w_full()
-                        .h(px(180.0))
-                        .object_fit(gpui::ObjectFit::Contain),
-                );
-            }
+        if let Some(image) = &self.surface_image {
+            panel = panel.child(
+                gpui::img(image.clone())
+                    .w_full()
+                    .h(px(180.0))
+                    .object_fit(gpui::ObjectFit::Contain),
+            );
         }
         // Key column scales with the panel; the lane column goes first when narrow.
         let show_lane = width >= 360.0;
         let key_width = (width * 0.36).clamp(90.0, 220.0);
         let rows = view.rows.clone();
         let weak = cx.entity().downgrade();
+        let control = self.control;
         #[cfg(not(feature = "silvestris-ui"))]
         use gpui::uniform_list as inspection_list;
         #[cfg(feature = "silvestris-ui")]
@@ -4067,7 +4151,10 @@ impl LotusWindow {
                             let row = &rows[index];
                             let weak = weak.clone();
                             let target = target.clone();
-                            let action = row.action.clone();
+                            let action = row
+                                .action
+                                .clone()
+                                .filter(|command| control || !command.mutates());
                             let tooltip = format!("{}\n{}", row.key, row.value);
                             #[cfg(feature = "silvestris-ui")]
                             let line = silvestris::controls::table::code_row(
@@ -4117,7 +4204,7 @@ impl LotusWindow {
                                     .hover(|style| style.bg(theme.surface_hover))
                                     .on_click(move |_, _, cx| {
                                         let _ = weak.update(cx, |view, _| {
-                                            view.debug_command(&target, command.clone())
+                                            view.debug_command(&target, current, command.clone())
                                         });
                                     })
                             })
@@ -4188,7 +4275,7 @@ impl LotusWindow {
         }
         match serde_json::from_str::<D>(&text) {
             Ok(command) => match command.validate() {
-                Ok(()) => self.debug_command(target, command),
+                Ok(()) => self.debug_command(target, Panel::Result, command),
                 Err(error) => self.error = error.into(),
             },
             Err(error) => self.error = error.to_string(),

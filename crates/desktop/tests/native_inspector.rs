@@ -89,8 +89,18 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         *controller.inspection_selection.lock().unwrap() = (Panel::Result, 0);
         controller
             .commands
-            .send(Command::Debug {
-                session: id.clone(),
+            .send(Command::DebugAt {
+                target: controller
+                    .latest
+                    .lock()
+                    .unwrap()
+                    .inspection
+                    .as_ref()
+                    .unwrap()
+                    .0
+                    .clone()
+                    .unwrap(),
+                panel: Panel::Result,
                 command: D::ReadMemory {
                     address: pc,
                     length: 16,
@@ -98,8 +108,10 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             })
             .unwrap();
         wait(&controller, |update| {
-            update.inspection.as_ref().is_some_and(|(_, panel, data)| {
-                *panel == Panel::Result && data.rows.iter().any(|r| r.key == ".bytes[15]")
+            use lotus_desktop::desktop_controller::DebugStatus;
+            update.debug_result(Panel::Result).is_some_and(|request| {
+                matches!(&request.status, DebugStatus::Finished { view, .. }
+                    if view.rows.iter().any(|r| r.key == ".bytes[15]"))
             })
         });
         controller.inspector.store(false, Ordering::Release);

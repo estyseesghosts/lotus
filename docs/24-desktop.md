@@ -112,6 +112,13 @@ and 32 MiB retained text. GPUI `uniform_list` renders the visible range only.
 Snapshot rows restore named states; frozen texture rows decode to bounded image
 previews. Selecting successive draws produces bounded structural state diffs.
 
+Inspector actions keep their result and error in the panel where they started.
+Use **Show panel** to return to its live data and **Show result** to reopen the
+details. Clipboard commands and imported traces open Result. A session switch
+preserves retained results for that session. Reset, reload, or replacement
+expires guest results and their surface images. Closing the window clears
+request history. The saved inspector panel is a window preference.
+
 `wave3-native-inspector-01` covers both models through the controller, including
 100000-event import and closed manifests. `wave3-inspector-tests-03` and later
 checks cover the bounded view model. **Checked by screenshot**

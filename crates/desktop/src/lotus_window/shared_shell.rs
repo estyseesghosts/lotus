@@ -772,21 +772,29 @@ mod tests {
                 view.retain_current_inspection(cx);
                 assert!(view.inspection.is_none());
                 assert!(view.surface_image.is_none(), "old epoch image is evicted");
-                view.debug_command(&target, D::Registers { core: 0 });
+                view.debug_command(&target, Panel::Result, D::Registers { core: 0 });
                 assert_eq!(
                     view.inspection_panel,
                     Panel::Cpu,
                     "old epoch action rejected"
                 );
                 view.control = false;
-                view.debug_command(&view.inspection_target(), D::Registers { core: 0 });
+                view.debug_command(
+                    &view.inspection_target(),
+                    Panel::Cpu,
+                    D::Registers { core: 0 },
+                );
                 assert_eq!(
                     view.inspection_panel,
                     Panel::Cpu,
-                    "read-only action rejected"
+                    "contextual read keeps its panel"
                 );
                 view.control = true;
-                view.debug_command(&view.inspection_target(), D::Registers { core: 0 });
+                view.debug_command(
+                    &view.inspection_target(),
+                    Panel::Result,
+                    D::Registers { core: 0 },
+                );
                 assert_eq!(
                     view.inspection_panel,
                     Panel::Result,

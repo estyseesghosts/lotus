@@ -11,7 +11,7 @@
 //! supervisor; the window submits input without waiting. With [`McpMode::Stdio`] the same runtime also serves the
 //! MCP tools over stdio against the same supervisor, so an agent and the person
 //! at the window drive one set of sessions.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -55,12 +55,9 @@ pub enum Command {
     /// Point the inspector at one tile's session without selecting it (lotus#71); `None`
     /// returns it to the selection. Ignored unless that session is shown in a split.
     Inspect(Option<String>),
-    Debug {
-        session: String,
-        command: DebugCommand,
-    },
     DebugAt {
         target: SessionTarget,
+        panel: Panel,
         command: DebugCommand,
     },
     OpenTrace {
@@ -105,11 +102,40 @@ pub struct Preview {
     pub frames: Vec<Frame>,
 }
 
+#[derive(Debug)]
 pub struct DebugImage {
     pub target: SessionTarget,
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
+}
+
+const DEBUG_IN_FLIGHT: usize = 8;
+const DEBUG_HISTORY: usize = 24;
+const DEBUG_PER_SESSION: usize = 2;
+
+/// One explicit inspector action. The operation and its target survive panel switches.
+#[derive(Clone, Debug)]
+pub struct DebugRequest {
+    pub id: u64,
+    pub target: SessionTarget,
+    pub panel: Panel,
+    pub command: Arc<DebugCommand>,
+    pub status: DebugStatus,
+}
+
+#[derive(Clone, Debug)]
+pub enum DebugStatus {
+    Running,
+    Finished {
+        view: Arc<Inspection>,
+        image: Option<Arc<DebugImage>>,
+    },
+    Failed {
+        kind: io::ErrorKind,
+        message: String,
+    },
+    Expired,
 }
 
 /// Latest published state. The window takes `previews` when they change.
@@ -137,7 +163,7 @@ pub struct Update {
     /// Registers of the inspected session at its last paused frame, with provenance.
     pub registers: Option<(SessionTarget, Value)>,
     pub inspection: Option<InspectionSnapshot>,
-    pub debug_image: Option<DebugImage>,
+    debug_requests: VecDeque<DebugRequest>,
     pub error: String,
     /// Worker operations of this window pending longer than one second.
     pub waiting: Vec<String>,
@@ -168,14 +194,31 @@ impl Update {
         self.inspection = self.inspection.take().filter(|snapshot| {
             inspection::snapshot_current(snapshot, &self.inspected, &self.sessions)
         });
-        let local = self
-            .inspection
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.0.is_none());
-        self.debug_image = self
-            .debug_image
-            .take()
-            .filter(|image| !local && image.target.is_current(&self.inspected, &self.sessions));
+        for request in &mut self.debug_requests {
+            if request.target.resolve(&self.sessions).is_none() {
+                request.status = DebugStatus::Expired;
+            }
+        }
+    }
+
+    pub fn debug_requests(&self) -> impl DoubleEndedIterator<Item = &DebugRequest> {
+        self.debug_requests.iter()
+    }
+
+    pub fn debug_result(&self, panel: Panel) -> Option<&DebugRequest> {
+        if panel == Panel::Result
+            && self
+                .inspection
+                .as_ref()
+                .is_some_and(|item| item.0.is_none())
+        {
+            return None;
+        }
+        self.debug_requests().rev().find(|request| {
+            request.panel == panel
+                && request.target.is_current(&self.inspected, &self.sessions)
+                && !matches!(request.status, DebugStatus::Expired)
+        })
     }
 }
 
@@ -286,6 +329,9 @@ impl DesktopController {
             inspector: inspector.clone(),
             inspection_selection: inspection_selection.clone(),
             previous_draw: Arc::default(),
+            debug_sequence: Arc::default(),
+            debug_pending: Arc::default(),
+            result_generation: Arc::default(),
             shutdown: shutdown.clone(),
             pending: Arc::new(AtomicUsize::new(0)),
             selected: Arc::new(tokio::sync::watch::channel(String::new()).0),
@@ -358,6 +404,9 @@ struct Loops {
     inspector: Arc<AtomicBool>,
     inspection_selection: Arc<Mutex<(Panel, u32)>>,
     previous_draw: Arc<Mutex<Option<(SessionTarget, Value)>>>,
+    debug_sequence: Arc<AtomicU64>,
+    debug_pending: Arc<AtomicUsize>,
+    result_generation: Arc<AtomicU64>,
     shutdown: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
     /// The selected session, for the preview, inspector and audio tasks.
@@ -755,7 +804,7 @@ impl Loops {
                     .timed(
                         "inspection",
                         &selected,
-                        loops.inspect(&selected, panel, &command),
+                        loops.inspect(&target, panel, &command),
                     )
                     .await;
                 lock(&state).inspected_at = Instant::now();
@@ -774,8 +823,8 @@ impl Loops {
         }
     }
 
-    async fn inspect(&self, selected: &str, panel: Panel, command: &DebugCommand) -> Value {
-        let mut value = match self.host.debug(selected, command, Actor::Desktop).await {
+    async fn inspect(&self, target: &SessionTarget, panel: Panel, command: &DebugCommand) -> Value {
+        let mut value = match self.dispatch_debug(target, command).await {
             Ok(value) => value,
             Err(error) => serde_json::json!({"error":error.to_string()}),
         };
@@ -786,7 +835,7 @@ impl Loops {
                     length: 64,
                     thumb: value["cpsr"].as_u64().unwrap_or(0) & 32 != 0,
                 };
-                if let Ok(assembly) = self.host.debug(selected, &command, Actor::Desktop).await {
+                if let Ok(assembly) = self.dispatch_debug(target, &command).await {
                     value["disassembly"] = assembly;
                 }
             }
@@ -908,10 +957,21 @@ impl Loops {
                 lock(&self.published).inspect_tile = tile;
                 continue;
             }
+            if let Command::DebugAt {
+                target,
+                panel,
+                command,
+            } = command
+            {
+                self.start_debug(target, panel, command);
+                continue;
+            }
+            let trace_generation = matches!(command, Command::OpenTrace { .. })
+                .then(|| self.result_generation.fetch_add(1, Ordering::AcqRel) + 1);
             self.pending.fetch_add(1, Ordering::AcqRel);
             let loops = self.clone();
             tokio::spawn(async move {
-                let result = loops.execute(command).await;
+                let result = loops.execute(command, trace_generation).await;
                 let mut update = lock(&loops.published);
                 match result {
                     Ok(()) => update.error.clear(),
@@ -923,7 +983,176 @@ impl Loops {
         true
     }
 
-    async fn execute(&self, command: Command) -> io::Result<()> {
+    fn start_debug(&self, target: SessionTarget, panel: Panel, command: DebugCommand) {
+        let id = self.debug_sequence.fetch_add(1, Ordering::Relaxed);
+        let mut update = lock(&self.published);
+        let allowed = self.debug_pending.load(Ordering::Acquire) < DEBUG_IN_FLIGHT
+            && update
+                .debug_requests
+                .iter()
+                .filter(|request| {
+                    request.target == target && matches!(request.status, DebugStatus::Running)
+                })
+                .count()
+                < DEBUG_PER_SESSION;
+        let command = Arc::new(command);
+        if panel == Panel::Result {
+            self.result_generation.fetch_add(1, Ordering::AcqRel);
+            if update
+                .inspection
+                .as_ref()
+                .is_some_and(|item| item.0.is_none())
+            {
+                update.inspection = None;
+            }
+        }
+        if update.debug_requests.len() == DEBUG_HISTORY {
+            // The in-flight cap leaves space for completed entries to be evicted.
+            let evict = update
+                .debug_requests
+                .iter()
+                .position(|item| !matches!(item.status, DebugStatus::Running))
+                .expect("bounded debugger queue has completed entries");
+            update.debug_requests.remove(evict);
+        }
+        update.debug_requests.push_back(DebugRequest {
+            id,
+            target: target.clone(),
+            panel,
+            command: command.clone(),
+            status: if allowed {
+                DebugStatus::Running
+            } else {
+                DebugStatus::Failed {
+                    kind: io::ErrorKind::WouldBlock,
+                    message: "Debugger queue is full".into(),
+                }
+            },
+        });
+        if !allowed {
+            return;
+        }
+        drop(update);
+        self.debug_pending.fetch_add(1, Ordering::AcqRel);
+        let loops = self.clone();
+        tokio::spawn(async move {
+            let status = loops.run_debug(&target, command).await;
+            let mut update = lock(&loops.published);
+            if let Some(request) = update
+                .debug_requests
+                .iter_mut()
+                .find(|request| request.id == id && matches!(request.status, DebugStatus::Running))
+            {
+                request.status = status;
+            }
+            loops.debug_pending.fetch_sub(1, Ordering::AcqRel);
+        });
+    }
+
+    async fn dispatch_debug(
+        &self,
+        target: &SessionTarget,
+        command: &DebugCommand,
+    ) -> io::Result<Value> {
+        self.host
+            .debug_at(
+                &target.id,
+                target.created_unix_ms,
+                target.epoch,
+                command,
+                Actor::Desktop,
+            )
+            .await
+    }
+
+    fn target_exists(&self, target: &SessionTarget) -> bool {
+        self.host
+            .summary(&target.id)
+            .is_ok_and(|summary| target.resolve(std::slice::from_ref(&summary)).is_some())
+    }
+
+    async fn run_debug(&self, target: &SessionTarget, command: Arc<DebugCommand>) -> DebugStatus {
+        if !self.target_exists(target) {
+            return DebugStatus::Expired;
+        }
+        let status = match self.dispatch_debug(target, &command).await {
+            Ok(value) if target.accepts_reply(&value) && self.target_exists(target) => {
+                let loops = self.clone();
+                let target = target.clone();
+                tokio::task::spawn_blocking(move || loops.format_debug(&target, &command, value))
+                    .await
+                    .map_err(io::Error::other)
+                    .and_then(|result| result)
+            }
+            Ok(_) => return DebugStatus::Expired,
+            Err(error) => Err(error),
+        };
+        if !self.target_exists(target) {
+            return DebugStatus::Expired;
+        }
+        match status {
+            Ok((view, image)) => DebugStatus::Finished {
+                view: Arc::new(view),
+                image: image.map(Arc::new),
+            },
+            Err(error) => DebugStatus::Failed {
+                kind: error.kind(),
+                message: error.to_string(),
+            },
+        }
+    }
+
+    fn format_debug(
+        &self,
+        target: &SessionTarget,
+        command: &DebugCommand,
+        mut value: Value,
+    ) -> io::Result<(Inspection, Option<DebugImage>)> {
+        if matches!(
+            command,
+            DebugCommand::GpuDraw { .. } | DebugCommand::ShaderTrace { .. }
+        ) {
+            if let Some(uri) = value["artifacts"][0]["uri"].as_str() {
+                let bytes = self.host.read_artifact(uri)?;
+                if bytes.len() > 16 << 20 {
+                    return Err(io::Error::other("desktop GPU snapshot exceeds 16 MiB"));
+                }
+                let capture: Value = serde_json::from_slice(&bytes).map_err(io::Error::other)?;
+                if matches!(command, DebugCommand::GpuDraw { .. }) {
+                    let mut previous = lock(&self.previous_draw);
+                    if let Some((_, before)) = previous.as_ref().filter(|(id, _)| id == target) {
+                        value["draw_changes"] =
+                            serde_json::to_value(Inspection::draw_diff(before, &capture))
+                                .map_err(io::Error::other)?;
+                    }
+                    *previous = Some((target.clone(), capture.clone()));
+                }
+                value["capture"] = capture;
+            }
+        }
+        let mut image = None;
+        if matches!(command, DebugCommand::Surface { .. }) {
+            if let (Some(uri), Some(width), Some(height)) = (
+                value["artifacts"][0]["uri"].as_str(),
+                value["width"].as_u64(),
+                value["height"].as_u64(),
+            ) {
+                let bytes = self.host.read_artifact(uri)?;
+                if width > 1024 || height > 1024 || bytes.len() != (width * height * 4) as usize {
+                    return Err(io::Error::other("invalid surface image bounds"));
+                }
+                image = Some(DebugImage {
+                    target: target.clone(),
+                    width: width as u32,
+                    height: height as u32,
+                    bgra: bytes,
+                });
+            }
+        }
+        Ok((Inspection::from_value(&value, Panel::Result), image))
+    }
+
+    async fn execute(&self, command: Command, trace_generation: Option<u64>) -> io::Result<()> {
         let host = &self.host;
         let actor = Actor::Desktop;
         match command {
@@ -954,98 +1183,18 @@ impl Loops {
                 host.run(&session, actor).await?;
             }
             Command::Select(_) | Command::Inspect(_) => {}
-            request @ (Command::Debug { .. } | Command::DebugAt { .. }) => {
-                let generation = self.generation.load(Ordering::Acquire);
-                let (target, command, mut value) = match request {
-                    Command::Debug { session, command } => {
-                        let target = SessionTarget::from_summary(&host.summary(&session)?);
-                        let value = host.debug(&session, &command, actor).await?;
-                        (target, command, value)
-                    }
-                    Command::DebugAt { target, command } => {
-                        let value = host
-                            .debug_at(
-                                &target.id,
-                                target.created_unix_ms,
-                                target.epoch,
-                                &command,
-                                actor,
-                            )
-                            .await?;
-                        (target, command, value)
-                    }
-                    _ => unreachable!("matched debugger command"),
-                };
-                // The operation finishes even if its view has moved. Its result
-                // must not become evidence about a different worker/guest epoch.
-                if !self.current_reply(&target, generation, &value) {
-                    return Ok(());
-                }
-                if matches!(
-                    command,
-                    DebugCommand::GpuDraw { .. } | DebugCommand::ShaderTrace { .. }
-                ) {
-                    if let Some(uri) = value["artifacts"][0]["uri"].as_str() {
-                        let bytes = host.read_artifact(uri)?;
-                        if bytes.len() > 16 << 20 {
-                            return Err(io::Error::other("desktop GPU snapshot exceeds 16 MiB"));
-                        }
-                        let capture: Value =
-                            serde_json::from_slice(&bytes).map_err(io::Error::other)?;
-                        if matches!(command, DebugCommand::GpuDraw { .. }) {
-                            let mut previous = lock(&self.previous_draw);
-                            if let Some((id, before)) =
-                                previous.as_ref().filter(|(id, _)| id == &target)
-                            {
-                                let _ = id;
-                                value["draw_changes"] =
-                                    serde_json::to_value(Inspection::draw_diff(before, &capture))
-                                        .map_err(io::Error::other)?;
-                            }
-                            *previous = Some((target.clone(), capture.clone()));
-                        }
-                        value["capture"] = capture;
-                    }
-                }
-                let mut image = None;
-                if matches!(command, DebugCommand::Surface { .. }) {
-                    if let (Some(uri), Some(width), Some(height)) = (
-                        value["artifacts"][0]["uri"].as_str(),
-                        value["width"].as_u64(),
-                        value["height"].as_u64(),
-                    ) {
-                        let bytes = host.read_artifact(uri)?;
-                        if width > 1024
-                            || height > 1024
-                            || bytes.len() != (width * height * 4) as usize
-                        {
-                            return Err(io::Error::other("invalid surface image bounds"));
-                        }
-                        image = Some(DebugImage {
-                            target: target.clone(),
-                            width: width as u32,
-                            height: height as u32,
-                            bgra: bytes,
-                        });
-                    }
-                }
-                let view = Arc::new(Inspection::from_value(&value, Panel::Result));
-                let mut update = lock(&self.published);
-                if self.current(&target, generation)
-                    && *lock(&self.inspection_selection) == (Panel::Result, 0)
-                    && update.publish_inspection((Some(target), Panel::Result, view))
-                {
-                    update.debug_image = image;
-                }
-            }
+            Command::DebugAt { .. } => unreachable!("dispatched by drain_commands"),
             Command::OpenTrace { path } => {
-                let view = tokio::task::spawn_blocking(move || Inspection::load_trace(&path))
-                    .await
-                    .map_err(io::Error::other)??;
-                if *lock(&self.inspection_selection) == (Panel::Result, 0) {
-                    let mut update = lock(&self.published);
-                    update.debug_image = None;
-                    update.publish_inspection((None, Panel::Result, Arc::new(view)));
+                let view = tokio::task::spawn_blocking(move || Inspection::load_trace(&path)).await;
+                let mut update = lock(&self.published);
+                if trace_generation == Some(self.result_generation.load(Ordering::Acquire))
+                    && *lock(&self.inspection_selection) == (Panel::Result, 0)
+                {
+                    update.publish_inspection((
+                        None,
+                        Panel::Result,
+                        Arc::new(view.map_err(io::Error::other)??),
+                    ));
                 }
             }
             Command::Play(id) => host.run(&id, actor).await?,
@@ -1164,12 +1313,27 @@ mod tests {
             )),
         )
     }
-    fn image(target: &SessionTarget) -> DebugImage {
-        DebugImage {
+    fn surface_request(target: &SessionTarget) -> DebugRequest {
+        let image = DebugImage {
             target: target.clone(),
             width: 1,
             height: 1,
             bgra: vec![0; 4],
+        };
+        DebugRequest {
+            id: 1,
+            target: target.clone(),
+            panel: Panel::Gpu,
+            command: Arc::new(DebugCommand::Surface {
+                address: 0,
+                width: 1,
+                height: 1,
+                format: 0,
+            }),
+            status: DebugStatus::Finished {
+                view: reply(target).2,
+                image: Some(Arc::new(image)),
+            },
         }
     }
 
@@ -1188,7 +1352,7 @@ mod tests {
                 "current reply accepted"
             );
             update.registers = Some((target.clone(), serde_json::json!({"r0":1})));
-            update.debug_image = Some(image(&target));
+            update.debug_requests.push_back(surface_request(&target));
             match transition {
                 0 => update.sessions[0].telemetry.epoch += 1,
                 1 => update.sessions[0].info.created_unix_ms += 1,
@@ -1198,7 +1362,7 @@ mod tests {
             update.retain_current_inspection();
             assert!(update.inspection.is_none());
             assert!(update.registers.is_none());
-            assert!(update.debug_image.is_none());
+            assert!(update.debug_result(Panel::Gpu).is_none());
             // The request captured its target before the transition; it now
             // finishes after the publication lock has moved to the new state.
             assert!(
@@ -1220,12 +1384,12 @@ mod tests {
         };
         let trace = Inspection::from_value(&serde_json::json!({"trace":"local"}), Panel::Result);
         assert!(update.publish_inspection((None, Panel::Result, Arc::new(trace))));
-        update.debug_image = Some(image(&target));
+        update.debug_requests.push_back(surface_request(&target));
         update.sessions.clear();
         update.inspected.clear();
         update.retain_current_inspection();
         assert!(update.inspection.as_ref().unwrap().0.is_none());
         assert_eq!(update.inspection.as_ref().unwrap().2.rows.len(), 1);
-        assert!(update.debug_image.is_none());
+        assert!(update.debug_result(Panel::Gpu).is_none());
     }
 }

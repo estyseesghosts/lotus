@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use lotus_desktop::desktop_controller::{Command, DesktopController, McpMode, Update};
+use lotus_desktop::desktop_controller::{Command, DebugStatus, DesktopController, McpMode, Update};
 use lotus_protocol::envelope::SessionUuid;
 use lotus_session::supervisor::{HostConfig, SessionKind};
 
@@ -95,6 +95,36 @@ fn a_stalled_selected_worker_never_freezes_the_window_or_its_siblings() {
         !update.waiting.is_empty()
     });
 
+    use lotus_desktop::inspection::{Panel, SessionTarget};
+    use lotus_protocol::debug::DebugCommand as D;
+    let target = |id: &str| {
+        let summary = controller.host().summary(id).unwrap();
+        SessionTarget {
+            id: summary.info.id,
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        }
+    };
+    let a_target = target(&a);
+    let b_target = target(&b);
+    let request = |target: &SessionTarget, panel, command| {
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target: target.clone(),
+                panel,
+                command,
+            })
+            .unwrap();
+    };
+    request(
+        &a_target,
+        Panel::Settings,
+        D::SettingsList {
+            offset: 0,
+            limit: 32,
+        },
+    );
     let started = Instant::now();
     let before = ticks(&controller);
     controller
@@ -112,6 +142,40 @@ fn a_stalled_selected_worker_never_freezes_the_window_or_its_siblings() {
                 .iter()
                 .any(|s| s.info.id == b && !s.telemetry.playing)
     });
+    request(
+        &b_target,
+        Panel::Settings,
+        D::SettingsList {
+            offset: 0,
+            limit: 32,
+        },
+    );
+    request(&b_target, Panel::Breakpoints, D::Breakpoints);
+    wait(
+        &controller,
+        "B's independent panel results during A's stall",
+        |update| {
+            let running_a = update.debug_requests().any(|request| {
+                request.target == a_target && matches!(request.status, DebugStatus::Running)
+            });
+            let settings_b = update.debug_result(Panel::Settings).is_some_and(|request| {
+                request.target == b_target && matches!(request.status, DebugStatus::Finished { .. })
+            });
+            let breakpoints_b = update
+                .debug_result(Panel::Breakpoints)
+                .is_some_and(|request| {
+                    request.target == b_target
+                        && matches!(
+                            request.status,
+                            DebugStatus::Failed {
+                                kind: std::io::ErrorKind::Unsupported,
+                                ..
+                            }
+                        )
+                });
+            running_a && settings_b && breakpoints_b && update.error.is_empty()
+        },
+    );
     let responded = started.elapsed();
     assert!(responded < Duration::from_millis(500), "took {responded:?}");
     std::thread::sleep(Duration::from_millis(500));
@@ -222,11 +286,14 @@ fn reset_invalidates_cached_inspection_without_waiting_for_a_replacement_panel()
         .commands
         .send(Command::DebugAt {
             target: before.clone(),
+            panel: Panel::Result,
             command: lotus_protocol::debug::DebugCommand::Advance { frames: 1 },
         })
         .unwrap();
     wait(&controller, "stale mutation refused", |update| {
-        update.error.contains("debugger action expired")
+        update.debug_requests().any(|request| {
+            request.target == before && matches!(request.status, DebugStatus::Expired)
+        })
     });
     *controller.inspection_selection.lock().unwrap() = (Panel::Memory, 0);
     wait(&controller, "new memory snapshot", |u| {
