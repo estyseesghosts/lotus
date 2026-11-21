@@ -78,28 +78,65 @@ completed 117 (a write still on its host thread). Both workers answer
 
 `NativeSession::spawn` records the worker's SHA-256 in every manifest. It used
 to read the whole ~86 MB executable per spawn; hashes are now cached per
-process by canonical path and reused only while length, modification and
-creation time are unchanged, and stored only if they did not change while
-hashing, so a rebuilt worker is rehashed (`cached_hashes_follow_rewrites_of_the_same_length`).
-A same-length rewrite within one timestamp tick would go unnoticed.
+process by canonical path, file identity, length, modification time and
+filesystem change time. The Windows lookup uses the volume serial, 128-bit
+file ID and change time from the open executable handle. Filesystems that
+omit those fields use uncached reads. After a cache miss, Lotus checks the
+open file and reopens the path before caching the result. The regression
+test rewrites and replaces a file at the same path while preserving its
+length and modification time (`cached_hashes_follow_rewrites_of_the_same_length`).
+An MCP hot restart of the same-length, same-mtime mock executable also
+reported its new SHA-256 in the session manifest (**verified compiled**).
+
+In the four-worker t03 run, the fresh host read 87,311,294 bytes while
+creating the primer. The next four launches read 209,658–237,763 bytes each,
+about one 87,101,636-byte worker executable less per launch. Creation took
+797 ms for the primer and a median of 710 ms for the four cache hits. First
+launch includes other initialization, so the wall-time difference combines
+those effects (`runs/r30-executable-primer-01`, **verified emulator**).
 
 `"shader_seed": true` (host config, default off) seeds each new root without
 `shaders/` from `<storage>/shader-seed/<worker sha256>/shaders/`
 (`crates/session/src/shader_seed.rs`). Workers write only their private copy.
 After a clean stop the supervisor publishes the root's cache files into the
-seed, each through a temporary name and a rename, one stop at a time; a
-crashed worker never publishes. Azahar validates the Vulkan pipeline cache
-header against vendor and device before use and deletes an invalid copy
-(`PipelineCache::IsCacheValid`, `vk_pipeline_cache.cpp`). Homebrew has program
+seed, each through a unique temporary name and a rename. A crashed worker
+never publishes. If a seed copy fails, Lotus starts with an empty cache.
+Azahar validates the Vulkan pipeline cache header against vendor, device
+and pipeline-cache UUID before use and deletes an invalid copy
+(`PipelineCache::IsCacheValid`, `vk_pipeline_cache.cpp`). Vulkan also
+checks the transferable cache's renderer profile and regenerates shaders
+when driver or user settings differ (`vk_shader_disk_cache.cpp`). Homebrew has program
 ID 0, so different homebrew share cache file names, as they do in one stock
 Azahar user directory. Telemetry reports `shader_seed`
-(`seeded|cold|kept|off`) and `startup_ms`. `tests/test_mcp_shader_seed.py` on
-CITnLO Vulkan with t03: the first session starts `cold` and publishes the
-pipeline cache and four transferable caches; the next starts `seeded` and its
-log shows the cache loaded; killing a worker publishes nothing
-(`runs/seed-30-01`, **verified emulator**). Startup was 3364 then 816 ms on
-this busy host, which also includes the hash cache hit; the default stays off
-until `tools/bench_parallel.py --shader-seed` measures it on a quiet host.
+(`seeded|cold|kept|off`) and `startup_ms`. On CITnLO `a3994c1` and AZAHAR
+`5ecbd98`, the t03 Vulkan acceptance test verified that both seeded
+workers loaded the pipeline cache, reached the cold worker's guest tick
+537,743,488 after 120 frames, and produced identical hashes for both
+screens. Terminating the two seeded workers left the shared seed intact
+(`tests/test_mcp_shader_seed.py`, **verified emulator**).
+
+Use `tools/bench_parallel.py` with
+`--startup-frames 120` and separate `--shader-cache cold` and
+`--shader-cache seeded` runs. Both arms prime the host executable hash cache
+before measurement. The seeded arm copies the primer's shader files into
+each measured worker's private root.
+
+On an RX 9060 XT with driver 32.0.32029.2010, CITnLO `a3994c1` loaded t03
+at 1, 2, 4 and 8 workers, twice per count. At four workers, median create
+times across sessions were 714–722 ms cold and 711–713 ms seeded. The
+first 120 frames took 221–222 ms cold and 231–233 ms seeded. At eight
+workers, creation took 703–707 ms cold and 713–716 ms seeded. Seeding
+added about 102 KiB of startup reads per session in the host and another
+102 KiB in each worker's first 120 frames. Windows process I/O includes
+pipe and device traffic. These runs support keeping seeding opt-in
+(`runs/r30-startup-cold-01` and `runs/r30-startup-seeded-01`,
+**verified emulator**).
+
+With t03 and the repository-owned debugger fixture alternating across
+workers, median creation took 700 ms cold and 716 ms seeded at four
+workers, and 718 ms cold and 741 ms seeded at eight workers
+(`runs/r30-mixed-cold-01` and `runs/r30-mixed-seeded-01`,
+**verified emulator**). The startup results cover those two fixtures.
 
 Copy-on-write was evaluated and not adopted: Windows block cloning
 (`FSCTL_DUPLICATE_EXTENTS_TO_FILE`) needs ReFS, and the default NTFS volume has

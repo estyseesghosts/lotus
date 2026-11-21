@@ -2637,7 +2637,15 @@ impl Supervisor {
         let (executable, root) = (executable.to_path_buf(), root.to_path_buf());
         tokio::task::spawn_blocking(move || {
             let sha = crate::native_session::worker_hash(&executable)?;
-            crate::shader_seed::seed(&seeds, &sha, &root)
+            match crate::shader_seed::seed(&seeds, &sha, &root) {
+                Ok(state) => Ok(state),
+                Err(error) => {
+                    tracing::warn!(
+                        "shader seed unavailable, starting with an empty cache: {error}"
+                    );
+                    Ok("cold")
+                }
+            }
         })
         .await
         .map_err(io::Error::other)?

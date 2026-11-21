@@ -75,12 +75,16 @@ fn publish_tree(from: &Path, to: &Path) -> io::Result<()> {
             if unchanged {
                 continue;
             }
-            let temporary = to.join(format!(
-                "{}.publishing",
-                entry.file_name().to_string_lossy()
-            ));
-            fs::copy(entry.path(), &temporary)?;
-            fs::rename(&temporary, &target)?;
+            // Hosts can share a storage directory. A unique temporary path keeps
+            // simultaneous publishers from writing through each other's handle.
+            let nonce = lotus_protocol::envelope::SessionUuid::generate();
+            let temporary = to.join(format!("{nonce}.publishing"));
+            let published =
+                fs::copy(entry.path(), &temporary).and_then(|_| fs::rename(&temporary, &target));
+            if let Err(error) = published {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
         }
     }
     Ok(())

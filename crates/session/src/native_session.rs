@@ -779,30 +779,79 @@ impl NativeSession {
     }
 }
 
-/// Length and timestamps that identify one version of a file for [`file_hash`].
+/// File identity and version information used by [`file_hash`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Stamp {
     len: u64,
     modified: Option<std::time::SystemTime>,
-    created: Option<std::time::SystemTime>,
+    version: FileVersion,
 }
 
-fn stamp(path: &Path) -> io::Result<Stamp> {
-    let metadata = fs::metadata(path)?;
-    Ok(Stamp {
+#[cfg(windows)]
+type FileVersion = (u64, [u8; 16], i64);
+#[cfg(unix)]
+type FileVersion = (u64, u64, i64, i64);
+
+#[cfg(windows)]
+fn file_version(file: &File) -> Option<FileVersion> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
+    };
+    let mut basic = FILE_BASIC_INFO::default();
+    let mut id = FILE_ID_INFO::default();
+    // The File owns the handle, and each query receives the matching output structure.
+    let available = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileBasicInfo,
+            (&raw mut basic).cast(),
+            size_of::<FILE_BASIC_INFO>() as u32,
+        ) != 0
+            && GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileIdInfo,
+                (&raw mut id).cast(),
+                size_of::<FILE_ID_INFO>() as u32,
+            ) != 0
+    };
+    (available && basic.ChangeTime != 0 && id.FileId.Identifier != [0; 16]).then_some((
+        id.VolumeSerialNumber,
+        id.FileId.Identifier,
+        basic.ChangeTime,
+    ))
+}
+
+#[cfg(unix)]
+fn file_version(metadata: &fs::Metadata) -> FileVersion {
+    use std::os::unix::fs::MetadataExt;
+    (
+        metadata.dev(),
+        metadata.ino(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    )
+}
+
+fn stamp(file: &File) -> io::Result<Option<Stamp>> {
+    let metadata = file.metadata()?;
+    #[cfg(windows)]
+    let Some(version) = file_version(file) else {
+        return Ok(None);
+    };
+    #[cfg(unix)]
+    let version = file_version(&metadata);
+    Ok(Some(Stamp {
         len: metadata.len(),
         modified: metadata.modified().ok(),
-        created: metadata.created().ok(),
-    })
+        version,
+    }))
 }
 
 type HashCache = std::sync::Mutex<std::collections::HashMap<PathBuf, (Stamp, String)>>;
 
-/// Worker binary hashes for this process, keyed by canonical path (#30). Every spawn of 4–16
-/// matching workers used to read the whole ~86 MB executable. An entry is reused only while
-/// length, modification and creation time are unchanged, and stored only if they did not
-/// change during hashing, so a rebuilt worker is always rehashed. A rewrite that keeps the
-/// length within one tick of the file system's timestamp resolution is not detected.
+/// Worker hashes keyed by canonical path. A cache hit also requires the file ID,
+/// length, modification time and filesystem change time to match (#30).
 fn hash_cache() -> &'static HashCache {
     static CACHE: std::sync::OnceLock<HashCache> = std::sync::OnceLock::new();
     CACHE.get_or_init(HashCache::default)
@@ -815,7 +864,11 @@ pub(crate) fn worker_hash(path: &Path) -> io::Result<String> {
 
 pub(crate) fn file_hash(path: &Path) -> io::Result<String> {
     let canonical = path.canonicalize()?;
-    let before = stamp(&canonical)?;
+    let mut file = File::open(&canonical)?;
+    let Some(before) = stamp(&file)? else {
+        // A filesystem without the version information is safe to read uncached.
+        return hash_open_file(&mut file);
+    };
     if let Some((cached, hash)) = hash_cache()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -825,19 +878,19 @@ pub(crate) fn file_hash(path: &Path) -> io::Result<String> {
             return Ok(hash.clone());
         }
     }
-    let hash = hash_file(&canonical)?;
-    if stamp(&canonical)? == before {
-        hash_cache()
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(canonical, (before, hash.clone()));
+    let hash = hash_open_file(&mut file)?;
+    if stamp(&file)? != Some(before) || stamp(&File::open(&canonical)?)? != Some(before) {
+        return Err(io::Error::other("worker executable changed while hashing"));
     }
+    hash_cache()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(canonical, (before, hash.clone()));
     Ok(hash)
 }
 
-fn hash_file(path: &Path) -> io::Result<String> {
+fn hash_open_file(file: &mut File) -> io::Result<String> {
     use sha2::{Digest, Sha256};
-    let mut file = File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
     loop {
@@ -933,12 +986,44 @@ mod tests {
         fs::write(&path, b"first build").expect("write");
         let first = file_hash(&path).expect("hash");
         assert_eq!(file_hash(&path).expect("cached"), first);
-        assert_eq!(first, hash_file(&path).expect("direct"));
+        assert_eq!(
+            first,
+            hash_open_file(&mut File::open(&path).expect("open")).expect("direct")
+        );
+        let modified = fs::metadata(&path)
+            .expect("metadata")
+            .modified()
+            .expect("mtime");
         std::thread::sleep(Duration::from_millis(50));
         fs::write(&path, b"other build").expect("rebuild");
+        File::options()
+            .write(true)
+            .open(&path)
+            .expect("open for timestamp update")
+            .set_modified(modified)
+            .expect("restore mtime");
         let second = file_hash(&path).expect("rehash");
         assert_ne!(second, first);
-        assert_eq!(second, hash_file(&path).expect("direct"));
+        assert_eq!(
+            second,
+            hash_open_file(&mut File::open(&path).expect("open")).expect("direct")
+        );
+
+        let replacement = path.with_extension("replacement");
+        fs::write(&replacement, b"third build").expect("write replacement");
+        File::options()
+            .write(true)
+            .open(&replacement)
+            .expect("open replacement")
+            .set_modified(modified)
+            .expect("reuse mtime");
+        fs::rename(&replacement, &path).expect("replace executable");
+        let third = file_hash(&path).expect("hash replacement");
+        assert_ne!(third, second);
+        assert_eq!(
+            third,
+            hash_open_file(&mut File::open(&path).expect("open")).expect("direct")
+        );
         let _ = fs::remove_file(path);
     }
 }
