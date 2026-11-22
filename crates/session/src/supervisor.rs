@@ -97,11 +97,19 @@ fn debug_cancelled() -> io::Error {
     io::Error::new(io::ErrorKind::Interrupted, "debugger request cancelled")
 }
 
+#[derive(Clone, Copy, Default)]
+pub enum DebugPrecondition<'a> {
+    #[default]
+    None,
+    Paused,
+    MemoryBytes(&'a [u8]),
+}
+
 #[derive(Default)]
 struct DebugScope<'a> {
     target: Option<(u64, u64)>,
     cancellation: Option<&'a DebugCancellation>,
-    require_paused: bool,
+    precondition: DebugPrecondition<'a>,
 }
 
 impl DebugScope<'_> {
@@ -1794,7 +1802,7 @@ impl Supervisor {
             DebugScope {
                 target: Some((created_unix_ms, epoch)),
                 cancellation: None,
-                require_paused: false,
+                precondition: DebugPrecondition::None,
             },
         )
         .await
@@ -1809,12 +1817,12 @@ impl Supervisor {
         command: &lotus_protocol::debug::DebugCommand,
         actor: Actor,
         cancellation: &DebugCancellation,
-        require_paused: bool,
+        precondition: DebugPrecondition<'_>,
     ) -> io::Result<serde_json::Value> {
         let scope = DebugScope {
             target: Some(expected),
             cancellation: Some(cancellation),
-            require_paused,
+            precondition,
         };
         let mut phase = cancellation.0.subscribe();
         tokio::select! {
@@ -1857,7 +1865,7 @@ impl Supervisor {
             DebugScope {
                 target: Some(expected),
                 cancellation: None,
-                require_paused: false,
+                precondition: DebugPrecondition::None,
             },
         )
         .await
@@ -2016,7 +2024,7 @@ impl Supervisor {
                 "debug session is stopping",
             ));
         }
-        if scope.require_paused
+        if !matches!(scope.precondition, DebugPrecondition::None)
             && (handle.playing.load(Ordering::Acquire) || native.state() != SessionState::Paused)
         {
             return Err(io::Error::new(
@@ -2200,8 +2208,37 @@ impl Supervisor {
             return Ok(serde_json::json!({"addresses":symbols.resolve(query)?}));
         }
         // The native mutex serializes lease transitions with execution mutations.
+        let memory_check = match (scope.precondition, command) {
+            (
+                DebugPrecondition::MemoryBytes(original),
+                DebugCommand::WriteMemory { address, bytes },
+            ) if original.len() == bytes.len() => Some((
+                original,
+                bytes,
+                DebugCommand::ReadMemory {
+                    address: *address,
+                    length: bytes.len() as u32,
+                },
+            )),
+            (DebugPrecondition::MemoryBytes(_), _) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid memory edit precondition",
+                ))
+            }
+            _ => None,
+        };
         if command.mutates() {
             check_lease(&handle, client)?;
+            if let Some((original, _, read)) = &memory_check {
+                let sampled = native.debug(read).await?;
+                if !memory_reply_matches(&sampled, original) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "Guest bytes changed. Read them again before editing.",
+                    ));
+                }
+            }
             handle.set_playing(false);
             pause_if_running(&mut native).await?;
             handle.record(Actor::Host, client);
@@ -2239,6 +2276,21 @@ impl Supervisor {
             DebugCommand::Advance { frames } => native.advance(*frames).await,
             _ => {
                 let mut result = native.debug(command).await?;
+                if let Some((_, bytes, read)) = &memory_check {
+                    let readback = native.debug(read).await.map_err(|error| {
+                        io::Error::new(
+                            error.kind(),
+                            format!("Write acknowledged, but readback failed: {error}"),
+                        )
+                    })?;
+                    if !memory_reply_matches(&readback, bytes) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "Write acknowledged, but readback differs from the requested bytes",
+                        ));
+                    }
+                    result["readback_verified"] = true.into();
+                }
                 {
                     let mut telemetry = handle.telemetry();
                     telemetry.epoch = native.epoch();
@@ -3040,6 +3092,16 @@ fn command_name(command: &lotus_protocol::debug::DebugCommand) -> &'static str {
         DebugCommand::Matrix { .. } => "matrix",
         _ => "debug command",
     }
+}
+
+fn memory_reply_matches(value: &serde_json::Value, expected: &[u8]) -> bool {
+    value["bytes"].as_array().is_some_and(|bytes| {
+        bytes.len() == expected.len()
+            && bytes
+                .iter()
+                .zip(expected)
+                .all(|(actual, expected)| actual.as_u64() == Some(u64::from(*expected)))
+    })
 }
 
 async fn pause_if_running(native: &mut NativeSession) -> io::Result<()> {

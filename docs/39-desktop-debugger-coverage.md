@@ -55,7 +55,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `load_symbols` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
 | `logs` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - |
 | `matrix` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
-| `memory_map` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - |
+| `memory_map` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - |
 | `movie_play` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
 | `movie_record` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
 | `movie_status` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
@@ -65,7 +65,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `perf` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
 | `pointer_chain` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
 | `processes` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
-| `read_memory` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
+| `read_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - |
 | `registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - |
 | `reset` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments |
 | `resolve_symbol` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
@@ -100,7 +100,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `threads` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - |
 | `titles` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
 | `trace` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - |
-| `write_memory` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
+| `write_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | control | - | - |
 | `write_register` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - |
 | `write_thread_register` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
 
@@ -112,7 +112,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `lotus_capture_image` | external only | read | - | Inline images are an MCP response format |
 | `lotus_debug` | debug bridge | per operation | - | See the shared command inventory |
 | `lotus_gdb` | [GDB inspector](../crates/desktop/src/lotus_window/gdb_panel.rs) | control to start or stop | - | Shares the listener and client lease with the desktop (#152). CITnLO only. |
-| `lotus_read_memory` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | Dedicated viewer planned in #145 |
+| `lotus_read_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | Bounded guest reads with hex and ASCII |
 | `lotus_registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | CPU core is selectable |
 
 ## MCP host tools

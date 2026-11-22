@@ -60,6 +60,8 @@ mod gdb_panel;
 #[cfg(feature = "silvestris-ui")]
 mod gpu_capture;
 #[cfg(feature = "silvestris-ui")]
+mod memory_panel;
+#[cfg(feature = "silvestris-ui")]
 mod shared_commands;
 #[cfg(feature = "silvestris-ui")]
 mod shared_navigation;
@@ -251,6 +253,8 @@ pub struct LotusWindow {
     inspection_panel: Panel,
     inspector_state: InspectorState,
     #[cfg(feature = "silvestris-ui")]
+    memory_panels: BTreeMap<SessionTarget, memory_panel::MemoryPanel>,
+    #[cfg(feature = "silvestris-ui")]
     cpu_forms: BTreeMap<SessionTarget, cpu_panel::CpuForm>,
     #[cfg(feature = "silvestris-ui")]
     breakpoint_panels: BTreeMap<SessionTarget, breakpoints::BreakpointPanel>,
@@ -421,6 +425,8 @@ impl LotusWindow {
             registers: None,
             inspection: None,
             inspector_state: InspectorState::default(),
+            #[cfg(feature = "silvestris-ui")]
+            memory_panels: BTreeMap::new(),
             #[cfg(feature = "silvestris-ui")]
             cpu_forms: BTreeMap::new(),
             #[cfg(feature = "silvestris-ui")]
@@ -807,6 +813,9 @@ impl LotusWindow {
         }
         self.retain_current_inspection(cx);
         self.inspector_state.retain(&self.sessions);
+        #[cfg(feature = "silvestris-ui")]
+        self.memory_panels
+            .retain(|target, _| target.resolve(&self.sessions).is_some());
         #[cfg(feature = "silvestris-ui")]
         self.cpu_forms
             .retain(|target, _| target.resolve(&self.sessions).is_some());
@@ -3558,7 +3567,8 @@ impl LotusWindow {
     fn debug_details_visible(&self, request: &DebugRequest) -> bool {
         let show_by_default = !matches!(
             (request.panel, request.native_command()),
-            (Panel::Gpu, Some(D::GpuConfigure { .. })) | (Panel::Breakpoints | Panel::Cpu, _)
+            (Panel::Gpu, Some(D::GpuConfigure { .. }))
+                | (Panel::Breakpoints | Panel::Cpu | Panel::Memory, _)
         );
         show_by_default != self.toggled_debug_details.contains(&request.id)
     }
@@ -4183,6 +4193,14 @@ impl LotusWindow {
             use std::io::ErrorKind;
             let message = match &request.status {
                 DebugStatus::Running => "Running debugger command…".into(),
+                DebugStatus::Finished { .. }
+                    if matches!(
+                        *request.action,
+                        crate::desktop_controller::DebugAction::PatchMemory(..)
+                    ) =>
+                {
+                    "Write verified by readback".into()
+                }
                 DebugStatus::Finished { .. } => "Command completed".into(),
                 DebugStatus::Failed { kind, message } => match kind {
                     ErrorKind::PermissionDenied => format!("Control unavailable · {message}"),
@@ -4262,6 +4280,10 @@ impl LotusWindow {
         #[cfg(feature = "silvestris-ui")]
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Cpu) {
             panel = panel.child(self.render_cpu_controls(target, snapshot, cx));
+        }
+        #[cfg(feature = "silvestris-ui")]
+        if let Some(target) = target.as_ref().filter(|_| current == Panel::Memory) {
+            return panel.child(self.render_memory_panel(target, snapshot, cx));
         }
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Gpu) {
             panel = panel.children(self.render_draw_comparison_controls(

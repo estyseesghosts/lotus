@@ -338,6 +338,30 @@ impl LotusWindow {
                 })),
             );
         }
+        let memory_address = query.address.map(|(address, _)| address).or_else(|| {
+            cpu_view?
+                .view
+                .rows
+                .iter()
+                .find(|row| row.key == "r15")
+                .and_then(|row| u32::from_str_radix(&row.value, 16).ok())
+        });
+        if let Some(address) = memory_address {
+            let owner = target.clone();
+            actions = actions.child(
+                small_button(
+                    palette,
+                    "cpu-open-memory",
+                    "Open in Memory",
+                    Tone::Plain,
+                    true,
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.jump_to_memory(&owner, Some(address));
+                    cx.notify();
+                })),
+            );
+        }
         controls.child(actions).children(blocked.map(str::to_owned))
     }
 }

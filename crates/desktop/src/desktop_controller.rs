@@ -65,6 +65,11 @@ pub enum Command {
         panel: Panel,
         command: DebugCommand,
     },
+    PatchMemory {
+        target: SessionTarget,
+        command: DebugCommand,
+        original: Vec<u8>,
+    },
     CompareGpuDraws {
         a: DrawArtifact,
         b: DrawArtifact,
@@ -180,6 +185,7 @@ pub struct DebugRequest {
 #[derive(Clone, Debug)]
 pub enum DebugAction {
     Native(DebugCommand),
+    PatchMemory(DebugCommand, Vec<u8>),
     CompareGpuDraws { a: DrawArtifact, b: DrawArtifact },
     PreviewGpuTexture { draw: DrawArtifact, resource: usize },
 }
@@ -187,7 +193,7 @@ pub enum DebugAction {
 impl DebugRequest {
     pub fn native_command(&self) -> Option<&DebugCommand> {
         match &*self.action {
-            DebugAction::Native(command) => Some(command),
+            DebugAction::Native(command) | DebugAction::PatchMemory(command, _) => Some(command),
             _ => None,
         }
     }
@@ -905,7 +911,11 @@ impl Loops {
                             || if panel.live() {
                                 keys.inspected_at.elapsed() >= INSPECT_PERIOD
                             } else {
-                                paused && *frame != view_key.2
+                                paused
+                                    && (*frame != view_key.2
+                                        || panel == Panel::Memory
+                                            && offset != 0
+                                            && keys.inspected_at.elapsed() >= INSPECT_PERIOD)
                             }
                     }
                 }
@@ -931,7 +941,7 @@ impl Loops {
                     .timed(
                         "inspection",
                         &selected,
-                        loops.inspect(&target, panel, cpu, &command),
+                        loops.inspect(&target, panel, offset, cpu, &command),
                     )
                     .await;
                 lock(&state).inspected_at = Instant::now();
@@ -966,6 +976,7 @@ impl Loops {
         &self,
         target: &SessionTarget,
         panel: Panel,
+        offset: u64,
         cpu: CpuQuery,
         command: &DebugCommand,
     ) -> io::Result<Value> {
@@ -994,6 +1005,26 @@ impl Loops {
                 }
             } else {
                 value["disassembly_error"] = "The worker did not return a program counter".into();
+            }
+        }
+        if panel == Panel::Memory {
+            if let Some(address) = inspection::memory_address(offset) {
+                let command = DebugCommand::ReadMemory {
+                    address,
+                    length: inspection::memory_length(address),
+                };
+                match self.dispatch_debug(target, &command).await {
+                    Ok(bytes) if target.accepts_reply(&bytes) => value["memory_page"] = bytes,
+                    Ok(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "Guest changed during memory read",
+                        ))
+                    }
+                    Err(error) => {
+                        value["memory_error"] = format!("0x{address:08x} · {error}").into()
+                    }
+                }
             }
         }
         Ok(value)
@@ -1122,6 +1153,19 @@ impl Loops {
                 self.start_debug(target, panel, DebugAction::Native(command));
                 continue;
             }
+            if let Command::PatchMemory {
+                target,
+                command,
+                original,
+            } = command
+            {
+                self.start_debug(
+                    target,
+                    Panel::Memory,
+                    DebugAction::PatchMemory(command, original),
+                );
+                continue;
+            }
             if let Command::CompareGpuDraws { a, b } = command {
                 self.start_debug(
                     b.target.clone(),
@@ -1210,7 +1254,7 @@ impl Loops {
     fn start_debug(&self, target: SessionTarget, panel: Panel, action: DebugAction) {
         let id = self.debug_sequence.fetch_add(1, Ordering::Relaxed);
         let (operation, requires_control) = match &action {
-            DebugAction::Native(command) => (
+            DebugAction::Native(command) | DebugAction::PatchMemory(command, _) => (
                 serde_json::to_value(command)
                     .ok()
                     .and_then(|value| value["operation"].as_str().map(str::to_owned))
@@ -1336,8 +1380,30 @@ impl Loops {
         if !self.target_exists(target) {
             return DebugStatus::Expired;
         }
+        use lotus_session::supervisor::DebugPrecondition;
         let reply = match &*action {
-            DebugAction::Native(command) => {
+            DebugAction::Native(command) | DebugAction::PatchMemory(command, _) => {
+                let precondition = match &*action {
+                    DebugAction::PatchMemory(_, original) => {
+                        DebugPrecondition::MemoryBytes(original)
+                    }
+                    _ if matches!(
+                        (panel, command),
+                        (
+                            Panel::Cpu,
+                            DebugCommand::Step { .. }
+                                | DebugCommand::StepOver { .. }
+                                | DebugCommand::StepOut { .. }
+                                | DebugCommand::RunTo { .. }
+                                | DebugCommand::ReverseStep { .. }
+                                | DebugCommand::WriteRegister { .. }
+                        )
+                    ) =>
+                    {
+                        DebugPrecondition::Paused
+                    }
+                    _ => DebugPrecondition::None,
+                };
                 self.host
                     .debug_at_cancellable(
                         &target.id,
@@ -1345,18 +1411,7 @@ impl Loops {
                         command,
                         Actor::Desktop,
                         &cancellation,
-                        matches!(
-                            (panel, command),
-                            (
-                                Panel::Cpu,
-                                DebugCommand::Step { .. }
-                                    | DebugCommand::StepOver { .. }
-                                    | DebugCommand::StepOut { .. }
-                                    | DebugCommand::RunTo { .. }
-                                    | DebugCommand::ReverseStep { .. }
-                                    | DebugCommand::WriteRegister { .. }
-                            ) | (Panel::Memory, DebugCommand::WriteMemory { .. })
-                        ),
+                        precondition,
                     )
                     .await
             }
@@ -1373,7 +1428,7 @@ impl Loops {
                 let loops = self.clone();
                 let target = target.clone();
                 tokio::task::spawn_blocking(move || match &*action {
-                    DebugAction::Native(command) => {
+                    DebugAction::Native(command) | DebugAction::PatchMemory(command, _) => {
                         loops.format_debug(&target, command, value, &cancellation)
                     }
                     DebugAction::CompareGpuDraws { a, b } => {
@@ -1546,6 +1601,7 @@ impl Loops {
             }
             Command::Select(_) | Command::Inspect(_) => {}
             Command::DebugAt { .. }
+            | Command::PatchMemory { .. }
             | Command::CompareGpuDraws { .. }
             | Command::PreviewGpuTexture { .. }
             | Command::CancelDebug(_)

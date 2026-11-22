@@ -23,7 +23,7 @@ fn kind_name(kind: BreakpointKind) -> &'static str {
 #[derive(Default)]
 pub(super) struct BreakpointPanel {
     selected: Option<u64>,
-    location: Option<(u32, u32)>,
+    location: Option<(u32, u32, BreakpointKind)>,
     form: Option<Form>,
 }
 
@@ -212,9 +212,23 @@ impl LotusWindow {
     }
 
     pub(super) fn jump_to_breakpoint(&mut self, target: &SessionTarget, address: u32, length: u32) {
+        self.jump_to_breakpoint_kind(target, address, length, BreakpointKind::Execute);
+    }
+
+    pub(super) fn jump_to_watchpoint(&mut self, target: &SessionTarget, address: u32) {
+        self.jump_to_breakpoint_kind(target, address, 1, BreakpointKind::Access);
+    }
+
+    fn jump_to_breakpoint_kind(
+        &mut self,
+        target: &SessionTarget,
+        address: u32,
+        length: u32,
+        kind: BreakpointKind,
+    ) {
         if self.inspection_target().as_ref() == Some(target) {
             let state = self.breakpoint_panels.entry(target.clone()).or_default();
-            state.location = Some((address, length));
+            state.location = Some((address, length, kind));
             state.selected = None;
             state.form = None;
             self.show_panel(Panel::Breakpoints);
@@ -297,11 +311,12 @@ impl LotusWindow {
                 .breakpoint_panels
                 .get(target)
                 .and_then(|state| state.location);
-            let (address, length) = location.map_or((String::new(), 4), |(address, length)| {
-                (format!("0x{address:08x}"), length)
-            });
+            let (address, length, kind) = location.map_or(
+                (String::new(), 4, BreakpointKind::Execute),
+                |(address, length, kind)| (format!("0x{address:08x}"), length, kind),
+            );
             Form::Add {
-                kind: BreakpointKind::Execute,
+                kind,
                 address: input("Address", address),
                 length: input("Length", length.to_string()),
             }
@@ -354,8 +369,16 @@ impl LotusWindow {
             .and_then(|id| list.breakpoints.iter().find(|entry| entry.id == id))
             .or_else(|| {
                 list.breakpoints.iter().find(|entry| {
-                    entry.kind == BreakpointKind::Execute
-                        && location.is_some_and(|(address, _)| address == entry.address)
+                    location.is_some_and(|(address, _, kind)| {
+                        if kind == BreakpointKind::Execute {
+                            entry.kind == kind && entry.address == address
+                        } else {
+                            entry.kind != BreakpointKind::Execute
+                                && address
+                                    .checked_sub(entry.address)
+                                    .is_some_and(|offset| offset < entry.length)
+                        }
+                    })
                 })
             });
         let full = list
@@ -376,6 +399,20 @@ impl LotusWindow {
             })),
         );
         if let Some(entry) = selected {
+            let (owner, address) = (target.clone(), entry.address);
+            toolbar = toolbar.child(
+                small_button(
+                    palette,
+                    "breakpoint-open-memory",
+                    "Open in Memory",
+                    Tone::Plain,
+                    true,
+                )
+                .on_click(cx.listener(move |view, _, _, cx| {
+                    view.jump_to_memory(&owner, Some(address));
+                    cx.notify();
+                })),
+            );
             for (button, label, remove) in [
                 ("breakpoint-configure", "Configure…", false),
                 ("breakpoint-remove", "Remove…", true),
@@ -416,8 +453,13 @@ impl LotusWindow {
                 Some(_) => "Watchpoints available",
                 None => "Watchpoint support unavailable",
             });
-        if let Some((address, _)) = location.filter(|_| selected.is_none()) {
-            body = body.child(format!("No execute breakpoint at 0x{address:08x}"));
+        if let Some((address, _, kind)) = location.filter(|_| selected.is_none()) {
+            let label = if kind == BreakpointKind::Execute {
+                "execute breakpoint"
+            } else {
+                "watchpoint"
+            };
+            body = body.child(format!("No {label} at 0x{address:08x}"));
         }
         if let Some(entry) = selected {
             body = body.child(breakpoint_details(entry));
@@ -884,6 +926,59 @@ mod tests {
                         .any(|row| row.key == "instruction" && row.lane == "PC")
             })
         });
+        click(cx, "cpu-open-memory");
+        let get_memory = |view: &LotusWindow| {
+            view.inspection
+                .as_ref()
+                .filter(|snap| snap.panel == Panel::Memory)
+                .and_then(|snap| snap.view.memory.as_ref())
+                .and_then(|data| data.page.as_ref())
+                .map(|page| (page.address, page.bytes[0]))
+        };
+        wait(cx, "mapped memory page", &|view, _| {
+            get_memory(view).is_some()
+        });
+        let (memory_address, original) = cx.update(|_, cx| get_memory(entity.read(cx)).unwrap());
+        let address = memory_address;
+        for desired in [!original, original] {
+            click(cx, "memory-edit");
+            cx.update(|_, cx| {
+                let input = entity.read(cx).memory_panels[&target]
+                    .edit
+                    .as_ref()
+                    .unwrap()
+                    .input
+                    .field
+                    .clone();
+                input.update(cx, |input, cx| input.set_text(format!("{desired:02x}"), cx));
+            });
+            click(cx, "memory-write");
+            wait(cx, "memory write and reload", &|view, _| {
+                matches!(&view.debug_request, Some(request) if request.operation == "write_memory"
+                    && matches!(request.status, DebugStatus::Finished { .. }))
+                    && get_memory(view) == Some((memory_address, desired))
+            });
+        }
+        cx.update(|_, cx| entity.update(cx, |view, _| view.jump_to_memory(&target, Some(0))));
+        wait(cx, "unmapped address", &|view, _| {
+            view.inspection
+                .as_ref()
+                .filter(|snap| snap.offset == Some(1))
+                .and_then(|snap| snap.view.memory.as_ref())
+                .is_some_and(|memory| {
+                    memory.page.is_none()
+                        && memory
+                            .error
+                            .as_ref()
+                            .is_some_and(|message| message.contains("unmapped"))
+                })
+        });
+        cx.update(|_, cx| entity.update(cx, |view, _| view.show_panel(Panel::Cpu)));
+        wait(cx, "return to CPU", &|view, _| {
+            view.inspection
+                .as_ref()
+                .is_some_and(|snap| snap.panel == Panel::Cpu)
+        });
         click(
             cx,
             Box::leak(format!("instruction-{address:08x}").into_boxed_str()),
@@ -985,6 +1080,32 @@ mod tests {
                     .any(|bp| bp.kind == BreakpointKind::Write && bp.address == address)
             })
         });
+        cx.update(|_, cx| entity.update(cx, |view, _| view.jump_to_memory(&target, Some(address))));
+        wait(cx, "watchpoint target memory", &|view, _| {
+            get_memory(view).is_some()
+        });
+        click(cx, "memory-watch");
+        wait(cx, "watchpoint selection", &|view, _| {
+            view.breakpoint_list(&target).is_some()
+        });
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("breakpoint-configure").is_some());
+        for (index, kind) in [
+            ("popup-item-1", BreakpointKind::Read),
+            ("popup-item-3", BreakpointKind::Access),
+        ] {
+            click(cx, "breakpoint-add");
+            click(cx, "breakpoint-kind");
+            click(cx, index);
+            click(cx, "breakpoint-submit");
+            wait(cx, "created watchpoint", &|view, _| {
+                view.breakpoint_list(&target).is_some_and(|list| {
+                    list.breakpoints
+                        .iter()
+                        .any(|bp| bp.kind == kind && bp.address == address)
+                })
+            });
+        }
         click(cx, "breakpoint-add");
         cx.update(|_, cx| {
             entity.update(cx, |view, _| view.send(Command::Reset(target.id.clone())));

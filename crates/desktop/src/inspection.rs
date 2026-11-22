@@ -338,6 +338,74 @@ impl InspectionSelection {
     }
 }
 
+pub(crate) const MEMORY_PAGE_BYTES: u32 = 256;
+
+pub(crate) fn memory_address(offset: u64) -> Option<u32> {
+    u32::try_from(offset.checked_sub(1)?).ok()
+}
+
+pub(crate) fn memory_length(address: u32) -> u32 {
+    MEMORY_PAGE_BYTES.min(4096 - address % 4096)
+}
+
+#[cfg(feature = "silvestris-ui")]
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct MemoryRegion {
+    pub process: u32,
+    pub address: u32,
+    pub length: u32,
+    pub permissions: u32,
+}
+
+#[cfg(feature = "silvestris-ui")]
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct MemoryPage {
+    pub address: u32,
+    pub bytes: Vec<u8>,
+    pub paused: bool,
+}
+
+#[cfg(feature = "silvestris-ui")]
+#[derive(Debug, Clone)]
+pub(crate) struct MemoryInspection {
+    pub regions: Vec<MemoryRegion>,
+    pub omitted_regions: usize,
+    pub page: Option<MemoryPage>,
+    pub error: Option<String>,
+}
+
+#[cfg(feature = "silvestris-ui")]
+impl MemoryInspection {
+    fn from_value(value: &Value) -> Option<Self> {
+        let regions = value["regions"].as_array()?;
+        let page = value
+            .get("memory_page")
+            .and_then(|page| {
+                (page["bytes"].as_array()?.len() <= MEMORY_PAGE_BYTES as usize)
+                    .then(|| MemoryPage::deserialize(page).ok())
+                    .flatten()
+            })
+            .filter(|page| page.bytes.len() <= memory_length(page.address) as usize);
+        let error = value["memory_error"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| {
+                (value.get("memory_page").is_some() && page.is_none())
+                    .then(|| "The worker returned an invalid memory page".into())
+            });
+        Some(Self {
+            regions: regions
+                .iter()
+                .take(512)
+                .filter_map(|region| MemoryRegion::deserialize(region).ok())
+                .collect(),
+            omitted_regions: regions.len().saturating_sub(512),
+            page,
+            error,
+        })
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct PanelState {
     offset: u64,
@@ -350,6 +418,11 @@ pub(crate) struct PanelState {
 impl PanelState {
     pub(crate) fn offset(&self) -> u64 {
         self.offset
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    pub(crate) fn set_memory_address(&mut self, address: Option<u32>) {
+        self.offset = address.map_or(0, |address| u64::from(address) + 1);
     }
 
     pub(crate) fn advance(&mut self, next: u64) {
@@ -415,6 +488,8 @@ pub struct Inspection {
     pub(crate) breakpoints: Option<Arc<BreakpointList>>,
     #[cfg(feature = "silvestris-ui")]
     pub(crate) instruction_width: Option<u32>,
+    #[cfg(feature = "silvestris-ui")]
+    pub(crate) memory: Option<MemoryInspection>,
 }
 
 #[cfg(feature = "silvestris-ui")]
@@ -870,6 +945,12 @@ impl Inspection {
             #[cfg(feature = "silvestris-ui")]
             breakpoints,
             #[cfg(feature = "silvestris-ui")]
+            memory: if panel == Panel::Memory {
+                MemoryInspection::from_value(value)
+            } else {
+                None
+            },
+            #[cfg(feature = "silvestris-ui")]
             instruction_width: value["disassembly"]["thumb"].as_bool().map(|thumb| {
                 if thumb {
                     2
@@ -895,6 +976,8 @@ impl Inspection {
             breakpoints: None,
             #[cfg(feature = "silvestris-ui")]
             instruction_width: None,
+            #[cfg(feature = "silvestris-ui")]
+            memory: None,
         }
     }
     pub(crate) fn compare_draws(first: &Value, second: &Value, epoch: u64) -> Self {
@@ -934,6 +1017,8 @@ impl Inspection {
             breakpoints: None,
             #[cfg(feature = "silvestris-ui")]
             instruction_width: None,
+            #[cfg(feature = "silvestris-ui")]
+            memory: None,
         }
     }
     pub fn draw_diff(before: &Value, after: &Value) -> Vec<String> {
@@ -1049,6 +1134,8 @@ impl Inspection {
             breakpoints: None,
             #[cfg(feature = "silvestris-ui")]
             instruction_width: None,
+            #[cfg(feature = "silvestris-ui")]
+            memory: None,
         })
     }
 }

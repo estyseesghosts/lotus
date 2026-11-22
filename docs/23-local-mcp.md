@@ -172,6 +172,20 @@ guest is paused. The host checks the guest epoch, pause state and debugger
 lease before dispatching a register edit or execution control. Run to Address
 uses the selected core's current instruction mode.
 
+### Memory inspector
+
+Open Memory from the CPU or Breakpoints panel, enter a guest virtual address, or
+choose a mapped region. Reads use the worker's current process. The map
+enumerates process IDs for context. Each page contains at most 256 bytes and
+ends at a guest page boundary. Select a byte to interpret four bytes as
+little-endian and big-endian values, copy data, or open its watchpoint.
+
+To change bytes, pause the guest and enter up to 16 space-separated hex bytes.
+Review the pending diff and commit. Lotus compares the original bytes and
+verifies readback under the same session lock. A session or epoch change
+discards the draft. A read-only host or a debugger lease can still inspect
+memory but cannot commit edits through this panel.
+
 ### Breakpoint configuration
 
 CITnLO's `breakpoints` reply lists IDs, locations, kinds and hit counts. Lotus adds
