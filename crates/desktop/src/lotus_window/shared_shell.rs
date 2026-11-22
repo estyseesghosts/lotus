@@ -473,6 +473,7 @@ fn status_value(index: usize, gauge: gauges::Gauge, cx: &App) -> Stateful<Div> {
 mod tests {
     use super::*;
     use gpui::{point, size, Modifiers, TestAppContext, VisualTestContext};
+    use image::{Frame, RgbaImage};
     use lotus_session::{supervisor::SessionInfo, telemetry::Telemetry};
 
     fn session(id: &str) -> SessionSummary {

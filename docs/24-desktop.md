@@ -113,6 +113,19 @@ source: `elements/{img,canvas,div}.rs`, `assets.rs` (`RenderImage` BGRA),
 `app.rs` (`drop_image`, `prompt_for_paths`), `app/context.rs` (activation/focus).
 Rollback: run headless (`lotus-mcp`, `ctr-cli`); no GUI is required.
 
+Preview frames arrive in top-left row-major BGRA8. The desktop validates the
+native dimensions, stride, length, and shared epoch and sequence of each
+top/bottom pair. It transfers the owned pixel buffers directly to GPUI's
+BGRA `RenderImage`. On Windows, GPUI uploads them to a BGRA DirectX atlas.
+Raw capture artifacts keep the native channel order and the MCP PNG encoder
+converts its own copy to RGBA. [Preview validation](../crates/desktop/src/preview_image.rs)
+· [PNG encoder](../crates/mcp/src/screenshot.rs)
+
+**Verified emulator** on Windows with the Release integration worker and
+`t03.3dsx`. The [rendered color test](../tests/test_preview_colors.py)
+matches native captures against Windows window pixels for both screens in
+single and split layouts, with software and Vulkan. Unit tests check row
+order, alpha, invalid leases, and that GPUI receives the original allocations.
 
 Wave 3 inspectors (**verified compiled**, controller/model **verified emulator**):
 CPU/VFP and disassembly, threads/waits, breakpoints, memory maps, paginated

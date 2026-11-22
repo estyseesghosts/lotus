@@ -20,6 +20,7 @@ pub mod lotus_window;
 mod pica_texture;
 pub mod preferences;
 pub mod presence;
+mod preview_image;
 #[cfg(all(windows, feature = "silvestris-ui"))]
 mod regression_window;
 pub mod screen_geometry;

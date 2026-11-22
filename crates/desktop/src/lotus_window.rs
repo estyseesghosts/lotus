@@ -23,7 +23,6 @@ use gpui::{
     Render, RenderImage, Rgba, SharedString, Stateful, StatefulInteractiveElement, Styled,
     StyledImage, Window,
 };
-use image::{Frame, RgbaImage};
 use lotus_session::supervisor::{HostConfig, SessionKind, SessionSummary};
 use lotus_session::workspace::{self, Axis, Layout, Operation, Snapshot, Viewport};
 use lotus_session::SessionState;
@@ -960,18 +959,9 @@ impl LotusWindow {
                 sequence: preview.sequence,
                 worker_sequence: frame.lease.sequence,
             };
-            let images = preview
-                .frames
-                .into_iter()
-                .map(|frame| RgbaImage::from_raw(frame.lease.width, frame.lease.height, frame.bgra))
-                .collect::<Option<Vec<_>>>();
-            let Some(images) = images.filter(|images| images.len() == 2) else {
+            let Some(images) = crate::preview_image::make_pair(preview.frames) else {
                 continue;
             };
-            let images = images
-                .into_iter()
-                .map(|image| Arc::new(RenderImage::new(vec![Frame::new(image)])))
-                .collect();
             drop_images(std::mem::replace(&mut tile.images, images), cx);
             tile.epoch = epoch;
             tile.preview = Some(identity);
