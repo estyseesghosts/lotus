@@ -117,6 +117,102 @@ fn check_gpu_comparison(controller: &DesktopController, target: &SessionTarget) 
     });
 }
 
+fn check_gpu_capture_budget(controller: &DesktopController, owner: &SessionTarget) {
+    controller
+        .commands
+        .send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some("fixture".into()),
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update.sessions.iter().any(|s| s.info.id != owner.id)
+    });
+    let sibling = {
+        let update = controller.latest.lock().unwrap();
+        let summary = update
+            .sessions
+            .iter()
+            .find(|s| s.info.id != owner.id)
+            .unwrap();
+        SessionTarget {
+            id: summary.info.id.clone(),
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        }
+    };
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: sibling.clone(),
+            panel: Panel::Gpu,
+            command: D::GpuConfigure {
+                enabled: true,
+                stop_events: vec![],
+                capture: Some(GpuCapture::Full),
+                draw_range: None,
+                max_draws: None,
+                resources: None,
+            },
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update.debug_requests().any(|request| {
+            request.target == sibling
+                && request.operation == "gpu_configure"
+                && matches!(
+                    &request.status,
+                    DebugStatus::Failed {
+                        kind: ErrorKind::ResourceBusy,
+                        message
+                    } if message.contains(&owner.id)
+                )
+        })
+    });
+    controller
+        .commands
+        .send(Command::Pause(sibling.id.clone()))
+        .unwrap();
+    wait(controller, |update| {
+        sibling.resolve(&update.sessions).is_some_and(|s| {
+            !s.telemetry.playing && s.telemetry.state == lotus_session::SessionState::Paused
+        })
+    });
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: sibling.clone(),
+            panel: Panel::Cpu,
+            command: D::Registers { core: 0 },
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update.debug_requests().any(|request| {
+            request.target == sibling
+                && request.operation == "registers"
+                && matches!(&request.status, DebugStatus::Finished { view, .. }
+                if view.rows.iter().any(|row| row.key == ".registers[15]"))
+        })
+    });
+    wait(controller, |update| {
+        owner
+            .resolve(&update.sessions)
+            .and_then(|s| s.telemetry.gpu_capture.as_ref())
+            .is_some_and(|config| config.enabled)
+    });
+    controller
+        .commands
+        .send(Command::Stop(sibling.id.clone()))
+        .unwrap();
+    controller
+        .commands
+        .send(Command::Select(owner.id.clone()))
+        .unwrap();
+    wait(controller, |update| {
+        sibling.resolve(&update.sessions).is_none() && update.inspected == owner.id
+    });
+}
+
 fn check_gpu_saved_texture(controller: &DesktopController, target: &SessionTarget) {
     let finish = |operation: &'static str| {
         let prior = controller
@@ -575,6 +671,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         let root = std::env::temp_dir().join(format!("lotus-inspect-{}", SessionUuid::generate()));
         let mut config = HostConfig::new(&worker, &root);
         config.allow_control = true;
+        config.policy.gpu_capture_sessions = Some(1);
         config.assets = BTreeMap::from([("fixture".into(), fixture.clone())]);
         config.profile.insert(
             "is_new_3ds".into(),
@@ -726,19 +823,20 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
                     .resolve(&update.sessions)
                     .is_some_and(|summary| summary.telemetry.gpu_capture.is_none())
         });
+        let configure = D::GpuConfigure {
+            enabled: true,
+            stop_events: vec![],
+            capture: Some(GpuCapture::Draws),
+            draw_range: Some([0, u64::MAX]),
+            max_draws: Some(8),
+            resources: Some(false),
+        };
         controller
             .commands
             .send(Command::DebugAt {
                 target: target.clone(),
                 panel: Panel::Gpu,
-                command: D::GpuConfigure {
-                    enabled: true,
-                    stop_events: vec![],
-                    capture: Some(GpuCapture::Draws),
-                    draw_range: Some([0, u64::MAX]),
-                    max_draws: Some(8),
-                    resources: Some(false),
-                },
+                command: configure.clone(),
             })
             .unwrap();
         wait(&controller, |update| {
@@ -757,6 +855,40 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
                             && !ack.resources
                     })
         });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let server = controller.mcp_server();
+        let accepted = target
+            .resolve(&controller.latest.lock().unwrap().sessions)
+            .unwrap()
+            .telemetry
+            .gpu_capture
+            .clone()
+            .unwrap();
+        let mcp_ack = tool_json(runtime.block_on(server.lotus_debug(Parameters(DebugArgs {
+            session: id.clone(),
+            command: configure,
+        }))));
+        assert_eq!(mcp_ack["enabled"], accepted.enabled);
+        assert_eq!(
+            mcp_ack["capture"],
+            serde_json::to_value(accepted.capture).unwrap()
+        );
+        assert_eq!(
+            mcp_ack["stop_events"],
+            serde_json::json!(accepted.stop_events)
+        );
+        assert_eq!(
+            mcp_ack["draw_range"],
+            serde_json::json!(accepted.draw_range)
+        );
+        assert_eq!(mcp_ack["max_draws"], accepted.max_draws);
+        assert_eq!(mcp_ack["resources"], accepted.resources);
+        assert_eq!(mcp_ack["epoch"], accepted.epoch);
+        drop(server);
+        drop(runtime);
         controller
             .commands
             .send(Command::DebugAt {
@@ -818,6 +950,7 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
             controller.inspection_selection.lock().unwrap().panel,
             Panel::Gpu
         );
+        check_gpu_capture_budget(&controller, &target);
         check_gpu_comparison(&controller, &target);
         check_gpu_saved_texture(&controller, &target);
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1029,6 +1162,22 @@ fn gdb_reports_unsupported_on_azahar() {
         controller.latest.lock().unwrap().gdb_status[&target].address,
         None
     );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let gdb = runtime.block_on(mcp.lotus_gdb(Parameters(GdbArgs {
+        session: target.id.clone(),
+        operation: GdbOperation::Start,
+        port: 0,
+    })));
+    assert_eq!(gdb.is_error, Some(true));
+    assert!(gdb.content[0]
+        .as_text()
+        .unwrap()
+        .text
+        .contains("requires the CITnLO backend"));
     controller
         .commands
         .send(Command::DebugAt {
