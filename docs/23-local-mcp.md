@@ -280,3 +280,11 @@ MCP framing/types follow pinned `rmcp 3.10.0` source in Cargo.lock. Windows path
 normalization converts Rust verbatim canonical paths for MinGW std::filesystem;
 native manifest/logs remain in each private root. Rollback: launch without host
 configuration or set `allow_control` false.
+
+On Windows, `ctr-cli investigation host.json '{"op":"list"}'` connects through
+the same desktop bridge as MCP. The CLI uses the sibling `lotus-desktop.exe`
+unless `LOTUS_DESKTOP` names another executable. Use the same host configuration
+as the window. Omit the operation to send one JSON operation per line on a
+single connection. An `attach` selects the default record for subsequent
+`get` operations on that connection. Each line returns a `result` or `error`
+object. End stdin to disconnect. The shared window and its workers stay open.

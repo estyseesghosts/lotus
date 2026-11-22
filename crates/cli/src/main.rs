@@ -3,6 +3,9 @@
 //! The CLI shares the same typed operations as the desktop application and
 //! the MCP server. It never opens a window and never requires a GUI session.
 
+#[cfg(windows)]
+mod investigation;
+
 use anyhow::{bail, Context, Result};
 use lotus_protocol::protocol_id;
 use lotus_runner::Scenario;
@@ -48,6 +51,8 @@ ctr-cli: Lotus command line interface
 
 Usage:
   ctr-cli debug <host-config> <asset-or-dash> [--gdb <port>]    Typed JSON-line debugger on stdin; replies on stdout
+  ctr-cli investigation <host-config> [operation-json] (Windows shared desktop)
+                                Read or edit investigations. Without JSON, accept operations on stdin.
   ctr-cli version              Print the Lotus version and worker protocol version
   ctr-cli mock <worker-executable> Query a mock worker over private pipes
   ctr-cli pins                 Print the pinned Azahar and GPUI revisions
@@ -67,6 +72,8 @@ fn main() -> Result<()> {
     let command = args.first().map(String::as_str).unwrap_or("help");
 
     match command {
+        #[cfg(windows)]
+        "investigation" => investigation::run(&args[1..])?,
         "debug-schema" => println!(
             "{}",
             serde_json::to_string_pretty(&lotus_protocol::debug_schema::schema())?
