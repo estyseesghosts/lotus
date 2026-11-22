@@ -34,3 +34,4 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 base64 = "=0.22.1"
 png = "=0.17.16"
+sha2.workspace = true

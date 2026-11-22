@@ -31,6 +31,20 @@ pub enum InvestigationOperation {
     Detach,
     /// Save a new investigation. Requires host control.
     Create { details: Box<InvestigationDetails> },
+    /// Archive evidence from the expected revision. Select up to two saved screenshot URIs.
+    Export {
+        id: String,
+        expected_revision: u64,
+        #[serde(default)]
+        screenshots: Vec<String>,
+        /// Opt in only after reviewing all notes and relative source paths for sensitive data.
+        #[serde(default)]
+        include_notes: bool,
+    },
+    /// Read a bundle by its SHA-256 ID, including selected PNG images.
+    Bundle { bundle: String },
+    /// Read the JSON metadata and Markdown summary of a saved bundle.
+    Summary { bundle: String },
     /// Replace details if the revision still matches. Requires host control.
     Update {
         id: String,

@@ -54,6 +54,8 @@ pub(super) enum GlobalCommand {
     OpenTrace,
     DebuggerCommands,
     Gdb,
+    #[cfg(windows)]
+    Investigations,
     Minimize,
     ZoomWindow,
     Keyboard,
@@ -63,7 +65,7 @@ pub(super) enum GlobalCommand {
     Screens(ScreenLayout),
 }
 impl GlobalCommand {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 18 + cfg!(windows) as usize] = [
         Self::Sidebar,
         Self::Inspector,
         Self::Settings,
@@ -72,6 +74,8 @@ impl GlobalCommand {
         Self::OpenTrace,
         Self::DebuggerCommands,
         Self::Gdb,
+        #[cfg(windows)]
+        Self::Investigations,
         Self::Minimize,
         Self::ZoomWindow,
         Self::Keyboard,
@@ -93,6 +97,8 @@ impl GlobalCommand {
             Self::OpenTrace => "debug.trace.open",
             Self::DebuggerCommands => "debug.commands",
             Self::Gdb => "debug.gdb",
+            #[cfg(windows)]
+            Self::Investigations => "debug.investigations",
             Self::Minimize => "window.minimize",
             Self::ZoomWindow => "window.zoom",
             Self::Keyboard => "help.keyboard",
@@ -133,6 +139,11 @@ impl GlobalCommand {
             Self::DebuggerCommands => CommandDescriptor::action(self.id(), "Debugger Commands")
                 .needs_input()
                 .enabled(view.inspection_target().is_some()),
+            #[cfg(windows)]
+            Self::Investigations => CommandDescriptor::action(self.id(), "Investigations")
+                .needs_input()
+                .shortcut("secondary-shift-i")
+                .enabled(view.controller.is_some()),
             Self::Gdb => CommandDescriptor::action(self.id(), "GDB")
                 .enabled(view.inspection_target().is_some()),
             Self::Minimize => CommandDescriptor::action(self.id(), "Minimize Window"),
@@ -429,6 +440,21 @@ impl LotusWindow {
             GlobalCommand::OpenTrace => self.open_trace(cx),
             GlobalCommand::DebuggerCommands => self.show_panel(Panel::Commands),
             GlobalCommand::Gdb => self.show_panel(Panel::Gdb),
+            #[cfg(windows)]
+            GlobalCommand::Investigations => {
+                self.release_input();
+                if let Some(controller) = &self.controller {
+                    let host = controller.host().clone();
+                    let target = self.inspection_target().map(|target| {
+                        lotus_session::investigation::SessionReference {
+                            session: target.id,
+                            created_unix_ms: target.created_unix_ms,
+                            epoch: target.epoch,
+                        }
+                    });
+                    cx.defer(move |cx| crate::investigation_window::open(cx, host, target));
+                }
+            }
             GlobalCommand::Minimize => window.minimize_window(),
             GlobalCommand::ZoomWindow => silvestris::native::zoom_window(window),
             GlobalCommand::Keyboard => {
@@ -882,6 +908,8 @@ impl LotusWindow {
                 entries: vec![
                     global(GlobalCommand::DebuggerCommands),
                     global(GlobalCommand::Gdb),
+                    #[cfg(windows)]
+                    global(GlobalCommand::Investigations),
                     global(GlobalCommand::OpenTrace),
                 ],
             },

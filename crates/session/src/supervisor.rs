@@ -727,7 +727,36 @@ impl Supervisor {
             })
     }
 
-    /// Persistent card names.
+    /// Read the live or failed worker's identity without issuing a guest command.
+    /// A busy worker or changed epoch leaves the identity unavailable.
+    pub fn investigation_target_identity(
+        &self,
+        target: &crate::investigation::SessionReference,
+    ) -> Option<serde_json::Value> {
+        let handle = self.handle(&target.session).ok()?;
+        let native = handle.native.try_lock().ok()?;
+        if handle.info().created_unix_ms != target.created_unix_ms || native.epoch() != target.epoch
+        {
+            return None;
+        }
+        let metadata = native.metadata();
+        let settings = native.settings_values();
+        let source = metadata["identity"]["source"].as_str().filter(|source| {
+            source.len() == 40 && source.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+        Some(serde_json::json!({
+            "worker_sha256": metadata["identity"]["worker_sha256"],
+            "worker_source": source,
+            "profile_sha256": (!native.profile_hash().is_empty()).then(|| native.profile_hash()),
+            "content_sha256": native.content_identity()["sha256"],
+            "options": {
+                "is_new_3ds": settings.get("is_new_3ds").and_then(serde_json::Value::as_bool),
+                "use_cpu_jit": settings.get("use_cpu_jit").and_then(serde_json::Value::as_bool),
+                "graphics_api": settings.get("graphics_api").and_then(serde_json::Value::as_u64),
+            },
+        }))
+    }
+
     /// The host configuration this supervisor runs with (paths canonicalized).
     #[must_use]
     pub fn config(&self) -> &HostConfig {

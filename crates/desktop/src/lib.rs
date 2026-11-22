@@ -13,6 +13,8 @@ pub mod gauges;
 pub mod icons;
 pub mod input_routing;
 pub mod inspection;
+#[cfg(all(windows, feature = "silvestris-ui"))]
+mod investigation_window;
 pub mod layout;
 pub mod lotus_window;
 mod pica_texture;

@@ -37,7 +37,7 @@ pub(crate) fn inline_images(mut frames: Vec<Frame>) -> io::Result<Vec<ContentBlo
 }
 
 /// Native frame leases require tightly packed BGRA8 rows in top-left order.
-fn encode_png(bgra: &mut [u8], width: u32, height: u32) -> io::Result<Vec<u8>> {
+pub(crate) fn encode_png(bgra: &mut [u8], width: u32, height: u32) -> io::Result<Vec<u8>> {
     if !(1..=1600).contains(&width)
         || !(1..=960).contains(&height)
         || bgra.len() != (width * height * 4) as usize

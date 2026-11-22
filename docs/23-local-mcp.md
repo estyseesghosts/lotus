@@ -288,3 +288,37 @@ as the window. Omit the operation to send one JSON operation per line on a
 single connection. An `attach` selects the default record for subsequent
 `get` operations on that connection. Each line returns a `result` or `error`
 object. End stdin to disconnect. The shared window and its workers stay open.
+
+On Windows with the shared shell, open **Actions → Debug → Investigations**
+or press **Ctrl+Shift+I**. The window edits the title, purpose and next
+steps, and can add the current inspector session to a record. Reselect a
+record to read its latest revision and session state. A conflicting save
+is refused. The archive button uses the selected saved revision and copies
+its evidence URI.
+
+### Evidence bundles
+
+`lotus_investigation` and `ctr-cli investigation` accept these operations.
+
+| Operation | Fields |
+| --- | --- |
+| `export` | `id`, `expected_revision`, optional `screenshots` (up to two distinct saved screen artifact URIs), optional `include_notes` (default false) |
+| `bundle` | `bundle` (SHA-256 ID or `lotus://evidence/…` URI) |
+| `summary` | `bundle` (same ID or URI) |
+
+Export requires host control. Bundles persist under `<storage_root>/evidence`
+and remain readable by independent clients and after a host restart.
+The manifest SHA-256 is the bundle ID, checked on every read. Included
+screenshots carry both their original BGRA hash and their PNG hash.
+MCP returns each selected PNG as an image block. Summary returns Markdown
+and JSON metadata without screenshot bytes.
+
+The archive permits 64 bundles, 4 MiB per bundle, and up to 32 MiB total
+or the configured artifact byte quota, whichever is smaller. Re-exporting
+identical bytes reuses the same bundle. The default manifest omits notes,
+source paths, worker log text, and guest files. Inspect notes and relative
+paths before opting in, and review any screenshots before sharing. Trace
+references report availability. The manifest includes worker and content
+hashes where available, selected effective settings, and the latest
+recognized pause reason. Null fields indicate unavailable observations.
+Trace slices and exact replay scripts are still pending.

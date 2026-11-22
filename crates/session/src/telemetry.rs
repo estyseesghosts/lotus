@@ -69,6 +69,9 @@ pub struct Telemetry {
     /// Why the worker connection failed: `cause` (crate::failure::Cause), path-free
     /// `summary`, `renderer` (known renderer failure). Null while healthy.
     pub failure: Option<Value>,
+    /// Last decoded stop from a worker status reply.
+    #[serde(skip)]
+    pub stop_reason: Option<&'static str>,
     pub backend_name: String,
     /// Negotiated worker features, shared cheaply with in-process frontends.
     #[serde(skip)]
@@ -134,6 +137,7 @@ impl Telemetry {
             touch_down: false,
             last_error: String::new(),
             failure: None,
+            stop_reason: None,
             backend_name: String::new(),
             worker_features: Arc::default(),
             gpu_capture: None,
@@ -166,6 +170,14 @@ impl Telemetry {
         self.state = state;
         self.busy = false;
         self.epoch = epoch;
+        self.stop_reason = match status["stop"]["reason"].as_str() {
+            Some("frame") => Some("frame"),
+            Some("manual") => Some("manual"),
+            Some("breakpoint") => Some("breakpoint"),
+            Some("watchpoint") => Some("watchpoint"),
+            Some("exception") => Some("exception"),
+            _ => None,
+        };
         self.audio_dropped = status["audio_dropped"].as_u64().unwrap_or(0);
         self.transport = status.get("transport").cloned();
         self.events = status.get("events").cloned();

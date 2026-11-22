@@ -124,6 +124,16 @@ def main():
         (hwnd,) = [handle for handle, title in windows(host_pid) if title == "lotus"]
         print(f"{args.clients} concurrent clients share one visible desktop, PID {host_pid}", flush=True)
 
+        def investigation_windows():
+            return [handle for handle, title in windows(host_pid) if title == "investigations"]
+
+        for _ in range(2):
+            foreground(hwnd)
+            key(0x11); key(0x10); key(0x49)
+            key(0x49, True); key(0x10, True); key(0x11, True)
+            until("Investigation window opens from the shared host", lambda: investigation_windows())
+            assert len(investigation_windows()) == 1
+
         # A direct desktop launch joins the same singleton instead of opening a second window.
         duplicate = subprocess.run([desktop, "--mcp-host", config], capture_output=True, timeout=8)
         assert duplicate.returncode == 0 and b"already has a shared desktop" in duplicate.stderr
@@ -177,6 +187,7 @@ def main():
                   if args.fixture else None)
         assert user32.PostMessageW(hwnd, 0x10, 0, 0)  # WM_CLOSE
         until("Close minimizes the original window", lambda: user32.IsIconic(hwnd), 6)
+        until("Investigation window closes with its owner", lambda: not investigation_windows())
         assert own_session(clients[2])["telemetry"]["pid"] == worker_pid
 
         # An agent killed without an orderly protocol shutdown loses its bridge only.

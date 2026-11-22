@@ -38,6 +38,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "CPU inspector" | "session status" => Some("desktop_controller.rs"),
             "desktop input" => Some("input_routing.rs"),
             "settings window" => Some("settings_window.rs"),
+            "investigations window" => Some("investigation_window.rs"),
             "debug bridge" if section == 1 => None,
             "palette" => Some("lotus_window/command_palette.rs"),
             "Builds inspector" => Some("lotus_window/builds_panel.rs"),

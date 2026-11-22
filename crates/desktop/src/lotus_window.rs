@@ -328,6 +328,8 @@ impl LotusWindow {
             #[cfg(feature = "silvestris-ui")]
             let _ = close_owner.read_with(cx, |view, _| view.preferences.save());
             crate::settings_window::close(cx);
+            #[cfg(all(windows, feature = "silvestris-ui"))]
+            crate::investigation_window::close(cx);
             #[cfg(windows)]
             if mcp == McpMode::Shared {
                 _window.minimize_window();

@@ -219,6 +219,14 @@ fn investigation_operation(
             Ok(serde_json::json!({ "detached": previous }))
         }
         InvestigationOperation::Create { details } => json(&host.create_investigation(*details)?),
+        InvestigationOperation::Export {
+            id,
+            expected_revision,
+            screenshots,
+            include_notes,
+        } => crate::evidence::export(host, &id, expected_revision, &screenshots, include_notes),
+        InvestigationOperation::Bundle { bundle } => crate::evidence::read(host, &bundle),
+        InvestigationOperation::Summary { bundle } => crate::evidence::summary(host, &bundle),
         InvestigationOperation::Update {
             id,
             expected_revision,
@@ -701,14 +709,25 @@ impl LotusServer {
             return tool_result(Err(unconfigured_host()));
         };
         let attached = self.attached_investigation.clone();
-        tool_result(
-            tokio::task::spawn_blocking(move || {
-                investigation_operation(&host, &attached, args.operation)
-            })
-            .await
-            .map_err(io::Error::other)
-            .and_then(|result| result),
-        )
+        let bundle = matches!(args.operation, InvestigationOperation::Bundle { .. });
+        let result = tokio::task::spawn_blocking(move || {
+            investigation_operation(&host, &attached, args.operation)
+        })
+        .await
+        .map_err(io::Error::other)
+        .and_then(|result| result);
+        if bundle {
+            if let Ok(value) = &result {
+                let mut content = vec![ContentBlock::text(value.to_string())];
+                for image in value["images"].as_array().into_iter().flatten() {
+                    if let Some(data) = image["data"].as_str() {
+                        content.push(ContentBlock::image(data, "image/png"));
+                    }
+                }
+                return CallToolResult::success(content);
+            }
+        }
+        tool_result(result)
     }
 
     #[tool(
