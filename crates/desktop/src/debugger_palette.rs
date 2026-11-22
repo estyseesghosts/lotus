@@ -303,6 +303,7 @@ fn group(name: &str) -> &'static str {
         | "threads"
         | "write_register"
         | "write_thread_register" => "CPU",
+        "build" | "build_status" | "build_cancel" | "compare_builds" | "relaunch_build" => "Builds",
         "memory_map" | "pointer_chain" | "read_memory" | "scan" | "scan_narrow"
         | "scan_results" | "write_memory" => "Memory",
         "capture_scaled" | "gpu_configure" | "gpu_draw" | "gpu_draws" | "shader_trace"

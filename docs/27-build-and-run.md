@@ -321,3 +321,39 @@ packages in sections 10 and 11 runs this whole loop. WSLg exposes
 and `lotus-desktop` opens a window on the Windows desktop. WSLg has no Vulkan
 device in a plain container, so emulation falls back to software and
 performance numbers do not carry over to native Linux.
+
+## Trusted project builds
+
+The desktop Builds inspector, window-host MCP and the `ctr-cli debug host.json -` JSON-lines session use the same host-owned build profiles. Add a `build_profiles` object to the host configuration and enable `allow_control` to start, cancel or relaunch a build. The host runs the project's build recipes with the account running Lotus, so configure projects and tools you trust.
+
+Example profile for the devkitPro fixture on Windows. Replace the root with the absolute project path.
+
+```json
+{
+  "build_profiles": {
+    "fixture": {
+      "root": "C:/src/lotus/fixtures/build",
+      "tool": {
+        "kind": "make",
+        "program": "C:/devkitPro/msys2/usr/bin/make.exe",
+        "targets": ["all"]
+      },
+      "output": "fixture.3dsx",
+      "elf": "fixture.elf",
+      "map": "fixture.map",
+      "sources": "source",
+      "env": {
+        "DEVKITPRO": "/c/devkitPro",
+        "PATH": "/usr/bin:/c/devkitPro/devkitARM/bin:/c/devkitPro/tools/bin"
+      },
+      "timeout_secs": 60
+    }
+  }
+}
+```
+
+Use `{"kind":"cmake_preset","program":"<absolute path to cmake>","preset":"<build preset>"}` for an existing CMake build preset. Output, ELF, optional linker map and source paths are relative to the project root. The tool receives the configured environment plus available `SystemRoot`, `TEMP` and `TMP`. Concurrent jobs can build separate roots, up to two at a time.
+
+Send `{"operation":"build","profile":"fixture"}` and poll `build_status` with the returned `job`. Omit the job to list profiles and recent jobs. For logs, pass the previous `log.next` as `log_from` to read the next page. `build_cancel` takes the job ID. `compare_builds` takes job IDs `a` and `b` and reports output and ELF hashes, compiler metadata recorded in DWARF, and symbol and section differences.
+
+`relaunch_build` loads a successful 3DSX into the selected session's existing storage. The matching ELF is checked against guest memory and source breakpoints are resolved again. A CIA job yields an approved asset for `install_cia` in an unbooted session. Failed and cancelled build jobs leave the selected guest alone. Successful artifacts and handles are retained until the host closes. The host keeps up to 32 jobs and can reclaim slots from failed, cancelled or timed-out jobs. Crash and matrix reports include the active build record when their content came from a build job.

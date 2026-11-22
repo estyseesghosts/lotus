@@ -3567,3 +3567,254 @@ fn variables_follow_dwarf_locations() {
     drop(controller);
     let _ = std::fs::remove_dir_all(root);
 }
+
+#[test]
+#[cfg(windows)]
+#[ignore = "requires LOTUS_NATIVE_WORKER and a devkitPro installation at C:/devkitPro"]
+fn devkitpro_builds_relaunch_in_the_window_host() {
+    use lotus_session::supervisor::{BuildProfile, BuildTool};
+
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-build-{}", SessionUuid::generate()));
+    let make = PathBuf::from("C:/devkitPro/msys2/usr/bin/make.exe");
+    let mut config = HostConfig::new(worker, root.join("host"));
+    config.allow_control = true;
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/build");
+    for (name, directory, target, step) in [
+        ("a", "a", "all", 1),
+        ("b", "b", "all", 3),
+        ("broken", "a", "fail", 1),
+        ("slow", "a", "slow", 1),
+    ] {
+        let project = root.join(directory);
+        std::fs::create_dir_all(project.join("source")).unwrap();
+        std::fs::copy(fixture.join("Makefile"), project.join("Makefile")).unwrap();
+        std::fs::copy(fixture.join("source/main.c"), project.join("source/main.c")).unwrap();
+        std::fs::copy(fixture.join("source/step.h"), project.join("source/step.h")).unwrap();
+        if step != 1 {
+            std::fs::write(
+                project.join("source/step.h"),
+                format!("#define STEP_VALUE {step}\n"),
+            )
+            .unwrap();
+        }
+        config.build_profiles.insert(
+            name.into(),
+            BuildProfile {
+                root: project,
+                tool: BuildTool::Make {
+                    program: make.clone(),
+                    targets: vec![target.into()],
+                    jobs: None,
+                },
+                output: "fixture.3dsx".into(),
+                elf: Some("fixture.elf".into()),
+                map: Some("fixture.map".into()),
+                sources: Some("source".into()),
+                env: BTreeMap::from([
+                    ("DEVKITPRO".into(), "/c/devkitPro".into()),
+                    (
+                        "PATH".into(),
+                        "/usr/bin:/c/devkitPro/devkitARM/bin:/c/devkitPro/tools/bin".into(),
+                    ),
+                ]),
+                timeout_secs: 40,
+            },
+        );
+    }
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let create = |old: Option<&str>| {
+        controller
+            .commands
+            .send(Command::Create {
+                kind: SessionKind::Secondary { parent: None },
+                asset: None,
+            })
+            .unwrap();
+        wait(&controller, |update| {
+            Some(update.selected.as_str()) != old
+                && update.sessions.iter().any(|s| s.info.id == update.selected)
+        });
+        selected_target(&controller)
+    };
+    let a = create(None);
+    let b = create(Some(&a.id));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let call = |session: &SessionTarget, command| {
+        tool_json(runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: session.id.clone(),
+            command,
+        }))))
+    };
+    let start = |session: &SessionTarget, profile: &str| {
+        call(
+            session,
+            D::Build {
+                profile: profile.into(),
+            },
+        )["job"]
+            .as_u64()
+            .unwrap()
+    };
+    let status = |job| {
+        call(
+            &a,
+            D::BuildStatus {
+                job: Some(job),
+                log_from: 0,
+            },
+        )
+    };
+    let done = |job, expected| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let value = status(job);
+            if value["state"] != "running" {
+                assert_eq!(value["state"], expected, "{value:#}");
+                break value;
+            }
+            assert!(Instant::now() < deadline, "{value:#}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let (first, second) = (start(&a, "a"), start(&b, "b"));
+    let first_build = done(first, "succeeded");
+    let second_build = done(second, "succeeded");
+    let desktop_status = completed(desktop_command(
+        &controller,
+        &a,
+        Panel::Builds,
+        D::BuildStatus {
+            job: Some(first),
+            log_from: 0,
+        },
+    ));
+    assert_eq!(desktop_status.data.as_deref(), Some(&first_build));
+
+    let relaunch = |session: &SessionTarget, job| call(session, D::RelaunchBuild { job });
+    let first_launch = relaunch(&a, first);
+    let second_launch = relaunch(&b, second);
+    assert!(
+        first_launch["symbols"]["image"].is_object(),
+        "{first_launch:#}"
+    );
+    assert!(
+        second_launch["symbols"]["image"].is_object(),
+        "{second_launch:#}"
+    );
+    assert_eq!(first_launch["build"], first_build["build"]);
+    assert_ne!(
+        first_build["build"]["output"]["sha256"],
+        second_build["build"]["output"]["sha256"]
+    );
+    assert!(!first_build["build"]["producers"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    let image = |session: &SessionTarget| {
+        call(
+            session,
+            D::Symbolize {
+                addresses: vec![0x100000],
+            },
+        )
+    };
+    let address = {
+        let nm = std::process::Command::new("C:/devkitPro/devkitARM/bin/arm-none-eabi-nm.exe")
+            .arg(root.join("a/fixture.elf"))
+            .output()
+            .unwrap();
+        assert!(nm.status.success());
+        let symbols = String::from_utf8(nm.stdout).unwrap();
+        let (address, _) = symbols
+            .lines()
+            .find_map(|line| line.split_once(" T main"))
+            .unwrap();
+        u32::from_str_radix(address, 16).unwrap()
+    };
+    let location = call(
+        &a,
+        D::Symbolize {
+            addresses: vec![address],
+        },
+    );
+    let file = location["locations"][0]["file"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bp = call(&a, D::SourceBreakpointSet { file, line: 8 });
+    assert!(
+        bp["sites"]
+            .as_array()
+            .is_some_and(|sites| !sites.is_empty()),
+        "{bp:#}"
+    );
+    let before = image(&a);
+    let broken = done(start(&a, "broken"), "failed");
+    assert!(broken["log"]["lines"]
+        .to_string()
+        .contains("intentional build failure"));
+    let slow = start(&a, "slow");
+    assert_eq!(
+        call(&a, D::BuildCancel { job: slow })["state"],
+        "cancelling"
+    );
+    done(slow, "cancelled");
+    assert_eq!(before["image"], image(&a)["image"]);
+    assert_eq!(before["epoch"], image(&a)["epoch"]);
+
+    std::fs::write(root.join("a/source/step.h"), "#define STEP_VALUE 5\n").unwrap();
+    let rebuilt = start(&a, "a");
+    done(rebuilt, "succeeded");
+    let compare = call(
+        &a,
+        D::CompareBuilds {
+            a: first,
+            b: rebuilt,
+        },
+    );
+    assert_eq!(compare["same_output"], false);
+    let replacement = relaunch(&a, rebuilt);
+    assert!(
+        replacement["symbols"]["image"].is_object(),
+        "{replacement:#}"
+    );
+    assert_ne!(replacement["epoch"], first_launch["epoch"]);
+    assert_eq!(
+        replacement["source_breakpoints"]["rebound"],
+        format!("build:a:{rebuilt}:elf")
+    );
+    let restored = call(&a, D::SourceBreakpoints);
+    let armed = &restored["source_breakpoints"][0];
+    assert_eq!(armed["id"], bp["id"]);
+    assert_eq!(armed["epoch"], replacement["epoch"]);
+    let sites = armed["sites"].as_array().unwrap();
+    call(&a, D::Continue);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let state = call(&a, D::Status);
+        if state["paused"] == true && state["stop"]["reason"] == "breakpoint" {
+            assert!(
+                sites
+                    .iter()
+                    .any(|site| site["breakpoint"] == state["stop"]["breakpoint"]),
+                "{state:#}"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "rebuilt fixture did not reach the breakpoint: {state:#}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(image(&b)["epoch"], second_launch["epoch"]);
+    assert_eq!(status(first)["build"], first_build["build"]);
+    drop(controller);
+    std::fs::remove_dir_all(root).unwrap();
+}

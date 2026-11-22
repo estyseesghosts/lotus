@@ -7,6 +7,7 @@
 
 pub mod artifacts;
 mod assets;
+mod build;
 pub mod card_store;
 mod debug_image;
 pub mod failure;

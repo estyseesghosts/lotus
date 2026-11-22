@@ -157,7 +157,8 @@ impl Supervisor {
                 "repeatability_confirmed":stable,"verdict":"observation; requires an independent reference to identify a bug"}));
             }
         }
-        let report = serde_json::json!({"profiles":rows,"comparisons":comparisons,
+        let build = self.builds.content_record(&asset);
+        let report = serde_json::json!({"build":build,"profiles":rows,"comparisons":comparisons,
             "alignment":"presented guest frames; CPU state and screen hashes compared separately from host time",
             "source_session":id,"asset":asset,"evidence":"verified emulator run"});
         let artifact = self.publish_json(id, &report)?;

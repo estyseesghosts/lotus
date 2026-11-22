@@ -14,7 +14,7 @@ pub(crate) type Reader = gimli::EndianArcSlice<gimli::RunTimeEndian>;
 /// Read-only bytes compared with guest memory; larger images are refused.
 pub const MAX_VERIFIED_BYTES: usize = 16 << 20;
 
-use object::elf::{SHF_ALLOC, SHF_EXECINSTR, SHF_WRITE};
+use object::elf::{SHF_ALLOC, SHF_EXECINSTR, SHF_TLS, SHF_WRITE};
 
 pub struct Symbols {
     /// `Context` caches parsed units in `OnceCell`s and is not `Sync`; the mutex lets
@@ -180,7 +180,9 @@ impl Symbols {
             let SectionFlags::Elf { sh_flags, .. } = section.flags() else {
                 continue;
             };
-            if !sh_flags.contains(SHF_ALLOC) || section.size() == 0 {
+            // A TLS template is copied per thread. Its .tbss can share a link
+            // address with ordinary loaded sections (devkitARM's 3dsx linker script).
+            if !sh_flags.contains(SHF_ALLOC) || sh_flags.contains(SHF_TLS) || section.size() == 0 {
                 continue;
             }
             let (Ok(address), Ok(size)) = (
@@ -279,6 +281,13 @@ impl Symbols {
             verify,
             build_id,
         })
+    }
+
+    /// Sized `STT_FUNC` symbols: name, start and size.
+    pub fn functions(&self) -> impl Iterator<Item = (&str, u32, u64)> {
+        self.functions
+            .iter()
+            .map(|(start, (end, name))| (name.as_str(), *start as u32, end - start))
     }
 
     /// GNU build ID note, when the linker emitted one.
@@ -722,6 +731,50 @@ impl Symbols {
         };
         self.lines.file(id)
     }
+}
+
+/// `DW_AT_producer` of each compilation unit (DWARF 5, 3.1.1): the compiler, and its flags
+/// where it records them (GCC's default `-grecord-gcc-switches`). At most 64, deduplicated.
+pub fn producers(bytes: &[u8]) -> io::Result<Vec<String>> {
+    use gimli::Reader as _;
+    let file = object::File::parse(bytes).map_err(io::Error::other)?;
+    let dwarf = gimli::Dwarf::load(|section| -> io::Result<Reader> {
+        let data = file
+            .section_by_name(section.name())
+            .map(|s| s.uncompressed_data())
+            .transpose()
+            .map_err(io::Error::other)?
+            .unwrap_or_default();
+        Ok(Reader::new(
+            Arc::from(data.as_ref()),
+            gimli::RunTimeEndian::Little,
+        ))
+    })?;
+    let mut producers = Vec::new();
+    let mut units = dwarf.units();
+    while let Some(header) = units.next().map_err(io::Error::other)? {
+        let unit = dwarf.unit(header).map_err(io::Error::other)?;
+        let mut entries = unit.entries();
+        let Some(root) = entries.next_dfs().map_err(io::Error::other)? else {
+            continue;
+        };
+        if let Some(value) = root.attr_value(gimli::DW_AT_producer) {
+            let text = unit
+                .unit_ref(&dwarf)
+                .attr_string(value)
+                .map_err(io::Error::other)?
+                .to_string_lossy()
+                .map_err(io::Error::other)?
+                .into_owned();
+            if !producers.contains(&text) {
+                producers.push(text);
+                if producers.len() == 64 {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(producers)
 }
 
 #[cfg(test)]

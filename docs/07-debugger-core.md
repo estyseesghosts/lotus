@@ -79,6 +79,10 @@ and no bias is guessed. Writable sections are not compared because the guest cha
 The binding names the single process whose `memory_map` regions cover every compared section;
 none or several is a refusal. A failed `load_symbols` keeps the previous binding.
 
+Thread-local templates are outside the process-address map used for verification. devkitARM
+can place `.tbss` at the same link address as `.init_array` because the TLS block is
+allocated separately for each thread.
+
 Each binding records the ELF asset and SHA-256, GNU build ID when present, the content file's
 size and SHA-256 (hashed after each load or reset, up to 64 MiB), process, epoch and a
 per-session generation. `symbolize`, `resolve_symbol`, `disassemble`, `backtrace` and

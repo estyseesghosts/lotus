@@ -16,6 +16,9 @@ This table records reachability, not native-backend acceptance.
 | `breakpoint_remove` | `ctr-cli debug`: `breakpoint_remove` | `lotus_debug`: `breakpoint_remove` |
 | `breakpoint_set` | `ctr-cli debug`: `breakpoint_set` | `lotus_debug`: `breakpoint_set` |
 | `breakpoints` | `ctr-cli debug`: `breakpoints` | `lotus_debug`: `breakpoints` |
+| `build` | `ctr-cli debug`: `build` | `lotus_debug`: `build` |
+| `build_cancel` | `ctr-cli debug`: `build_cancel` | `lotus_debug`: `build_cancel` |
+| `build_status` | `ctr-cli debug`: `build_status` | `lotus_debug`: `build_status` |
 | `capture_scaled` | `ctr-cli debug`: `capture_scaled` | `lotus_debug`: `capture_scaled` |
 | `cheat_add` | `ctr-cli debug`: `cheat_add` | `lotus_debug`: `cheat_add` |
 | `cheat_enable` | `ctr-cli debug`: `cheat_enable` | `lotus_debug`: `cheat_enable` |
@@ -25,6 +28,7 @@ This table records reachability, not native-backend acceptance.
 | `citrace_start` | `ctr-cli debug`: `citrace_start` | `lotus_debug`: `citrace_start` |
 | `citrace_status` | `ctr-cli debug`: `citrace_status` | `lotus_debug`: `citrace_status` |
 | `citrace_stop` | `ctr-cli debug`: `citrace_stop` | `lotus_debug`: `citrace_stop` |
+| `compare_builds` | `ctr-cli debug`: `compare_builds` | `lotus_debug`: `compare_builds` |
 | `content_transform` | `ctr-cli debug`: `content_transform` | `lotus_debug`: `content_transform` |
 | `continue` | `ctr-cli debug`: `continue` | `lotus_debug`: `continue` |
 | `crash_report` | `ctr-cli debug`: `crash_report` | `lotus_debug`: `crash_report` |
@@ -64,6 +68,7 @@ This table records reachability, not native-backend acceptance.
 | `processes` | `ctr-cli debug`: `processes` | `lotus_debug`: `processes` |
 | `read_memory` | `ctr-cli debug`: `read_memory` | `lotus_debug`: `read_memory` |
 | `registers` | `ctr-cli debug`: `registers` | `lotus_debug`: `registers` |
+| `relaunch_build` | `ctr-cli debug`: `relaunch_build` | `lotus_debug`: `relaunch_build` |
 | `reset` | `ctr-cli debug`: `reset` | `lotus_debug`: `reset` |
 | `resolve_symbol` | `ctr-cli debug`: `resolve_symbol` | `lotus_debug`: `resolve_symbol` |
 | `reverse_continue` | `ctr-cli debug`: `reverse_continue` | `lotus_debug`: `reverse_continue` |

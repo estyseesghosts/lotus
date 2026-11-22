@@ -164,6 +164,14 @@ impl SymbolSlot {
         self.presented = None;
     }
 
+    /// Discard the previous image after the worker accepts new content.
+    pub(crate) fn set_asset(&mut self, asset: Option<String>) {
+        *self = Self {
+            asset,
+            ..Self::default()
+        };
+    }
+
     pub(crate) fn asset(&self) -> Option<&str> {
         self.asset.as_deref()
     }

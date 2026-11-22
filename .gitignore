@@ -8,6 +8,10 @@ __pycache__/
 
 # CMake / native builds (worker + vendored sources)
 build/
+!/fixtures/build/
+/fixtures/build/*
+!/fixtures/build/Makefile
+!/fixtures/build/source/
 cmake-build-*/
 out/
 CMakeUserPresets.json

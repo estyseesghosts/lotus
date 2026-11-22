@@ -1760,7 +1760,9 @@ impl Loops {
         view.guest_actions(command, &value);
         if matches!(
             command,
-            DebugCommand::Scan { .. }
+            DebugCommand::BuildStatus { .. }
+                | DebugCommand::CompareBuilds { .. }
+                | DebugCommand::Scan { .. }
                 | DebugCommand::ScanNarrow { .. }
                 | DebugCommand::ScanResults { .. }
                 | DebugCommand::PointerChain { .. }

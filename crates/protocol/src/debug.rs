@@ -161,6 +161,30 @@ pub enum DebugCommand {
         #[serde(default = "inspect_depth")]
         depth: u32,
     },
+    /// Run a configured build profile (lotus#79). Clients name a profile only; the
+    /// program, arguments and paths come from host configuration.
+    Build {
+        profile: String,
+    },
+    /// Profiles and build jobs, or one job with its log from line `log_from`.
+    BuildStatus {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        job: Option<u64>,
+        #[serde(default)]
+        log_from: u64,
+    },
+    BuildCancel {
+        job: u64,
+    },
+    /// Load a successful build's 3DSX into this session and bind its ELF.
+    RelaunchBuild {
+        job: u64,
+    },
+    /// Output and ELF identity of two builds, with function and section differences.
+    CompareBuilds {
+        a: u64,
+        b: u64,
+    },
     Deadlocks,
     CrashReport {
         core: u32,
@@ -796,6 +820,9 @@ impl DebugCommand {
             {
                 Err("expression 1..256 bytes")
             }
+            Self::Build { profile } if profile.is_empty() || profile.len() > 64 => {
+                Err("build profile name 1..64 bytes")
+            }
             Self::ResolveSymbol { query } if query.len() > 1024 => {
                 Err("symbol query exceeds budget")
             }
@@ -934,6 +961,9 @@ impl DebugCommand {
                 | Self::LoadSymbols { .. }
                 | Self::SourceBreakpointSet { .. }
                 | Self::SourceBreakpointRemove { .. }
+                | Self::Build { .. }
+                | Self::BuildCancel { .. }
+                | Self::RelaunchBuild { .. }
                 | Self::SourceStep { .. }
                 | Self::RunTo { .. }
                 | Self::StepOver { .. }

@@ -1299,6 +1299,117 @@
     },
     {
       "additionalProperties": false,
+      "description": "Run a configured build profile (lotus#79). Clients name a profile only; the\nprogram, arguments and paths come from host configuration.",
+      "properties": {
+        "operation": {
+          "const": "build",
+          "type": "string"
+        },
+        "profile": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "profile"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Profiles and build jobs, or one job with its log from line `log_from`.",
+      "properties": {
+        "job": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "log_from": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "build_status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "job": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "build_cancel",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "job"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Load a successful build's 3DSX into this session and bind its ELF.",
+      "properties": {
+        "job": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "relaunch_build",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "job"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Output and ELF identity of two builds, with function and section differences.",
+      "properties": {
+        "a": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "b": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "compare_builds",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "a",
+        "b"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
       "properties": {
         "operation": {
           "const": "deadlocks",

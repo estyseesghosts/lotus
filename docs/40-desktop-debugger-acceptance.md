@@ -41,3 +41,14 @@ JSON. The workflow uses the owned ARM/Thumb fixture for native CI, covering
 the CPU, memory search, snapshots, timeline, and kernel explorer. The AZAHAR
 checks confirm the same desktop and MCP refusals for scans, rewind, CiTrace,
 and thread register commands.
+
+### devkitPro project builds
+
+Source inspected and verified on Windows with the pinned CITnLO worker
+(`a3994c1da5d2c6e00731a20c578a54a1b6d38fc7`, Release) and devkitARM GCC 16.1.0.
+`devkitpro_builds_relaunch_in_the_window_host` builds a libctru fixture in two project roots
+through window-host MCP, checks that a failed and a cancelled job preserve the selected ELF and
+epoch, then rebuilds, compares hashes and runs to the re-armed source breakpoint.
+`cli_build_jobs_are_available_between_requests` sends the same build and relaunch commands over
+the CLI's JSON-lines interface against the CITnLO and AZAHAR Windows workers.
+The fixture and profile are in [build and run](27-build-and-run.md).

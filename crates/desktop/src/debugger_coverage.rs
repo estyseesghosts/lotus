@@ -40,6 +40,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "settings window" => Some("settings_window.rs"),
             "debug bridge" if section == 1 => None,
             "palette" => Some("lotus_window/command_palette.rs"),
+            "Builds inspector" => Some("lotus_window/builds_panel.rs"),
             "GDB inspector" => Some("lotus_window/gdb_panel.rs"),
             "GPU capture form" => Some("lotus_window/gpu_capture.rs"),
             "Memory inspector" => Some("lotus_window/memory_panel.rs"),
@@ -69,7 +70,7 @@ fn render(inventory: &str) -> Result<String, String> {
         }
         let verification_link = match *verification {
             "CPU" | "Memory search" | "Snapshots" | "Timeline" | "Kernel" | "Source identity"
-            | "Source debugging" | "Variables" => Some("tests/native_inspector.rs"),
+            | "Source debugging" | "Variables" | "Builds" => Some("tests/native_inspector.rs"),
             "Memory" | "Breakpoints" => Some("src/lotus_window/breakpoints.rs"),
             "Guest tools" => Some("src/lotus_window/command_palette.rs"),
             "GPU" | "GDB" => Some("tests/native_inspector.rs"),
@@ -136,6 +137,7 @@ fn render(inventory: &str) -> Result<String, String> {
         "checked against llvm-addr2line and llvm-objdump. ",
         "Variables reads locals, arguments, globals and expressions of -O1 clang and devkitARM builds of a C fixture ",
         "and compares them with the values the fixture defines. ",
+        "Builds exercises fixture rebuilds and two-session isolation through the window host and compares desktop and MCP status. ",
         "Workspace and Input use mock workers. ",
         "Fixture pending means the route still needs mapped desktop acceptance. This inventory ",
         "records test coverage independently of the outcome of any release run.\n"

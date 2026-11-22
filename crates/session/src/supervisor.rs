@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub use crate::artifacts::{Artifact, ArtifactQuota};
 use crate::artifacts::{ArtifactStore, NewArtifact};
+pub use crate::build::{BuildProfile, BuildTool};
 use crate::card_store::{CardStore, ScratchEnd};
 use crate::native_session::{Frame, InputState, NativeSession};
 pub use crate::source_debug::SourceRoot;
@@ -163,6 +164,9 @@ pub struct HostConfig {
     /// Local directories `source_excerpt` may read, keyed by handle (lotus#77).
     #[serde(default)]
     pub source_roots: BTreeMap<String, SourceRoot>,
+    /// Trusted local builds, by name (lotus#79). Never settable by a client.
+    #[serde(default)]
+    pub build_profiles: BTreeMap<String, BuildProfile>,
     #[serde(default)]
     pub allow_control: bool,
     #[serde(default = "default_max_sessions")]
@@ -209,6 +213,7 @@ impl HostConfig {
             assets: BTreeMap::new(),
             asset_directories: BTreeMap::new(),
             source_roots: BTreeMap::new(),
+            build_profiles: BTreeMap::new(),
             allow_control: false,
             max_sessions: DEFAULT_MAX_SESSIONS,
             profile: BTreeMap::new(),
@@ -458,6 +463,7 @@ pub struct Supervisor {
     artifacts: Mutex<ArtifactStore>,
     /// Content approved interactively by the desktop user.
     local_assets: Mutex<BTreeMap<String, PathBuf>>,
+    builds: Arc<crate::build::Builds>,
     focus_request: Mutex<Option<String>>,
     /// Session holding exclusive audio focus, by the latest request.
     audio_focus: Mutex<Option<String>>,
@@ -517,6 +523,25 @@ impl Supervisor {
         fs::create_dir_all(&config.storage_root)
             .map_err(|error| labeled("storage_root", &config.storage_root, error))?;
         config.storage_root = canonical("storage_root", &config.storage_root)?;
+        for (name, profile) in &mut config.build_profiles {
+            *profile = crate::build::validate(name, profile)?;
+            if let Some(sources) = &profile.sources {
+                config.source_roots.insert(
+                    format!("build:{name}"),
+                    SourceRoot {
+                        path: profile.root.join(sources),
+                        from: None,
+                    },
+                );
+            }
+        }
+        let builds = Arc::new(crate::build::Builds::new(
+            config.build_profiles.clone(),
+            config
+                .storage_root
+                .join("builds")
+                .join(SessionUuid::generate().to_string()),
+        ));
         let cards = CardStore::open(&config.storage_root)?;
         let artifacts = ArtifactStore::open(
             config.storage_root.join("artifacts"),
@@ -533,6 +558,7 @@ impl Supervisor {
             registry: Mutex::default(),
             artifacts: Mutex::new(artifacts),
             local_assets: Mutex::default(),
+            builds,
             focus_request: Mutex::default(),
             audio_focus: Mutex::default(),
             closing: AtomicBool::new(false),
@@ -641,6 +667,7 @@ impl Supervisor {
             }
         }
         handles.extend(lock(&self.local_assets).keys().cloned());
+        handles.extend(self.builds.assets());
         handles.sort();
         handles.dedup();
         handles
@@ -1505,7 +1532,7 @@ impl Supervisor {
         native.pause().await
     }
 
-    /// Advance exactly `frames` (1–600) and stay paused.
+    /// Advance exactly `frames` (1â€“600) and stay paused.
     pub async fn advance(
         &self,
         id: &str,
@@ -1975,7 +2002,15 @@ impl Supervisor {
         };
         let mut result = self.debug_inner(id, command, client, scope, permit).await?;
         drop(slot);
-        handle.native.lock().await.decorate(&mut result);
+        if !matches!(
+            command,
+            DebugCommand::Build { .. }
+                | DebugCommand::BuildStatus { .. }
+                | DebugCommand::BuildCancel { .. }
+                | DebugCommand::CompareBuilds { .. }
+        ) {
+            handle.native.lock().await.decorate(&mut result);
+        }
         Ok(result)
     }
 
@@ -1997,6 +2032,10 @@ impl Supervisor {
                 DebugCommand::AudioFocus { .. }
                     | DebugCommand::CaptureScaled { .. }
                     | DebugCommand::Matrix { .. }
+                    | DebugCommand::Build { .. }
+                    | DebugCommand::BuildStatus { .. }
+                    | DebugCommand::BuildCancel { .. }
+                    | DebugCommand::CompareBuilds { .. }
             )
         {
             let native = handle.native.lock().await;
@@ -2020,6 +2059,32 @@ impl Supervisor {
             return self
                 .matrix(id, profiles, *frames, checkpoints, *repeats, client)
                 .await;
+        }
+        // Builds run outside every session; only `relaunch_build` touches this one.
+        match command {
+            DebugCommand::Build { profile } => {
+                self.require_control()?;
+                return self.builds.start(profile);
+            }
+            DebugCommand::BuildStatus { job, log_from } => {
+                let mut status = self.builds.status(*job, *log_from)?;
+                status["active_asset"] = serde_json::json!(lock(&handle.info).asset);
+                return Ok(status);
+            }
+            DebugCommand::BuildCancel { job } => {
+                self.require_control()?;
+                return self.builds.cancel(*job);
+            }
+            DebugCommand::CompareBuilds { a, b } => {
+                let (builds, a, b) = (self.builds.clone(), *a, *b);
+                return tokio::task::spawn_blocking(move || builds.compare(a, b))
+                    .await
+                    .map_err(io::Error::other)?;
+            }
+            DebugCommand::RelaunchBuild { job } => {
+                return self.relaunch_build(id, &handle, *job, client, &scope).await;
+            }
+            _ => {}
         }
         if matches!(command, DebugCommand::Stop) {
             let metadata = {
@@ -2496,6 +2561,15 @@ impl Supervisor {
                     self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 }
                 self.import_debug_artifacts(id, &handle.root, &mut result)?;
+                if matches!(command, DebugCommand::CrashReport { .. }) {
+                    let build = lock(&handle.info)
+                        .asset
+                        .as_deref()
+                        .and_then(|asset| self.builds.content_record(asset));
+                    if let Some(build) = build {
+                        result["build"] = serde_json::json!(build);
+                    }
+                }
                 // Backtraces carry `frames`; crash reports nest them under `backtrace`.
                 let frames_at = |result: &serde_json::Value| {
                     if result["frames"].is_array() {
@@ -2579,6 +2653,70 @@ impl Supervisor {
                     .await;
         }
         Ok(result)
+    }
+
+    /// Load a successful build's 3DSX into this session like `load`, which replaces the
+    /// content and keeps the session's storage, then bind the build's ELF. Source
+    /// breakpoints re-bind to the new ELF (lotus#77); a CIA must be installed before boot
+    /// (`install_cia`), which a running session cannot do, so CIA builds are refused.
+    async fn relaunch_build(
+        &self,
+        id: &str,
+        handle: &SessionHandle,
+        job: u64,
+        client: &str,
+        scope: &DebugScope<'_>,
+    ) -> io::Result<serde_json::Value> {
+        self.require_control()?;
+        let record = self.builds.record(job)?;
+        if record.kind != "3dsx" {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "build job {job} produced a .{} ({}); relaunch_build loads 3DSX content. \
+                     Install a CIA with install_cia in a new session before it boots",
+                    record.kind, record.output.asset
+                ),
+            ));
+        }
+        let content = self.resolve_asset(&record.output.asset)?;
+        let mut native = handle.native.lock().await;
+        check_debug_target(scope.target, handle.info().created_unix_ms, native.epoch())?;
+        check_lease(handle, client)?;
+        scope.dispatch()?;
+        handle.set_playing(false);
+        pause_if_running(&mut native).await?;
+        handle.cancel_input(true);
+        native.load(&content).await?;
+        lock(&handle.symbols).set_asset(record.elf.as_ref().map(|elf| elf.asset.clone()));
+        handle.telemetry().epoch = native.epoch();
+        let breakpoints = self.rebind_source_breakpoints(handle, &mut native).await;
+        self.budgets.clear_recordings(id);
+        lock(&handle.info).asset = Some(record.output.asset.clone());
+        self.settings_revision.fetch_add(1, Ordering::AcqRel);
+        handle.record(Actor::Host, "relaunch_build");
+        let epoch = native.epoch();
+        let symbols = match (&record.elf, &breakpoints) {
+            (None, _) => serde_json::Value::Null,
+            (_, Some(rebound)) if rebound["image"].is_object() => {
+                serde_json::json!({"image": rebound["image"]})
+            }
+            (_, Some(rebound)) => serde_json::json!({"bind_failed": rebound["rebind_failed"]}),
+            (Some(elf), None) => match self
+                .bind_symbols(handle, &mut native, &elf.asset, &|| Ok(()))
+                .await
+            {
+                Ok(image) => serde_json::json!({"image": image}),
+                Err(error) => serde_json::json!({"bind_failed": error.to_string()}),
+            },
+        };
+        Ok(serde_json::json!({
+            "relaunched": job,
+            "epoch": epoch,
+            "build": record,
+            "symbols": symbols,
+            "source_breakpoints": breakpoints,
+        }))
     }
 
     /// After a guest epoch change (load, reset, state load, replay, reverse execution):
@@ -3004,6 +3142,7 @@ impl Supervisor {
     /// reported (its worker was already terminated).
     pub async fn close(self: &Arc<Self>) -> Vec<(String, io::Result<()>)> {
         self.closing.store(true, Ordering::Release);
+        self.builds.cancel_all();
         let mut stops = tokio::task::JoinSet::new();
         let mut waiting: std::collections::BTreeSet<String> = self.sessions().into_iter().collect();
         for id in &waiting {
@@ -3044,6 +3183,7 @@ impl Supervisor {
                 )),
             ));
         }
+        self.builds.close().await;
         outcomes
     }
 
@@ -3260,6 +3400,9 @@ impl Supervisor {
     }
 
     fn resolve_asset(&self, handle: &str) -> io::Result<PathBuf> {
+        if let Some(path) = self.builds.resolve(handle) {
+            return Ok(path);
+        }
         if let Some(path) = self.config.assets.get(handle) {
             return Ok(path.clone());
         }

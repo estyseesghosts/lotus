@@ -268,3 +268,72 @@ fn cli_inspects_variables() {
     assert!(child.wait().unwrap().success());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+#[cfg(windows)]
+#[ignore = "requires LOTUS_NATIVE_WORKER and devkitPro at C:/devkitPro"]
+fn cli_build_jobs_are_available_between_requests() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-cli-build-{}", std::process::id()));
+    let project = root.join("project");
+    std::fs::create_dir_all(project.join("source")).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/build");
+    for file in ["Makefile", "source/main.c", "source/step.h"] {
+        std::fs::copy(fixture.join(file), project.join(file)).unwrap();
+    }
+    let config = root.join("host.json");
+    std::fs::write(&config, json!({
+        "worker": worker,
+        "storage_root": root.join("host"),
+        "allow_control": true,
+        "build_profiles": {
+            "app": {
+                "root": project,
+                "tool": {"kind":"make","program":"C:/devkitPro/msys2/usr/bin/make.exe"},
+                "output":"fixture.3dsx",
+                "elf":"fixture.elf",
+                "env":{"DEVKITPRO":"/c/devkitPro","PATH":"/usr/bin:/c/devkitPro/devkitARM/bin:/c/devkitPro/tools/bin"}
+            }
+        }
+    }).to_string()).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ctr-cli"))
+        .arg("debug")
+        .arg(config)
+        .arg("-")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let info: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert!(info["id"].is_string());
+    let mut request = |command: Value| -> Value {
+        writeln!(stdin, "{command}").unwrap();
+        serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
+    };
+    let profiles = request(json!({"operation":"build_status"}));
+    assert_eq!(profiles["profiles"][0]["name"], "app");
+    let unknown = request(json!({"operation":"execute_shell","command":"echo rejected"}));
+    assert!(unknown["error"].is_string());
+    let job = request(json!({"operation":"build","profile":"app"}))["job"]
+        .as_u64()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let build = loop {
+        let status = request(json!({"operation":"build_status","job":job}));
+        if status["state"] != "running" {
+            assert_eq!(status["state"], "succeeded", "{status:#}");
+            break status["build"].clone();
+        }
+        assert!(std::time::Instant::now() < deadline, "{status:#}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let launch = request(json!({"operation":"relaunch_build","job":job}));
+    assert_eq!(launch["build"], build, "{launch:#}");
+    assert!(launch["symbols"]["image"].is_object(), "{launch:#}");
+    writeln!(stdin, "quit").unwrap();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(root).unwrap();
+}

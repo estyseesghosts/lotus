@@ -51,6 +51,7 @@ use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 #[cfg(feature = "silvestris-ui")]
 mod breakpoints;
+mod builds_panel;
 #[cfg(feature = "silvestris-ui")]
 mod command_palette;
 #[cfg(feature = "silvestris-ui")]
@@ -4420,6 +4421,19 @@ impl LotusWindow {
                         }),
                 );
             }
+        }
+        if current == Panel::Builds {
+            if let Some(target) = &target {
+                panel = panel.child(self.render_builds(
+                    target,
+                    snapshot.and_then(|snapshot| snapshot.view.data.as_deref()),
+                    cx,
+                ));
+            }
+        }
+        if current == Panel::Builds && snapshot.is_some_and(|snapshot| snapshot.view.data.is_some())
+        {
+            return panel.children(utility);
         }
         let status = match snapshot {
             #[cfg(feature = "silvestris-ui")]

@@ -93,6 +93,7 @@ pub enum Panel {
     Commands,
     #[cfg(feature = "silvestris-ui")]
     Gdb,
+    Builds,
 }
 const SILVESTRIS_PANEL_COUNT: usize = 2 * cfg!(feature = "silvestris-ui") as usize;
 impl Panel {
@@ -115,13 +116,14 @@ impl Panel {
             Self::Commands => "commands",
             #[cfg(feature = "silvestris-ui")]
             Self::Gdb => "gdb",
+            Self::Builds => "builds",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.id() == id)
     }
-    pub const ALL: [Self; 12 + SILVESTRIS_PANEL_COUNT] = [
+    pub const ALL: [Self; 13 + SILVESTRIS_PANEL_COUNT] = [
         Self::Cpu,
         Self::Threads,
         Self::Breakpoints,
@@ -138,11 +140,12 @@ impl Panel {
         Self::Commands,
         #[cfg(feature = "silvestris-ui")]
         Self::Gdb,
+        Self::Builds,
     ];
     /// Order of the inspector's view pop-up: grouped as `group` lists them.
     /// Twelve views exceed a tab view's 2 to about 6 tabs, so the panel uses
     /// a pop-up menu at its top instead (HIG pp. 338, 341).
-    pub const MENU: [Self; 12 + SILVESTRIS_PANEL_COUNT] = [
+    pub const MENU: [Self; 13 + SILVESTRIS_PANEL_COUNT] = [
         Self::Cpu,
         Self::Threads,
         Self::Breakpoints,
@@ -159,6 +162,7 @@ impl Panel {
         Self::Commands,
         #[cfg(feature = "silvestris-ui")]
         Self::Gdb,
+        Self::Builds,
     ];
     pub fn at(index: usize) -> Self {
         Self::ALL.get(index).copied().unwrap_or(Self::Cpu)
@@ -181,6 +185,7 @@ impl Panel {
             Self::Commands => "Commands",
             #[cfg(feature = "silvestris-ui")]
             Self::Gdb => "GDB",
+            Self::Builds => "Builds",
         }
     }
     /// Destinations on the inspector rail, most used first; Ctrl+1..7 select them.
@@ -195,7 +200,7 @@ impl Panel {
         Self::States,
     ];
     /// The rest, behind the rail's overflow menu, grouped by `group`.
-    pub const OVERFLOW: [Self; 5 + SILVESTRIS_PANEL_COUNT] = [
+    pub const OVERFLOW: [Self; 6 + SILVESTRIS_PANEL_COUNT] = [
         Self::Ipc,
         Self::Timeline,
         Self::Audio,
@@ -204,6 +209,7 @@ impl Panel {
         Self::Commands,
         #[cfg(feature = "silvestris-ui")]
         Self::Gdb,
+        Self::Builds,
         Self::Result,
     ];
     pub fn group(self) -> &'static str {
@@ -212,7 +218,7 @@ impl Panel {
             Self::Memory => "MEMORY",
             Self::Gpu | Self::Audio => "MEDIA",
             Self::Logs | Self::Ipc | Self::Timeline => "TRACE",
-            Self::States | Self::Settings | Self::Result => "SESSION",
+            Self::States | Self::Settings | Self::Result | Self::Builds => "SESSION",
             #[cfg(feature = "silvestris-ui")]
             Self::Commands | Self::Gdb => "SESSION",
         }
@@ -236,6 +242,7 @@ impl Panel {
             Self::Commands => Icon::Result,
             #[cfg(feature = "silvestris-ui")]
             Self::Gdb => Icon::Breakpoints,
+            Self::Builds => Icon::Result,
         }
     }
     /// Next or previous panel in rail-then-overflow order (Ctrl+] / Ctrl+[).
@@ -282,6 +289,10 @@ impl Panel {
             Self::States => D::Status,
             #[cfg(not(feature = "silvestris-ui"))]
             Self::States => D::States,
+            Self::Builds => D::BuildStatus {
+                job: None,
+                log_from: 0,
+            },
             Self::Result => return None,
             #[cfg(feature = "silvestris-ui")]
             Self::Commands | Self::Gdb => return None,
@@ -1149,7 +1160,7 @@ impl Inspection {
             rows: Arc::new(rows),
             data: matches!(
                 panel,
-                Panel::States | Panel::Timeline | Panel::Ipc | Panel::Threads
+                Panel::States | Panel::Timeline | Panel::Ipc | Panel::Threads | Panel::Builds
             )
             .then(|| Arc::new(value.clone())),
             source: format!(
