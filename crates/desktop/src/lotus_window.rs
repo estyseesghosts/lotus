@@ -3570,6 +3570,11 @@ impl LotusWindow {
             (Panel::Gpu, Some(D::GpuConfigure { .. }))
                 | (Panel::Breakpoints | Panel::Cpu | Panel::Memory, _)
         );
+        let show_by_default = show_by_default
+            || matches!(
+                (request.panel, request.native_command()),
+                (Panel::Cpu, Some(D::Backtrace { .. }))
+            );
         show_by_default != self.toggled_debug_details.contains(&request.id)
     }
 
@@ -4529,15 +4534,19 @@ impl LotusWindow {
                                     });
                             }
                             #[cfg(feature = "silvestris-ui")]
-                            if let (Some(target), Some(core), Some(register)) = (
+                            if let (Some(target), Some(core), Some((register, text))) = (
                                 target.as_ref(),
-                                cpu_core.filter(|_| current == Panel::Cpu && row.lane == "CPU"),
-                                row.key
-                                    .strip_prefix('r')
-                                    .and_then(|index| index.parse::<u32>().ok())
-                                    .filter(|_| u32::from_str_radix(&row.value, 16).is_ok()),
+                                cpu_core.filter(|_| {
+                                    current == Panel::Cpu && matches!(row.lane, "CPU" | "VFP")
+                                }),
+                                cpu_panel::register_index(&row.key).and_then(|index| {
+                                    let first = row.value.split_whitespace().next()?;
+                                    let text = first.strip_prefix("0x").unwrap_or(first);
+                                    u32::from_str_radix(text, 16).ok()?;
+                                    Some((index, text.to_owned()))
+                                }),
                             ) {
-                                let (target, text) = (target.clone(), row.value.clone());
+                                let target = target.clone();
                                 return line
                                     .debug_selector(move || format!("cpu-register-{register}"))
                                     .cursor_pointer()
@@ -4558,9 +4567,27 @@ impl LotusWindow {
                                 element
                                     .cursor_pointer()
                                     .hover(|style| style.bg(theme.surface_hover))
-                                    .on_click(move |_, _, cx| {
-                                        let _ = weak.update(cx, |view, _| {
-                                            view.debug_command(&target, current, command.clone())
+                                    .on_click(move |_, window, cx| {
+                                        let _ = weak.update(cx, |view, cx| {
+                                            #[cfg(feature = "silvestris-ui")]
+                                            if let Some(target) = &target {
+                                                view.dispatch_inspector_command(
+                                                    target,
+                                                    current,
+                                                    command.clone(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                            #[cfg(not(feature = "silvestris-ui"))]
+                                            {
+                                                let _ = (window, cx);
+                                                view.debug_command(
+                                                    &target,
+                                                    current,
+                                                    command.clone(),
+                                                );
+                                            }
                                         });
                                     })
                             })
@@ -4836,9 +4863,9 @@ impl LotusWindow {
                     "Run clipboard JSON",
                     "debug command",
                 )
-                .on_click(cx.listener(move |view, _, _, cx| {
+                .on_click(cx.listener(move |view, _, window, cx| {
                     view.menu = Menu::Closed;
-                    view.run_clipboard_command(&target, cx);
+                    view.run_clipboard_command(&target, window, cx);
                 })),
             )
             .child(div().h(px(1.0)).my_1().bg(theme.border))
@@ -4846,7 +4873,12 @@ impl LotusWindow {
             .child(keys)
     }
 
-    fn run_clipboard_command(&mut self, target: &Option<SessionTarget>, cx: &mut gpui::App) {
+    fn run_clipboard_command(
+        &mut self,
+        target: &Option<SessionTarget>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
             return;
         };
@@ -4856,7 +4888,18 @@ impl LotusWindow {
         }
         match serde_json::from_str::<D>(&text) {
             Ok(command) => match command.validate() {
-                Ok(()) => self.debug_command(target, Panel::Result, command),
+                Ok(()) => {
+                    #[cfg(feature = "silvestris-ui")]
+                    if let Some(target) = target {
+                        self.dispatch_inspector_command(target, Panel::Result, command, window, cx);
+                    }
+                    #[cfg(not(feature = "silvestris-ui"))]
+                    {
+                        let _ = window;
+                        self.debug_command(target, Panel::Result, command);
+                    }
+                }
+
                 Err(error) => self.error = error.into(),
             },
             Err(error) => self.error = error.to_string(),

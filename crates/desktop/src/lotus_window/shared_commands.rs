@@ -27,8 +27,18 @@ pub(super) struct SharedCommands {
     confirmation: Option<PendingConfirmation>,
 }
 
+enum ConfirmationAction {
+    Session(SessionCommand),
+    Debug {
+        panel: Panel,
+        command: Box<D>,
+        label: &'static str,
+        warning: &'static str,
+    },
+}
+
 struct PendingConfirmation {
-    command: SessionCommand,
+    command: ConfirmationAction,
     target: SessionTarget,
     focus: ConfirmationFocus,
     previous_focus: Option<gpui::FocusHandle>,
@@ -426,6 +436,63 @@ impl LotusWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.open_confirmation(ConfirmationAction::Session(command), target, window, cx);
+    }
+
+    pub(super) fn dispatch_inspector_command(
+        &mut self,
+        target: &SessionTarget,
+        panel: Panel,
+        command: D,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (label, warning) = match &command {
+            D::InstallCia { .. } => (
+                "Install CIA",
+                "The approved title will be installed into this guest's storage.",
+            ),
+            D::SystemRegenerate { .. } => (
+                "Regenerate system data",
+                "This rewrites persistent guest system identifiers.",
+            ),
+            D::ContentTransform { .. } => (
+                "Transform content",
+                "This creates an artifact from the approved content and may consume disk space.",
+            ),
+            D::BootHomeMenu { .. } => (
+                "Boot HOME Menu",
+                "The current guest will be replaced by the HOME Menu.",
+            ),
+            D::CheatRemove { .. } => (
+                "Remove cheat",
+                "The selected cheat will be removed from the guest's cheat list.",
+            ),
+            _ => {
+                self.debug_command(&Some(target.clone()), panel, command);
+                return;
+            }
+        };
+        self.open_confirmation(
+            ConfirmationAction::Debug {
+                panel,
+                command: Box::new(command),
+                label,
+                warning,
+            },
+            target.clone(),
+            window,
+            cx,
+        );
+    }
+
+    fn open_confirmation(
+        &mut self,
+        command: ConfirmationAction,
+        target: SessionTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if !self.control
             || target.resolve(&self.sessions).is_none()
             || self.shared_commands.confirmation.is_some()
@@ -456,13 +523,13 @@ impl LotusWindow {
         let name = summary
             .map(|summary| session_tree::session_label(&summary.info))
             .unwrap_or_else(|| pending.target.id.clone());
-        let (title, message, action) = match pending.command {
-            SessionCommand::Reset => (
+        let (title, message, action) = match &pending.command {
+            ConfirmationAction::Session(SessionCommand::Reset) => (
                 format!("Reset {name}?"),
                 "The current guest restarts.",
                 "Reset",
             ),
-            SessionCommand::Stop
+            ConfirmationAction::Session(SessionCommand::Stop)
                 if summary.is_some_and(|summary| {
                     matches!(summary.info.kind, SessionKind::Primary { .. })
                 }) =>
@@ -473,11 +540,14 @@ impl LotusWindow {
                     "Stop",
                 )
             }
-            SessionCommand::Stop => (
+            ConfirmationAction::Session(SessionCommand::Stop) => (
                 format!("Stop {name}?"),
                 "The session closes and its temporary card is discarded.",
                 "Stop",
             ),
+            ConfirmationAction::Debug { label, warning, .. } => {
+                (format!("{label} on {name}?"), *warning, *label)
+            }
             _ => return None,
         };
         let owner = cx.weak_entity();
@@ -500,8 +570,15 @@ impl LotusWindow {
                     if accepted && view.control && pending.target.resolve(&view.sessions).is_some()
                     {
                         match pending.command {
-                            SessionCommand::Stop => view.send(Command::Stop(pending.target.id)),
-                            SessionCommand::Reset => view.send(Command::Reset(pending.target.id)),
+                            ConfirmationAction::Session(SessionCommand::Stop) => {
+                                view.send(Command::Stop(pending.target.id))
+                            }
+                            ConfirmationAction::Session(SessionCommand::Reset) => {
+                                view.send(Command::Reset(pending.target.id))
+                            }
+                            ConfirmationAction::Debug { panel, command, .. } => {
+                                view.debug_command(&Some(pending.target), panel, *command);
+                            }
                             _ => {}
                         }
                     }
@@ -665,7 +742,7 @@ impl LotusWindow {
             self.popup_action(
                 CommandDescriptor::action("inspector.clipboard", "Run Clipboard JSON")
                     .enabled(can_debug),
-                move |view, _, cx| view.run_clipboard_command(&target, cx),
+                move |view, window, cx| view.run_clipboard_command(&target, window, cx),
                 cx,
             ),
             MenuEntry::Separator,

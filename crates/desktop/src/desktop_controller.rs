@@ -378,6 +378,7 @@ struct InspectorKeys {
     registers: Option<(SessionTarget, u64)>,
     inspection: Option<(SessionTarget, InspectionSelection, u64)>,
     inspected_at: Instant,
+    cpu_model: Option<(SessionTarget, u32)>,
 }
 
 impl DesktopController {
@@ -848,6 +849,7 @@ impl Loops {
             registers: None,
             inspection: None,
             inspected_at: Instant::now(),
+            cpu_model: None,
         }));
         let mut ticker = tick();
         loop {
@@ -938,11 +940,41 @@ impl Loops {
             let (loops, state) = (self.clone(), state.clone());
             tokio::spawn(async move {
                 let result = loops
-                    .timed(
-                        "inspection",
-                        &selected,
-                        loops.inspect(&target, panel, offset, cpu, &command),
-                    )
+                    .timed("inspection", &selected, async {
+                        let mut value =
+                            loops.inspect(&target, panel, offset, cpu, &command).await?;
+                        if panel == Panel::Cpu {
+                            let known = lock(&state)
+                                .cpu_model
+                                .as_ref()
+                                .filter(|(owner, _)| owner == &target)
+                                .map(|(_, count)| *count);
+                            let count = if let Some(count) = known {
+                                Some(count)
+                            } else {
+                                let profile = loops
+                                    .dispatch_debug(
+                                        &target,
+                                        &DebugCommand::SettingsGet {
+                                            name: "is_new_3ds".into(),
+                                        },
+                                    )
+                                    .await;
+                                profile
+                                    .ok()
+                                    .filter(|reply| target.accepts_reply(reply))
+                                    .and_then(|reply| {
+                                        // Both pinned workers use two or four ARM11 cores from this boot setting.
+                                        reply["value"].as_bool().map(|new| if new { 4 } else { 2 })
+                                    })
+                            };
+                            if let Some(count) = count {
+                                value["arm11_cores"] = count.into();
+                                lock(&state).cpu_model = Some((target.clone(), count));
+                            }
+                        }
+                        Ok(value)
+                    })
                     .await;
                 lock(&state).inspected_at = Instant::now();
                 let view = match result {
@@ -1566,6 +1598,7 @@ impl Loops {
         cancellation.check()?;
         let mut view = Inspection::from_value(&value, Panel::Result);
         view.draw_artifact = draw_artifact;
+        view.guest_actions(command, &value);
         Ok((view, image))
     }
 

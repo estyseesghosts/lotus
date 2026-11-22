@@ -187,10 +187,10 @@ pub(crate) fn catalogue() -> &'static [Operation] {
             let required = variant["required"]
                 .as_array()
                 .expect("required operation tag");
-            let [_, _, route, permission, feature, note] = INVENTORY
+            let [_, _, route, permission, feature, note, _] = INVENTORY
                 .lines()
                 .find_map(|line| {
-                    let fields: [_; 6] = line.split('\t').collect::<Vec<_>>().try_into().ok()?;
+                    let fields: [_; 7] = line.split('\t').collect::<Vec<_>>().try_into().ok()?;
                     (fields[0] == "debug" && fields[1] == name).then_some(fields)
                 })
                 .unwrap_or_else(|| panic!("missing coverage for {name}"));

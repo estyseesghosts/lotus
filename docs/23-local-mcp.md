@@ -166,11 +166,16 @@ debugger listener on request.
 ### CPU inspector
 
 Choose a core in the CPU inspector. Follow its PC or enter an aligned guest
-address and choose ARM or Thumb. Each preview reads at most 64 bytes within
-the current guest page. Click a general-purpose register to edit it while the
-guest is paused. The host checks the guest epoch, pause state and debugger
-lease before dispatching a register edit or execution control. Run to Address
-uses the selected core's current instruction mode.
+address and choose ARM or Thumb. Use Previous and Next to browse code in
+windows of up to 64 bytes within each guest page. Click a register to edit it
+while the guest is paused. The host checks the guest epoch, pause state and
+debugger lease before dispatching a register edit or execution control. Run to
+Address uses the selected core's current instruction mode.
+
+Load an approved ELF in the command palette to see symbol labels and backtrace
+provenance. Lotus uses the explicitly selected ELF's absolute addresses and
+shows its SHA-256. A guest epoch change expires the selection. Verified
+ELF-to-guest relocation and source navigation are tracked in #76 and #77.
 
 ### Memory inspector
 
@@ -199,6 +204,14 @@ Breakpoints at that address. Select a listed breakpoint to configure or remove
 it. Changes require host control and respect the debugger lease. A guest epoch
 change clears pending edits. CITnLO uses instruction stepping while a memory
 watchpoint is armed.
+
+### Guest tools in the command palette
+
+Use the Guest system commands to list or edit cheats, browse read-only NAND or
+SDMC directory listings, and select approved content handles. Directory rows
+open the next listing in the same panel. The empty path `""` selects the root.
+CIA installation, HOME Menu boot, system regeneration, content transformation
+and cheat removal use a confirmation sheet tied to the current guest.
 
 ### GDB listener (#152)
 

@@ -1107,14 +1107,23 @@ mod tests {
             });
         }
         click(cx, "breakpoint-add");
+        cx.update(|_, cx| entity.update(cx, |view, _| view.jump_to_memory(&target, Some(address))));
+        wait(cx, "memory draft can be opened before reset", &|view, _| {
+            get_memory(view).is_some()
+        });
+        click(cx, "memory-edit");
         cx.update(|_, cx| {
+            assert!(entity.read(cx).memory_panels[&target].edit.is_some());
             entity.update(cx, |view, _| view.send(Command::Reset(target.id.clone())));
         });
         wait(cx, "reset expires the open form", &|view, _| {
             view.inspection_target()
                 .is_some_and(|current| current != target)
                 && !view.breakpoint_panels.contains_key(&target)
+                && !view.memory_panels.contains_key(&target)
         });
+        let replacement = cx.update(|_, cx| entity.read(cx).inspection_target().unwrap());
+        command_palette::exercise_guest_tools(&entity, cx, &replacement);
         cx.update(|_, cx| entity.update(cx, |view, _| view.send(Command::Stop(target.id.clone()))));
         wait(cx, "worker stop", &|view, _| {
             target.resolve(&view.sessions).is_none()

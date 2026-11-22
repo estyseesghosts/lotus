@@ -338,6 +338,12 @@ pub struct SessionSummary {
     pub telemetry: Telemetry,
 }
 
+struct SymbolBinding {
+    index: lotus_debugger::symbols::Symbols,
+    epoch: u64,
+    sha256: String,
+}
+
 /// A session's lock domain. Lock order: `native`, then `info`, `mailbox`, `telemetry`.
 struct SessionHandle {
     info: Mutex<SessionInfo>,
@@ -347,7 +353,7 @@ struct SessionHandle {
     telemetry: Mutex<Telemetry>,
     playing: AtomicBool,
     lease: Mutex<Option<String>>,
-    symbols: Mutex<Option<lotus_debugger::symbols::Symbols>>,
+    symbols: Mutex<Option<SymbolBinding>>,
     /// (epoch, frames) of the last preview served while paused; see [`Supervisor::preview`].
     previewed: Mutex<Option<(u64, u64)>>,
     /// Set once when the session starts stopping; ends its tasks.
@@ -2165,13 +2171,22 @@ impl Supervisor {
             }
             let bytes: Vec<u8> =
                 serde_json::from_value(result["bytes"].clone()).map_err(io::Error::other)?;
+            let profile = native.profile_hash().to_owned();
+            let source = lock(&handle.symbols)
+                .as_ref()
+                .filter(|symbols| symbols.epoch == native.epoch())
+                .map(|symbols| {
+                    Ok::<_, io::Error>((symbols.index.locate(*address)?, symbols.sha256.clone()))
+                })
+                .transpose()?;
+            drop(native);
             let text = crate::disassembly::decode(&handle.root, *address, &bytes, *thumb).await?;
             let mut result = serde_json::json!({"address":address,"bytes":bytes,"thumb":thumb,"assembly":text,
                 "paused":result["paused"],"safe_point":true,"rasterizer_cache_flush":true,
-                "profile_hash":native.profile_hash(), "epoch":result["epoch"]});
-            if let Some(symbols) = lock(&handle.symbols).as_ref() {
-                result["source"] =
-                    serde_json::to_value(symbols.locate(*address)?).map_err(io::Error::other)?;
+                "profile_hash":profile, "epoch":result["epoch"]});
+            if let Some((location, sha256)) = source {
+                result["source"] = serde_json::to_value(location).map_err(io::Error::other)?;
+                result["elf_sha256"] = sha256.into();
             }
             return Ok(result);
         }
@@ -2184,28 +2199,47 @@ impl Supervisor {
             let bytes = fs::read(path)?;
             let symbols = lotus_debugger::symbols::Symbols::parse(&bytes)?;
             let count = symbols.count();
-            *lock(&handle.symbols) = Some(symbols);
+            let sha256 = format!("{:x}", Sha256::digest(bytes));
+            *lock(&handle.symbols) = Some(SymbolBinding {
+                index: symbols,
+                epoch: native.epoch(),
+                sha256: sha256.clone(),
+            });
             return Ok(
-                serde_json::json!({"symbols":count, "elf_sha256":format!("{:x}", Sha256::digest(bytes))}),
+                serde_json::json!({"symbols":count, "elf_sha256":sha256, "epoch":native.epoch()}),
             );
         }
         if let DebugCommand::Symbolize { addresses } = command {
             let symbols = lock(&handle.symbols);
             let symbols = symbols
                 .as_ref()
-                .ok_or_else(|| io::Error::other("load an approved ELF build artifact first"))?;
+                .filter(|symbols| symbols.epoch == native.epoch())
+                .ok_or_else(|| {
+                    io::Error::other(
+                        "load an approved ELF build artifact for this guest epoch first",
+                    )
+                })?;
             let locations: io::Result<Vec<_>> = addresses
                 .iter()
-                .map(|address| symbols.locate(*address))
+                .map(|address| symbols.index.locate(*address))
                 .collect();
-            return Ok(serde_json::json!({"locations":locations?}));
+            return Ok(
+                serde_json::json!({"locations":locations?, "elf_sha256":symbols.sha256, "epoch":native.epoch()}),
+            );
         }
         if let DebugCommand::ResolveSymbol { query } = command {
             let symbols = lock(&handle.symbols);
             let symbols = symbols
                 .as_ref()
-                .ok_or_else(|| io::Error::other("load an approved ELF build artifact first"))?;
-            return Ok(serde_json::json!({"addresses":symbols.resolve(query)?}));
+                .filter(|symbols| symbols.epoch == native.epoch())
+                .ok_or_else(|| {
+                    io::Error::other(
+                        "load an approved ELF build artifact for this guest epoch first",
+                    )
+                })?;
+            return Ok(
+                serde_json::json!({"addresses":symbols.index.resolve(query)?, "elf_sha256":symbols.sha256, "epoch":native.epoch()}),
+            );
         }
         // The native mutex serializes lease transitions with execution mutations.
         let memory_check = match (scope.precondition, command) {
@@ -2317,17 +2351,22 @@ impl Supervisor {
                     self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 }
                 self.import_debug_artifacts(id, &handle.root, &mut result)?;
-                if let Some(symbols) = lock(&handle.symbols).as_ref() {
+                if let Some(symbols) = lock(&handle.symbols)
+                    .as_ref()
+                    .filter(|symbols| symbols.epoch == native.epoch())
+                {
                     if let Some(frames) = result
                         .get_mut("frames")
                         .and_then(serde_json::Value::as_array_mut)
                     {
                         for frame in frames {
                             if let Some(pc) = frame["pc"].as_u64() {
-                                frame["source"] = serde_json::to_value(symbols.locate(pc as u32)?)
-                                    .map_err(io::Error::other)?;
+                                frame["source"] =
+                                    serde_json::to_value(symbols.index.locate(pc as u32)?)
+                                        .map_err(io::Error::other)?;
                             }
                         }
+                        result["elf_sha256"] = symbols.sha256.clone().into();
                     }
                 }
                 Ok(result)

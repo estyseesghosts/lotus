@@ -75,6 +75,8 @@ impl LotusWindow {
             Some("Control is disabled for this host")
         } else if summary.telemetry.desktop_debug_lease_blocked {
             Some("A different client holds the debugger lease")
+        } else if summary.telemetry.backend_name == "AZAHAR" {
+            Some("Memory writes require CITnLO")
         } else if summary.telemetry.playing || summary.telemetry.state != SessionState::Paused {
             Some("Pause the guest to edit memory")
         } else if self.debug_request.as_ref().is_some_and(|request| {

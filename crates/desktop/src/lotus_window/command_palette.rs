@@ -197,13 +197,20 @@ impl LotusWindow {
         if prepared.command.mutates() && summary.telemetry.desktop_debug_lease_blocked {
             return Some("A different client holds the debugger lease".into());
         }
+        if matches!(&prepared.command,
+            D::Load { asset } | D::LoadSymbols { asset } | D::AssetMount { asset, .. }
+            | D::InstallCia { asset } | D::ContentTransform { asset, .. }
+            if !self.assets.contains(asset))
+        {
+            return Some("Choose an asset approved for this host".into());
+        }
         prepared.command.required_feature().and_then(|feature| {
             (!summary.telemetry.worker_features.contains(feature))
                 .then(|| format!("Unsupported · worker does not advertise {feature}"))
         })
     }
 
-    fn run_palette(&mut self, target: &SessionTarget) {
+    fn run_palette(&mut self, target: &SessionTarget, window: &mut Window, cx: &mut Context<Self>) {
         if self.inspection_panel != Panel::Commands
             || self.inspection_target().as_ref() != Some(target)
         {
@@ -215,10 +222,12 @@ impl LotusWindow {
             .and_then(|palette| palette.prepared.as_ref().ok())
             .filter(|prepared| self.palette_block(target, prepared).is_none())
         {
-            self.debug_command(
-                &Some(target.clone()),
+            self.dispatch_inspector_command(
+                target,
                 Panel::Commands,
                 prepared.command.clone(),
+                window,
+                cx,
             );
         }
     }
@@ -394,10 +403,12 @@ impl LotusWindow {
                             Tone::Primary,
                             ready.is_ok() && blocked.is_none(),
                         )
-                        .on_click(cx.listener(move |view, _, _, cx| {
-                            view.run_palette(&run_target);
-                            cx.notify();
-                        })),
+                        .on_click(cx.listener(
+                            move |view, _, window, cx| {
+                                view.run_palette(&run_target, window, cx);
+                                cx.notify();
+                            },
+                        )),
                     ),
             )
             .into_any_element(),
@@ -510,6 +521,34 @@ impl LotusWindow {
                 );
             }
             match field {
+                Argument::Text { entity, .. } if spec.name == "asset" => {
+                    if self.assets.is_empty() {
+                        row = row.child("No approved assets are available");
+                    } else {
+                        let assets = self.assets.clone();
+                        let input = entity.clone();
+                        let selected = assets
+                            .iter()
+                            .position(|asset| asset == input.read(cx).text());
+                        row = row.child(
+                            PopUpButton::new(
+                                ("palette-asset", index),
+                                "Approved asset",
+                                assets.iter().cloned().map(SharedString::from).collect(),
+                            )
+                            .selected(selected)
+                            .on_choose(cx.listener(
+                                move |_, index: &usize, _, cx| {
+                                    if let Some(asset) = assets.get(*index) {
+                                        input.update(cx, |input, cx| {
+                                            input.set_text(asset.clone(), cx)
+                                        });
+                                    }
+                                },
+                            )),
+                        );
+                    }
+                }
                 Argument::Text { entity, .. } => row = row.child(entity.clone()),
                 Argument::Choice(selected) => {
                     let target = target.clone();
@@ -549,6 +588,149 @@ impl LotusWindow {
         }
         form
     }
+}
+
+#[cfg(test)]
+pub(super) fn exercise_guest_tools(
+    entity: &Entity<LotusWindow>,
+    cx: &mut gpui::VisualTestContext,
+    target: &SessionTarget,
+) {
+    cx.update(|window, cx| {
+        entity.update(cx, |view, cx| {
+            view.show_panel(Panel::Commands);
+            view.ensure_command_palette(window, cx);
+        });
+    });
+    let prepare = |cx: &mut gpui::VisualTestContext, operation: &str, args: &[(&str, &str)]| {
+        let op = palette::catalogue()
+            .iter()
+            .find(|op| op.name == operation)
+            .unwrap();
+        cx.update(|window, cx| {
+            entity.update(cx, |view, cx| {
+                let palette = view.command_palettes.get_mut(target).unwrap();
+                palette.select(target, op, window, cx);
+                for (field, input) in op.fields.iter().zip(palette.fields.iter_mut()) {
+                    let Some((_, value)) = args.iter().find(|(name, _)| *name == field.name) else {
+                        continue;
+                    };
+                    match input {
+                        Argument::Text { entity, .. } => {
+                            entity.update(cx, |field, cx| field.set_text((*value).to_owned(), cx));
+                        }
+                        Argument::Choice(index) => {
+                            *index = choices(field)
+                                .iter()
+                                .position(|choice| choice == value)
+                                .unwrap()
+                                + 1;
+                        }
+                    }
+                }
+                palette.prepare(cx);
+                assert!(
+                    palette.prepared.is_ok(),
+                    "{operation}: {:?}",
+                    palette.prepared.as_ref().err()
+                );
+                cx.notify();
+            });
+        });
+    };
+    let click = |cx: &mut gpui::VisualTestContext, id: &'static str| {
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        let bounds = cx
+            .debug_bounds(id)
+            .unwrap_or_else(|| panic!("missing {id}"));
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+    };
+    let result = |cx: &mut gpui::VisualTestContext, operation: &str, key: &str, expected: &str| {
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        loop {
+            let done = cx.update(|_, cx| {
+                entity.update(cx, |view, cx| {
+                    view.poll(cx);
+                    let Some(request) = &view.debug_request else {
+                        return false;
+                    };
+                    if request.operation != operation || request.target != *target {
+                        return false;
+                    }
+                    match &request.status {
+                        DebugStatus::Finished { view, .. } => {
+                            assert!(
+                                view.rows
+                                    .iter()
+                                    .any(|row| row.key == key && row.value.contains(expected)),
+                                "{operation} missing {key} = {expected}: {:?}",
+                                view.rows
+                            );
+                            true
+                        }
+                        DebugStatus::Failed { message, .. } => panic!("{operation}: {message}"),
+                        _ => false,
+                    }
+                })
+            });
+            if done {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{operation} timed out"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    prepare(
+        cx,
+        "cheat_add",
+        &[
+            ("name", "Lotus acceptance"),
+            ("code", "00100000 00000000"),
+            ("comments", "Owned paused fixture"),
+            ("enabled", "false"),
+        ],
+    );
+    click(cx, "palette-run");
+    result(cx, "cheat_add", ".cheats[0].name", "Lotus acceptance");
+
+    prepare(cx, "cheats", &[]);
+    click(cx, "palette-run");
+    result(cx, "cheats", "#0", "Disabled");
+
+    prepare(cx, "cheat_enable", &[("index", "0"), ("enabled", "true")]);
+    click(cx, "palette-run");
+    result(cx, "cheat_enable", ".cheats[0].enabled", "true");
+
+    prepare(cx, "cheat_remove", &[("index", "0")]);
+    click(cx, "palette-run");
+    cx.update(|_, cx| {
+        assert!(entity.read(cx).has_confirmation());
+        assert_eq!(
+            entity.read(cx).debug_request.as_ref().unwrap().operation,
+            "cheat_enable"
+        );
+    });
+    cx.simulate_keystrokes("escape");
+    cx.update(|_, cx| assert!(!entity.read(cx).has_confirmation()));
+    click(cx, "palette-run");
+    click(cx, "sheet-accept");
+    result(cx, "cheat_remove", ".total", "0");
+
+    prepare(
+        cx,
+        "storage_browse",
+        &[
+            ("area", "nand"),
+            ("path", "\"\""),
+            ("offset", "0"),
+            ("limit", "16"),
+        ],
+    );
+    click(cx, "palette-run");
+    result(cx, "storage_browse", ".area", "nand");
 }
 
 #[cfg(test)]

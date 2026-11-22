@@ -14,6 +14,33 @@ pub(in crate::lotus_window) enum CpuForm {
     },
 }
 
+pub(super) fn register_index(key: &str) -> Option<u32> {
+    match key {
+        "CPSR" => Some(16),
+        "FPSCR" => Some(81),
+        "FPEXC" => Some(82),
+        _ => {
+            let (prefix, digits) = key.split_at_checked(1)?;
+            let index = digits.parse::<u32>().ok()?;
+            match prefix {
+                "r" if index < 16 => Some(index),
+                "s" if index < 64 => Some(index + 17),
+                _ => None,
+            }
+        }
+    }
+}
+
+fn register_name(index: u32) -> String {
+    match index {
+        0..=15 => format!("r{index}"),
+        16 => "CPSR".into(),
+        17..=80 => format!("s{}", index - 17),
+        81 => "FPSCR".into(),
+        _ => "FPEXC".into(),
+    }
+}
+
 impl LotusWindow {
     fn cpu_edit_block(&self, target: &SessionTarget) -> Option<&'static str> {
         let Some(summary) = target.resolve(&self.sessions) else {
@@ -23,6 +50,8 @@ impl LotusWindow {
             Some("Control is disabled for this host")
         } else if summary.telemetry.desktop_debug_lease_blocked {
             Some("A different client holds the debugger lease")
+        } else if summary.telemetry.backend_name == "AZAHAR" {
+            Some("CPU execution controls and register edits require CITnLO")
         } else if summary.telemetry.playing || summary.telemetry.state != SessionState::Paused {
             Some("Pause the guest to use CPU execution controls or edit registers")
         } else if self.debug_request.as_ref().is_some_and(|request| {
@@ -82,8 +111,10 @@ impl LotusWindow {
                 core,
                 register,
             } => {
-                body =
-                    body.child(input.render(&format!("New value for core {core} r{register}"), cx));
+                body = body.child(input.render(
+                    &format!("New value for core {core} {}", register_name(*register)),
+                    cx,
+                ));
                 match input.number("Register value", cx) {
                     Ok(value) => {
                         command = Some(D::WriteRegister {
@@ -198,6 +229,7 @@ impl LotusWindow {
         let browse = target.clone();
         let follow = target.clone();
         let cpu_view = snapshot.filter(|snap| snap.offset.is_some() && snap.view.error.is_none());
+        let core_count = cpu_view.and_then(|snap| snap.view.arm11_cores).unwrap_or(4);
         let thumb = cpu_view.and_then(|snap| {
             snap.view
                 .rows
@@ -222,13 +254,16 @@ impl LotusWindow {
                         PopUpButton::new(
                             "cpu-core",
                             "CPU core",
-                            (0..4).map(|i| format!("Core {i}").into()).collect(),
+                            (0..core_count)
+                                .map(|i| format!("ARM11 {i}").into())
+                                .collect(),
                         )
                         .size(ControlSize::Small)
                         .selected(Some(query.core as usize))
                         .on_choose(cx.listener(
                             move |view, index: &usize, _, cx| {
-                                if view.inspection_target().as_ref() == Some(&choose) && *index < 4
+                                if view.inspection_target().as_ref() == Some(&choose)
+                                    && *index < core_count as usize
                                 {
                                     view.inspector_state.panel_mut(&choose, Panel::Cpu).cpu.core =
                                         *index as u32;
@@ -294,13 +329,57 @@ impl LotusWindow {
                     format!("0x{address:08x} · {}", if thumb { "Thumb" } else { "ARM" })
                 },
             ));
+        if let Some((address, thumb)) = query.address {
+            let span = 64.min(4096 - address % 4096);
+            let mut navigation = div().flex().flex_wrap().gap_1();
+            for (id, label, destination) in [
+                ("cpu-previous", "Previous", address.checked_sub(64)),
+                ("cpu-next", "Next", address.checked_add(span)),
+            ] {
+                let owner = target.clone();
+                navigation = navigation.child(
+                    small_button(palette, id, label, Tone::Plain, destination.is_some()).on_click(
+                        cx.listener(move |view, _, _, cx| {
+                            if let Some(destination) = destination
+                                .filter(|_| view.inspection_target().as_ref() == Some(&owner))
+                            {
+                                view.inspector_state
+                                    .panel_mut(&owner, Panel::Cpu)
+                                    .cpu
+                                    .address = Some((destination, thumb));
+                                view.sync_inspection_selection();
+                                cx.notify();
+                            }
+                        }),
+                    ),
+                );
+            }
+            controls = controls.child(navigation);
+        }
         if let Some(form) = self.cpu_forms.get(target) {
             controls = controls.child(self.render_cpu_form(target, form, cx));
         }
+        let session_state = target.resolve(&self.sessions).map(|summary| {
+            if summary.telemetry.playing {
+                "Running".to_owned()
+            } else {
+                format!("{:?}", summary.telemetry.state)
+            }
+        });
+        controls = controls.child(format!(
+            "{} · epoch {}",
+            session_state.as_deref().unwrap_or("Unavailable"),
+            target.epoch
+        ));
         let blocked = self.cpu_edit_block(target);
         let executable = cpu_view.is_some() && blocked.is_none();
         let core = query.core;
         let mut commands = vec![
+            (
+                "Backtrace",
+                D::Backtrace { core, limit: 32 },
+                cpu_view.is_some(),
+            ),
             ("Step", D::Step { core, count: 1 }, executable),
             ("Over", D::StepOver { core }, executable),
             ("Out", D::StepOut { core }, executable),
@@ -331,7 +410,7 @@ impl LotusWindow {
                 .on_click(cx.listener(move |view, _, _, _| {
                     if enabled
                         && view.cpu_query(&owner) == query
-                        && view.cpu_edit_block(&owner).is_none()
+                        && (!command.mutates() || view.cpu_edit_block(&owner).is_none())
                     {
                         view.debug_command(&Some(owner.clone()), Panel::Cpu, command.clone());
                     }

@@ -489,6 +489,8 @@ pub struct Inspection {
     #[cfg(feature = "silvestris-ui")]
     pub(crate) instruction_width: Option<u32>,
     #[cfg(feature = "silvestris-ui")]
+    pub(crate) arm11_cores: Option<u32>,
+    #[cfg(feature = "silvestris-ui")]
     pub(crate) memory: Option<MemoryInspection>,
 }
 
@@ -699,6 +701,21 @@ impl Inspection {
                     action: None,
                 });
             }
+            if let Some(name) = value["disassembly"]["source"]["symbol"].as_str() {
+                let hash = value["disassembly"]["elf_sha256"].as_str().unwrap_or("");
+                rows.push(Row {
+                    lane: "CPU",
+                    key: "ELF symbol".into(),
+                    value: format!(
+                        "{} + {:#x} · selected ELF {hash}",
+                        clipped(name, 200),
+                        value["disassembly"]["source"]["offset"]
+                            .as_u64()
+                            .unwrap_or(0)
+                    ),
+                    action: None,
+                });
+            }
             if let Some(error) = value["disassembly_error"].as_str() {
                 rows.push(Row {
                     lane: "CPU",
@@ -725,6 +742,30 @@ impl Inspection {
                         },
                         key: "instruction".into(),
                         value: line.into(),
+                        action: None,
+                    });
+                }
+            }
+            for (index, register) in value["vfp"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .take(64)
+                .enumerate()
+            {
+                rows.push(Row {
+                    lane: "VFP",
+                    key: format!("s{index}"),
+                    value: crate::lotus_window::hex_string(register),
+                    action: None,
+                });
+            }
+            for (label, key) in [("FPSCR", "fpscr"), ("FPEXC", "fpexc")] {
+                if value[key].is_u64() {
+                    rows.push(Row {
+                        lane: "VFP",
+                        key: label.into(),
+                        value: crate::lotus_window::hex_string(&value[key]),
                         action: None,
                     });
                 }
@@ -951,6 +992,8 @@ impl Inspection {
                 None
             },
             #[cfg(feature = "silvestris-ui")]
+            arm11_cores: value["arm11_cores"].as_u64().map(|count| count as u32),
+            #[cfg(feature = "silvestris-ui")]
             instruction_width: value["disassembly"]["thumb"].as_bool().map(|thumb| {
                 if thumb {
                     2
@@ -958,6 +1001,96 @@ impl Inspection {
                     4
                 }
             }),
+        }
+    }
+
+    pub(crate) fn guest_actions(&mut self, command: &D, value: &Value) {
+        let mut shortcuts = Vec::new();
+        match command {
+            D::Cheats | D::CheatAdd { .. } | D::CheatEnable { .. } | D::CheatRemove { .. } => {
+                if let Some(entries) = value["cheats"].as_array() {
+                    for cheat in entries.iter().take(64) {
+                        let (Some(index), Some(name), Some(enabled)) = (
+                            cheat["index"]
+                                .as_u64()
+                                .and_then(|index| u32::try_from(index).ok()),
+                            cheat["name"].as_str(),
+                            cheat["enabled"].as_bool(),
+                        ) else {
+                            continue;
+                        };
+                        shortcuts.push(Row {
+                            lane: "cheats",
+                            key: format!("#{index}"),
+                            value: format!(
+                                "{} · {}",
+                                clipped(name, 128),
+                                if enabled { "Enabled" } else { "Disabled" }
+                            ),
+                            action: None,
+                        });
+                    }
+                }
+            }
+            D::StorageBrowse {
+                area, path, limit, ..
+            } => {
+                let browse = |path, offset| {
+                    Some(D::StorageBrowse {
+                        area: *area,
+                        path,
+                        offset,
+                        limit: *limit,
+                    })
+                };
+                if !path.is_empty() {
+                    let parent = path
+                        .rsplit_once(['/', '\\'])
+                        .map_or("", |(parent, _)| parent);
+                    shortcuts.push(Row {
+                        lane: "storage",
+                        key: "Parent directory".into(),
+                        value: parent.into(),
+                        action: browse(parent.to_owned(), 0),
+                    });
+                }
+                if let Some(entries) = value["entries"].as_array() {
+                    for entry in entries.iter().take(128) {
+                        if let Some(name) = entry["name"]
+                            .as_str()
+                            .filter(|_| entry["kind"] == "directory")
+                        {
+                            let child = if path.is_empty() {
+                                name.to_owned()
+                            } else {
+                                format!("{path}/{name}")
+                            };
+                            let action =
+                                browse(child, 0).filter(|command| command.validate().is_ok());
+                            shortcuts.push(Row {
+                                lane: "storage",
+                                key: "Open directory".into(),
+                                value: clipped(name, 128),
+                                action,
+                            });
+                        }
+                    }
+                }
+                if let Some(next) = value["next"].as_u64().and_then(|n| u32::try_from(n).ok()) {
+                    shortcuts.push(Row {
+                        lane: "storage",
+                        key: "Next page".into(),
+                        value: format!("Offset {next}"),
+                        action: browse(path.clone(), next),
+                    });
+                }
+            }
+            _ => {}
+        }
+        if !shortcuts.is_empty() {
+            let existing = Arc::make_mut(&mut self.rows);
+            shortcuts.extend(existing.drain(..).take(SNAPSHOT_ROW_CAP - shortcuts.len()));
+            *existing = shortcuts;
         }
     }
 
@@ -976,6 +1109,8 @@ impl Inspection {
             breakpoints: None,
             #[cfg(feature = "silvestris-ui")]
             instruction_width: None,
+            #[cfg(feature = "silvestris-ui")]
+            arm11_cores: None,
             #[cfg(feature = "silvestris-ui")]
             memory: None,
         }
@@ -1017,6 +1152,8 @@ impl Inspection {
             breakpoints: None,
             #[cfg(feature = "silvestris-ui")]
             instruction_width: None,
+            #[cfg(feature = "silvestris-ui")]
+            arm11_cores: None,
             #[cfg(feature = "silvestris-ui")]
             memory: None,
         }
@@ -1134,6 +1271,8 @@ impl Inspection {
             breakpoints: None,
             #[cfg(feature = "silvestris-ui")]
             instruction_width: None,
+            #[cfg(feature = "silvestris-ui")]
+            arm11_cores: None,
             #[cfg(feature = "silvestris-ui")]
             memory: None,
         })

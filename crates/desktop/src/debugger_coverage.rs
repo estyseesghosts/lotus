@@ -15,9 +15,11 @@ fn render(inventory: &str) -> Result<String, String> {
     let mut names = [BTreeSet::new(), BTreeSet::new()];
     for (index, line) in inventory.lines().enumerate().skip(1) {
         let fields = line.split('\t').collect::<Vec<_>>();
-        let [surface, name, route, permission, required_feature, detail] = fields.as_slice() else {
+        let [surface, name, route, permission, required_feature, detail, verification] =
+            fields.as_slice()
+        else {
             return Err(format!(
-                "debugger_coverage.tsv:{} needs six columns",
+                "debugger_coverage.tsv:{} needs seven columns",
                 index + 1
             ));
         };
@@ -61,13 +63,32 @@ fn render(inventory: &str) -> Result<String, String> {
                 "unknown worker feature {required_feature} for {name}"
             ));
         }
+        let verification_link = match *verification {
+            "CPU" => Some("tests/native_inspector.rs"),
+            "Memory" | "Breakpoints" => Some("src/lotus_window/breakpoints.rs"),
+            "Guest tools" => Some("src/lotus_window/command_palette.rs"),
+            "GPU" | "GDB" => Some("tests/native_inspector.rs"),
+            "Workspace" => Some("tests/responsive_controller.rs"),
+            "Input" => Some("tests/input_routing.rs"),
+            "external" if *route == "external only" => None,
+            "fixture pending" if *route != "external only" => None,
+            _ => {
+                return Err(format!(
+                    "unknown or inconsistent verification {verification} for {name}"
+                ))
+            }
+        };
+        let verification = verification_link.map_or_else(
+            || (*verification).to_owned(),
+            |file| format!("[{verification}](../crates/desktop/{file})"),
+        );
         let route = route_link.map_or_else(
             || (*route).to_owned(),
             |file| format!("[{route}](../crates/desktop/src/{file})"),
         );
         rows[section].push((
             *name,
-            format!("| `{name}` | {route} | {permission} | {required_feature} | {detail} |"),
+            format!("| `{name}` | {route} | {permission} | {required_feature} | {detail} | {verification} |"),
         ));
     }
 
@@ -101,7 +122,13 @@ fn render(inventory: &str) -> Result<String, String> {
         "Route coverage is independent of native acceptance. The host checks ",
         "[command requirements](../crates/protocol/src/debug.rs) against the selected worker's ",
         "negotiated features and forwards the worker's own refusal. A dash in the feature column ",
-        "means the shared command declares no additional feature gate. It carries no backend support guarantee.\n"
+        "means the shared command declares no additional feature gate. It carries no backend support guarantee.\n\n",
+        "Verification links to the corresponding desktop test family. GPU and GDB exercises ",
+        "include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, ",
+        "and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. ",
+        "Workspace and Input use mock workers. ",
+        "Fixture pending means the route still needs mapped desktop acceptance. This inventory ",
+        "records test coverage independently of the outcome of any release run.\n"
     ));
     for (header, mut section) in [
         "Shared debugger commands",
@@ -114,7 +141,7 @@ fn render(inventory: &str) -> Result<String, String> {
         section.sort_unstable_by_key(|(name, _)| *name);
         writeln!(
             text,
-            "\n## {header}\n\n| Operation | Desktop route | Permission | Extra worker feature | Coverage notes |\n| --- | --- | --- | --- | --- |"
+            "\n## {header}\n\n| Operation | Desktop route | Permission | Extra worker feature | Coverage notes | Verification |\n| --- | --- | --- | --- | --- | --- |"
         ).expect("write to String");
         for (_, row) in section {
             writeln!(text, "{row}").expect("write to String");
@@ -133,6 +160,16 @@ mod tests {
             actual,
             "run cargo run -p lotus-desktop --example export-debugger-coverage"
         );
+    }
+
+    #[test]
+    fn an_operation_requires_a_verification_classification() {
+        let changed = super::INVENTORY.replace(
+            "\tCPU inspector\tread\t-\t-\tCPU",
+            "\tCPU inspector\tread\t-\t-\t",
+        );
+        let error = super::render(&changed).unwrap_err();
+        assert!(error.contains("unknown or inconsistent verification"));
     }
 
     #[test]

@@ -608,6 +608,29 @@ fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, p
                 if view.rows.iter().any(|row| row.key == ".bytes[15]"))
         })
     });
+    controller
+        .commands
+        .send(Command::PatchMemory {
+            target: target.clone(),
+            command: D::WriteMemory {
+                address: pc,
+                bytes: vec![0],
+            },
+            original: vec![0],
+        })
+        .unwrap();
+    wait(controller, |update| {
+        update.debug_result(Panel::Memory).is_some_and(|request| {
+            request.operation == "write_memory"
+                && matches!(
+                    &request.status,
+                    DebugStatus::Failed {
+                        kind: ErrorKind::PermissionDenied,
+                        ..
+                    }
+                )
+        })
+    });
     assert_eq!(gdb_packet(&mut socket, "D"), b"OK");
     wait(controller, |update| {
         target
@@ -1178,21 +1201,32 @@ fn gdb_reports_unsupported_on_azahar() {
         .unwrap()
         .text
         .contains("requires the CITnLO backend"));
+    let configure = D::GpuConfigure {
+        enabled: true,
+        stop_events: vec![],
+        capture: Some(GpuCapture::Events),
+        draw_range: None,
+        max_draws: None,
+        resources: None,
+    };
     controller
         .commands
         .send(Command::DebugAt {
             target: target.clone(),
             panel: Panel::Gpu,
-            command: D::GpuConfigure {
-                enabled: true,
-                stop_events: vec![],
-                capture: Some(GpuCapture::Events),
-                draw_range: None,
-                max_draws: None,
-                resources: None,
-            },
+            command: configure.clone(),
         })
         .unwrap();
+    let refused = runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+        session: target.id.clone(),
+        command: configure,
+    })));
+    assert_eq!(refused.is_error, Some(true));
+    assert!(refused.content[0]
+        .as_text()
+        .unwrap()
+        .text
+        .contains("gpu_capture_levels"));
     wait(&controller, |update| {
         update.debug_result(Panel::Gpu).is_some_and(|request| {
             matches!(
@@ -1204,6 +1238,262 @@ fn gdb_reports_unsupported_on_azahar() {
     assert!(target
         .resolve(&controller.latest.lock().unwrap().sessions)
         .is_some_and(|summary| summary.telemetry.gpu_capture.is_none()));
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE with the adjacent owned ELF"]
+fn cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let elf = fixture.with_extension("elf");
+    let output = std::process::Command::new("llvm-objdump")
+        .arg("-d")
+        .arg(&elf)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let assembly = String::from_utf8(output.stdout).unwrap();
+    let line_address =
+        |line: &str| u32::from_str_radix(line.trim().split_once(':').unwrap().0, 16).unwrap();
+    let arm_call = line_address(
+        assembly
+            .lines()
+            .find(|line| line.contains("<tick>") && line.contains("\tbl\t"))
+            .unwrap(),
+    );
+    let thumb_call = line_address(
+        assembly
+            .lines()
+            .find(|line| line.contains("<thumb_tick>") && line.contains("\tblx\t"))
+            .unwrap(),
+    );
+    let thumb = u32::from_str_radix(
+        assembly
+            .lines()
+            .find_map(|line| line.strip_suffix(" <thumb_tick>:"))
+            .unwrap(),
+        16,
+    )
+    .unwrap();
+    let root =
+        std::env::temp_dir().join(format!("lotus-cpu-arm-thumb-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, &root);
+    config.allow_control = true;
+    config.assets = BTreeMap::from([("fixture".into(), fixture), ("elf".into(), elf)]);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let send = |command| controller.commands.send(command).unwrap();
+    send(Command::Create {
+        kind: SessionKind::Secondary { parent: None },
+        asset: Some("fixture".into()),
+    });
+    wait(&controller, |update| {
+        update
+            .sessions
+            .iter()
+            .any(|session| session.info.id == update.selected)
+    });
+    let target = {
+        let update = controller.latest.lock().unwrap();
+        let summary = update
+            .sessions
+            .iter()
+            .find(|s| s.info.id == update.selected)
+            .unwrap();
+        SessionTarget {
+            id: summary.info.id.clone(),
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        }
+    };
+    send(Command::Pause(target.id.clone()));
+    wait(&controller, |update| {
+        target.resolve(&update.sessions).is_some_and(|summary| {
+            summary.telemetry.state == lotus_session::SessionState::Paused
+                && !summary.telemetry.playing
+        })
+    });
+    controller.inspector.store(true, Ordering::Release);
+
+    let run = |panel, command: D, check: &dyn Fn(&Inspection) -> bool| {
+        let previous = controller
+            .latest
+            .lock()
+            .unwrap()
+            .debug_result(panel)
+            .map(|request| request.id);
+        send(Command::DebugAt {
+            target: target.clone(),
+            panel,
+            command,
+        });
+        wait(&controller, |update| {
+            update.debug_result(panel).is_some_and(|request| {
+                if request.target != target || Some(request.id) == previous {
+                    return false;
+                }
+                match &request.status {
+                    DebugStatus::Finished { view, .. } => {
+                        assert!(check(view), "{}: {:?}", request.operation, view.rows);
+                        true
+                    }
+                    DebugStatus::Failed { message, .. } => {
+                        panic!("{}: {message}", request.operation)
+                    }
+                    _ => false,
+                }
+            })
+        });
+    };
+    let pc_is = |address, mode: &str| {
+        wait(&controller, |update| {
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.panel == Panel::Cpu
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|row| row.key == "r15" && row.value == format!("{address:08x}"))
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|row| row.key == "CPSR" && row.value.ends_with(mode))
+            }) && target.resolve(&update.sessions).is_some_and(|summary| {
+                summary.telemetry.state == lotus_session::SessionState::Paused
+            })
+        })
+    };
+    let requested = |address: u32, view: &Inspection| {
+        view.rows
+            .iter()
+            .any(|row| row.key == ".address" && row.value == address.to_string())
+    };
+    run(
+        Panel::Result,
+        D::LoadSymbols {
+            asset: "elf".into(),
+        },
+        &|view| view.rows.iter().any(|row| row.key == ".elf_sha256"),
+    );
+    run(
+        Panel::Cpu,
+        D::RunTo {
+            core: 0,
+            address: arm_call,
+        },
+        &|view| requested(arm_call, view),
+    );
+    pc_is(arm_call, "ARM");
+    run(Panel::Cpu, D::StepOver { core: 0 }, &|view| {
+        requested(arm_call + 4, view)
+    });
+    pc_is(arm_call + 4, "ARM");
+    run(
+        Panel::Cpu,
+        D::RunTo {
+            core: 0,
+            address: thumb_call,
+        },
+        &|view| requested(thumb_call, view),
+    );
+    pc_is(thumb_call, "ARM");
+    run(Panel::Cpu, D::Step { core: 0, count: 1 }, &|view| {
+        view.rows
+            .iter()
+            .any(|row| row.key == ".registers[15]" && row.value == format!("{thumb:08x}"))
+    });
+    pc_is(thumb, "Thumb");
+    wait(&controller, |update| {
+        update.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot
+                .view
+                .rows
+                .iter()
+                .any(|row| row.key == "ELF symbol" && row.value.contains("thumb_tick"))
+                && snapshot
+                    .view
+                    .rows
+                    .iter()
+                    .any(|row| row.lane == "PC" && row.value.contains("push"))
+        })
+    });
+    // Execute the Thumb frame-pointer prologue first so the backtrace uses this frame.
+    run(Panel::Cpu, D::Step { core: 0, count: 2 }, &|_| true);
+    run(Panel::Cpu, D::Backtrace { core: 0, limit: 5 }, &|view| {
+        view.rows.iter().any(|row| row.key == ".elf_sha256")
+    });
+    run(Panel::Cpu, D::StepOut { core: 0 }, &|view| {
+        requested(thumb_call + 4, view)
+    });
+    pc_is(thumb_call + 4, "ARM");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let server = controller.mcp_server();
+    let debug_mcp = |command| {
+        tool_json(runtime.block_on(server.lotus_debug(Parameters(DebugArgs {
+            session: target.id.clone(),
+            command,
+        }))))
+    };
+    let watched = debug_mcp(D::ResolveSymbol {
+        query: "watched".into(),
+    })["addresses"][0]
+        .as_u64()
+        .unwrap() as u32;
+    for address in [arm_call, watched] {
+        let read = D::ReadMemory { address, length: 4 };
+        let bytes = debug_mcp(read.clone())["bytes"].as_array().unwrap().clone();
+        run(Panel::Memory, read, &|view| {
+            bytes.iter().enumerate().all(|(index, expected)| {
+                view.rows.iter().any(|row| {
+                    row.key == format!(".bytes[{index}]")
+                        && row.value.parse::<u8>().ok().map(u64::from) == expected.as_u64()
+                })
+            })
+        });
+    }
+    let read = D::ReadMemory {
+        address: watched,
+        length: 1,
+    };
+    let actual = debug_mcp(read.clone())["bytes"][0].as_u64().unwrap() as u8;
+    send(Command::PatchMemory {
+        target: target.clone(),
+        command: D::WriteMemory {
+            address: watched,
+            bytes: vec![!actual],
+        },
+        original: vec![!actual],
+    });
+    wait(&controller, |update| {
+        update.debug_result(Panel::Memory).is_some_and(|request|
+        request.operation == "write_memory" &&
+        matches!(&request.status, DebugStatus::Failed { kind: ErrorKind::InvalidData, message }
+            if message.contains("Guest bytes changed")))
+    });
+    assert_eq!(debug_mcp(read)["bytes"][0], actual);
+    drop(server);
+    drop(runtime);
+
+    send(Command::Reset(target.id.clone()));
+    wait(&controller, |update| {
+        target.resolve(&update.sessions).is_none()
+            && update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .target
+                    .as_ref()
+                    .is_some_and(|replacement| replacement.epoch != target.epoch)
+                    && snapshot.view.rows.iter().all(|row| row.key != "ELF symbol")
+            })
+    });
+    send(Command::Stop(target.id));
+    wait(&controller, |update| update.sessions.is_empty());
     drop(controller);
     assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
     std::fs::remove_dir_all(root).unwrap();
