@@ -221,6 +221,26 @@ checks that no worker process survives, hung roots keep only logs and clean
 roots are removed (**verified compiled**, #31). Off Windows the kill switch
 does nothing (untested platform).
 
+## Investigation storage (#97)
+
+The supervisor keeps investigation notes in
+`storage_root/investigations/catalog.json`. Version 1 stores stable IDs,
+titles, notes, image hashes, source locations, frame bookmarks, and artifact
+or trace references. The catalog allows 256 records and 2 MiB total. A
+file lock serializes edits. Each update checks the caller's expected
+revision and publishes the next revision through a flushed temporary file
+and rename. Unknown catalog versions are preserved on disk.
+
+Each session reference records its creation time and epoch. The supervisor
+compares those with its latest telemetry and reports `live`,
+`epoch_changed`, or `expired`. An investigation can survive shutdown and
+does not restart workers or acquire input or debugger leases. Artifact
+references report their current pin and hash status from the live catalog.
+Source breakpoints store relative locations and content and ELF hashes.
+Their application and the client commands are part of the remaining #97
+workflow. See [store](../crates/session/src/investigation.rs) and
+[Windows mock-worker tests](../crates/session/tests/investigations.rs).
+
 ## Gauges
 
 Per session, from status replies (worker fields in [21](21-native-control.md)):

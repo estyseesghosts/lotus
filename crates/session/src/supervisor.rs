@@ -492,6 +492,8 @@ pub struct Supervisor {
     /// Bumped by every settings or input-preset change, so a frontend knows when to
     /// re-resolve input layouts (lotus#63).
     settings_revision: AtomicU64,
+    /// Persistent notes and scoped references owned by this storage root.
+    investigations: crate::investigation::InvestigationStore,
     /// Window layout (lotus#67). Lock order: `registry`, then `workspace`.
     workspace: Mutex<crate::workspace::Workspace>,
     workspace_resolved: Mutex<Option<crate::workspace::Resolved>>,
@@ -561,6 +563,7 @@ impl Supervisor {
             crate::settings_store::SettingsStore::new(&config.storage_root, &config.profile)?;
         Ok(Self {
             settings,
+            investigations: crate::investigation::InvestigationStore::new(&config.storage_root),
             config,
             cards,
             registry: Mutex::default(),
@@ -628,6 +631,33 @@ impl Supervisor {
             info: handle.info(),
             telemetry,
         })
+    }
+
+    pub fn investigations(&self) -> io::Result<Vec<crate::investigation::Investigation>> {
+        self.investigations.list()
+    }
+
+    pub fn investigation(&self, id: &str) -> io::Result<crate::investigation::InvestigationView> {
+        let record = self.investigations.get(id)?;
+        Ok(crate::investigation::InvestigationView::new(self, record))
+    }
+
+    pub fn create_investigation(
+        &self,
+        details: crate::investigation::InvestigationDetails,
+    ) -> io::Result<crate::investigation::Investigation> {
+        self.require_control()?;
+        self.investigations.create(details)
+    }
+
+    pub fn update_investigation(
+        &self,
+        id: &str,
+        expected_revision: u64,
+        details: crate::investigation::InvestigationDetails,
+    ) -> io::Result<crate::investigation::Investigation> {
+        self.require_control()?;
+        self.investigations.update(id, expected_revision, details)
     }
 
     /// Check a debugger target against the latest published worker state without

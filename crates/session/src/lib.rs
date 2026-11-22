@@ -11,6 +11,7 @@ mod build;
 pub mod card_store;
 mod debug_image;
 pub mod failure;
+pub mod investigation;
 pub mod native_session;
 pub mod policy;
 pub mod preview_ring;
