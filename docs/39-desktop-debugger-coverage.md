@@ -137,7 +137,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `lotus_create_session` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Create or launch a card or secondary | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_focus_session` | [workspace](../crates/desktop/src/lotus_window.rs) | presentation change | - | Select a session in the desktop | [Workspace](../crates/desktop/tests/responsive_controller.rs) |
 | `lotus_input` | [desktop input](../crates/desktop/src/input_routing.rs) | control | - | Device input through the desktop router | [Input](../crates/desktop/tests/input_routing.rs) |
-| `lotus_input_presets` | [settings window](../crates/desktop/src/settings_window.rs) | read or control by operation | - | Preset library and editor | fixture pending |
+| `lotus_input_presets` | [settings window](../crates/desktop/src/settings_window.rs) | read or control by operation | - | The Controls preset choice lists builtin and saved presets. Import, export, duplicate, rename and delete are MCP and ctr-cli only. | [Settings](../crates/desktop/src/settings_window/shared.rs) |
 | `lotus_list_cards` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Card sidebar | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_list_sessions` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Session sidebar | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_load` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Asset picker | [Session](../crates/desktop/tests/native_inspector.rs) |
@@ -145,9 +145,9 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `lotus_release_artifacts` | external only | control | - | External artifact retention | external |
 | `lotus_run_until` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Only single-frame advance in the desktop | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_session_status` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Cached session summaries and gauges | [Session](../crates/desktop/tests/native_inspector.rs) |
-| `lotus_settings` | [settings window](../crates/desktop/src/settings_window.rs) | read | - | Scoped settings view | fixture pending |
-| `lotus_settings_change` | [settings window](../crates/desktop/src/settings_window.rs) | control | - | Scope and application rules apply | fixture pending |
-| `lotus_settings_schema` | [settings window](../crates/desktop/src/settings_window.rs) | read | - | Settings registry drives the form | fixture pending |
+| `lotus_settings` | [settings window](../crates/desktop/src/settings_window.rs) | read | - | Scoped settings view | [Settings](../crates/desktop/src/settings_window/shared.rs) |
+| `lotus_settings_change` | [settings window](../crates/desktop/src/settings_window.rs) | control | - | Scope and application rules apply | [Settings](../crates/desktop/src/settings_window/shared.rs) |
+| `lotus_settings_schema` | [settings window](../crates/desktop/src/settings_window.rs) | read | - | Settings registry drives the form | [Settings](../crates/desktop/src/settings_window/shared.rs) |
 | `lotus_status` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Desktop gauges show session status, not MCP server diagnostics | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_validate_scenario` | external only | read | - | Scenario authoring is currently external | external |
 | `lotus_workspace` | [workspace](../crates/desktop/src/lotus_window.rs) | read or control by operation | - | Interactive tiling shares the workspace model | [Workspace](../crates/desktop/tests/responsive_controller.rs) |

@@ -618,7 +618,12 @@ impl SettingsWindow {
                 })
     }
 
+    /// Pending restarts for saved settings, and the limit in effect for an unset or zero
+    /// host budget, which the field alone cannot show (`Policy::budget`, lotus#56).
     fn pending_note(&self, key: &str) -> Option<String> {
+        if let Some(note) = self.host.as_deref().and_then(|host| budget_note(host, key)) {
+            return Some(note);
+        }
         let report = self.report.as_ref()?;
         if let Some(cards) = report["pending_cards"][key].as_array() {
             return Some(if cards.len() == 1 {
@@ -1015,6 +1020,23 @@ impl SettingsWindow {
 }
 
 /// A Lotus host setting's current value from the running host, if it reports one.
+/// The limit the supervisor enforces for an optional host budget
+/// (`lotus_session::policy::Policy`), as reported under `policy` by `lotus_status`.
+fn budget_note(host: &Supervisor, key: &str) -> Option<String> {
+    let policy = &host.config().policy;
+    let limit = match key.strip_prefix("lotus.host.policy.")? {
+        "rewind_sessions" => policy.rewind_limit(),
+        "rewind_memory_mib" => policy.rewind_memory_limit(),
+        "gpu_capture_sessions" => policy.gpu_capture_limit(),
+        "snapshot_slots" => policy.snapshot_limit(),
+        _ => return None,
+    };
+    Some(limit.map_or_else(
+        || "In effect: unlimited.".into(),
+        |limit| format!("In effect: {limit}."),
+    ))
+}
+
 fn host_value(host: &Supervisor, key: &str) -> Option<Value> {
     let config = serde_json::to_value(host.config()).ok()?;
     let mut value = &config;

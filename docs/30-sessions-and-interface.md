@@ -1079,6 +1079,14 @@ popover.
 - **MCP.** MCP is stdio-only and enabled per process with `--mcp`, so the MCP
   & Automation group shows its state (`McpLink`: off, attached, stopped) as a
   note, not a toggle.
+- **Host budgets.** `lotus.host.policy.rewind_sessions`,
+  `rewind_memory_mib`, `gpu_capture_sessions` and `snapshot_slots` are
+  optional. Unset, the field is empty but the supervisor still enforces the
+  workload default (`policy.rs` `Policy::budget` and `rewind_memory_limit`:
+  2 sessions and 1536 MiB for `interactive`, unlimited for `batch`); 0 is
+  unlimited. Each of these rows notes the limit in effect, for example
+  "In effect: 2.", computed from the host's own `Policy`. `lotus_status`
+  reports the same limits under `policy`.
 - **Discord.** Only `lotus-desktop` depends on `discord-rich-presence`;
   `cargo tree -p lotus-mcp` and `-p lotus-cli` do not include it, so headless
   modes cannot connect (**verified build graph**). Disabling clears the
@@ -1089,6 +1097,29 @@ Tests: `settings_layers.rs` `debugger_defaults_fill_omitted_request_fields`
 `settings_registry.rs` `debug_default_bounds_match_request_validation`; the
 mounted `card_debugger_default_overrides_global_through_the_pop_up` and
 `host_locations_read_as_paths_and_handles`; `rewind_form_prefers_active_config_then_saved_defaults`.
+
+Desktop and headless parity: the mounted
+`settings_window_matches_a_headless_server_on_the_same_host_configuration`
+parses one `host.json` as `lotus-desktop` and `lotus-mcp` do, and runs the
+Settings window over one supervisor and `LotusServer::configured` over another
+on the same storage root. It checks that the window's rows at global and
+primary scope are the schema rows `lotus_settings_schema` publishes, in order;
+that every host row equals the headless host's parsed configuration and, for
+the 13 settings `lotus_status` reports, the enforced value or limit; that a
+desktop toggle is what headless `lotus_settings` reads and that headless
+`lotus_settings_change` set and reset are what the window shows with their
+sources; and that a preset duplicated with `lotus_input_presets` is offered
+by the window's preset choice (**verified emulator**, mock host, no worker).
+The window has no preset library editor: import, export, duplicate, rename
+and delete are MCP and `ctr-cli` only.
+`native_inspector.rs` `saved_debugger_defaults_reach_the_worker_from_both_clients`
+saves card and global debugger defaults through the desktop write path on one
+card and `lotus_settings_change` on another, then sends rewind and GPU
+requests that omit those fields from the desktop and from `lotus_debug`.
+The worker echoes the card interval, card compression level and global
+capture level, and removing the card value takes effect on the next request.
+It passed once on the CITnLO 0.1.2 worker (**verified emulator**) but took
+492 s; the slow step is not yet identified. It was not run on AZAHAR.
 
 `tests/test_settings_window.py` (**verified emulator**, mock worker, real key
 events): Ctrl+, three times leaves one Settings window. The test moves it,

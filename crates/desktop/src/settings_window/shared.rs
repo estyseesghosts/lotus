@@ -1555,4 +1555,283 @@ mod tests {
         wait_for(cx, "global", Value::from("events"));
         let _ = std::fs::remove_dir_all(storage);
     }
+
+    /// lotus#56, lotus#58 (headless parity), lotus#154 (settings tools): one host.json,
+    /// parsed as `lotus-desktop` and `lotus-mcp` parse it, backs the mounted Settings
+    /// window and a separate headless server on the same storage root. Host rows match
+    /// what the server enforces, each side reads the other's saved changes and presets,
+    /// and the window's rows are the schema the server publishes.
+    #[gpui::test]
+    fn settings_window_matches_a_headless_server_on_the_same_host_configuration() {
+        use lotus_mcp::tool_arguments::{
+            InputPresetArgs, InputPresetOperation, SettingsArgs, SettingsChangeArgs,
+            SettingsOperation, SettingsSchemaArgs, SettingsScope, SettingsTargetArg,
+        };
+        use lotus_mcp::LotusServer;
+        use lotus_protocol::envelope::SessionUuid;
+        use lotus_session::supervisor::HostConfig;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let storage = std::env::temp_dir()
+            .join(format!("lotus-settings-parity-{}", SessionUuid::generate()));
+        std::fs::create_dir_all(storage.join("cards/dev")).unwrap();
+        let mut config = HostConfig::new(std::env::current_exe().unwrap(), &storage);
+        config.allow_control = true;
+        config.max_sessions = 3;
+        config.policy.gpu_capture_sessions = Some(0);
+        config.policy.snapshot_slots = Some(3);
+        let path = storage.join("host.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        let parse = || {
+            serde_json::from_str::<HostConfig>(&std::fs::read_to_string(&path).unwrap()).unwrap()
+        };
+        let host = Arc::new(Supervisor::new(parse()).unwrap());
+        let headless = LotusServer::configured(parse(), Default::default()).unwrap();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let tool = |result: rmcp::model::CallToolResult| -> Value {
+            let text = serde_json::to_value(&result.content[0]).unwrap()["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_ne!(result.is_error, Some(true), "{text}");
+            serde_json::from_str(&text).unwrap()
+        };
+        let read = |target: SettingsTargetArg| {
+            tool(runtime.block_on(headless.lotus_settings(Parameters(SettingsArgs { target }))))
+        };
+        let change = |target, operation, key: &str, value: Option<Value>| {
+            tool(
+                runtime.block_on(headless.lotus_settings_change(Parameters(SettingsChangeArgs {
+                    target,
+                    operation,
+                    key: Some(key.into()),
+                    value,
+                }))),
+            )
+        };
+        let card = || SettingsTargetArg::Card { card: "dev".into() };
+
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx)
+        });
+        let (main, _) = app.add_window_view(LotusWindow::test_preview);
+        let (settings, cx) = app.add_window_view(|window, cx| {
+            SettingsWindow::new(
+                main.downgrade(),
+                Some(host.clone()),
+                true,
+                Target::Global,
+                window,
+                cx,
+            )
+        });
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        // The window's report once its settings equal `want`'s, or the last one seen.
+        let shown = |cx: &mut gpui::VisualTestContext, want: &Value| {
+            let mut last = Value::Null;
+            for _ in 0..100 {
+                draw(cx);
+                last = cx.update(|_, cx| settings.read(cx).report.clone().unwrap_or_default());
+                if last["settings"] == want["settings"] {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            last
+        };
+
+        // Schema: every row the window offers at a scope, in order, and nothing else.
+        for (target, scope) in [
+            (Target::Global, SettingsScope::Global),
+            (Target::Card("dev".into()), SettingsScope::Primary),
+        ] {
+            let schema = tool(runtime.block_on(headless.lotus_settings_schema(Parameters(
+                SettingsSchemaArgs { scope: Some(scope) },
+            ))));
+            cx.update(|_, cx| {
+                settings.update(cx, |view, cx| view.set_target(target.clone(), cx));
+            });
+            draw(cx);
+            for group in schema["groups"].as_array().unwrap() {
+                let published: Vec<&str> = group["settings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| s["key"].as_str().unwrap())
+                    .filter(|key| Registry::builtin().get(key).unwrap().presentation().has_row())
+                    .collect();
+                let group = Group::ALL
+                    .into_iter()
+                    .find(|g| serde_json::to_value(g).unwrap() == group["group"])
+                    .unwrap();
+                let rows: Vec<String> = cx.update(|_, cx| {
+                    settings
+                        .read(cx)
+                        .rows(group)
+                        .iter()
+                        .map(|d| d.key.clone())
+                        .collect()
+                });
+                assert_eq!(rows, published, "{target:?} {group:?}");
+            }
+        }
+        cx.update(|_, cx| settings.update(cx, |view, cx| view.set_target(Target::Global, cx)));
+
+        // Host rows: the same parsed configuration, and what the headless server enforces.
+        let status: Value =
+            serde_json::from_str(&runtime.block_on(headless.lotus_status())).unwrap();
+        let policy = &status["policy"];
+        let headless_config = serde_json::to_value(headless.host().unwrap().config()).unwrap();
+        let limit_note = |limit: &Value| match limit.as_u64() {
+            Some(limit) => format!("In effect: {limit}."),
+            None => "In effect: unlimited.".to_string(),
+        };
+        // (value the server enforces) or (the note the row must show for an unset budget).
+        let enforced = |key: &str| -> Option<Result<Value, String>> {
+            Some(match key {
+                "lotus.host.max_sessions" => Ok(status["max_sessions"].clone()),
+                "lotus.host.allow_control" => Ok(status["control"].clone()),
+                "lotus.host.policy.workload" => Ok(policy["workload"].clone()),
+                "lotus.host.policy.focus_priority" => Ok(policy["focus_priority"].clone()),
+                "lotus.host.policy.snapshot_queue_limit" => {
+                    Ok(policy["snapshots"]["queue_limit"].clone())
+                }
+                "lotus.host.policy.memory_reserve_mib" => {
+                    Ok(policy["memory"]["reserve_mib"].clone())
+                }
+                "lotus.host.artifacts.max_count" => Ok(status["artifacts"]["max_count"].clone()),
+                "lotus.host.artifacts.max_bytes" => Ok(status["artifacts"]["max_bytes"].clone()),
+                "lotus.host.artifacts.lease_seconds" => {
+                    Ok(status["artifacts"]["lease_seconds"].clone())
+                }
+                "lotus.host.policy.rewind_sessions" => Err(limit_note(&policy["rewind"]["limit"])),
+                "lotus.host.policy.rewind_memory_mib" => {
+                    Err(limit_note(&policy["rewind"]["memory_limit_mib"]))
+                }
+                "lotus.host.policy.gpu_capture_sessions" => {
+                    Err(limit_note(&policy["gpu_capture"]["limit"]))
+                }
+                "lotus.host.policy.snapshot_slots" => {
+                    Err(limit_note(&policy["snapshots"]["limit"]))
+                }
+                _ => return None,
+            })
+        };
+        let mut compared = 0;
+        for descriptor in Registry::builtin()
+            .descriptors()
+            .iter()
+            .filter(|d| d.owner == Owner::Host)
+        {
+            let (value, note) = cx.update(|_, cx| {
+                let view = settings.read(cx);
+                (
+                    view.value(descriptor, cx).0,
+                    view.pending_note(&descriptor.key),
+                )
+            });
+            let mut parsed = &headless_config;
+            for part in descriptor.key.strip_prefix("lotus.host.").unwrap().split('.') {
+                parsed = &parsed[part];
+            }
+            assert_eq!(&value, parsed, "{}", descriptor.key);
+            match enforced(&descriptor.key) {
+                Some(Ok(effective)) => assert_eq!(value, effective, "{}", descriptor.key),
+                Some(Err(effective)) => {
+                    assert_eq!(note.as_deref(), Some(effective.as_str()), "{}", descriptor.key)
+                }
+                None => continue,
+            }
+            compared += 1;
+        }
+        assert_eq!(compared, 13);
+
+        // Saved settings: a desktop edit is what the headless server reads, and back.
+        let global = read(SettingsTargetArg::Global);
+        assert_eq!(shown(cx, &global)["settings"], global["settings"]);
+        let key = "use_hw_shader";
+        let descriptor = Registry::builtin().get(key).unwrap();
+        let before = global["settings"][key]["value"].as_bool().unwrap();
+        cx.update(|window, cx| {
+            settings.update(cx, |view, cx| {
+                view.show_group(descriptor.group, window, cx);
+                view.prefs.tabs.insert(descriptor.group, descriptor.subgroup);
+                view.prefs.reveal = Some(descriptor);
+            });
+        });
+        draw(cx);
+        draw(cx);
+        let bounds = cx.debug_bounds("toggle-use_hw_shader").unwrap();
+        cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+        let mut global = read(SettingsTargetArg::Global);
+        for _ in 0..100 {
+            if global["settings"][key]["value"] == Value::Bool(!before) {
+                break;
+            }
+            draw(cx);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            global = read(SettingsTargetArg::Global);
+        }
+        assert_eq!(global["settings"][key]["source"], "global", "{global}");
+        assert_eq!(global["settings"][key]["value"], !before, "{global}");
+        assert_eq!(shown(cx, &global)["settings"], global["settings"]);
+
+        let interval = "lotus.debug.rewind.interval_frames";
+        let capture = "lotus.debug.gpu.capture";
+        change(
+            SettingsTargetArg::Global,
+            SettingsOperation::Set,
+            capture,
+            Some("events".into()),
+        );
+        let changed = change(card(), SettingsOperation::Set, interval, Some(7.into()));
+        assert_eq!(changed["settings"][interval]["source"], "card", "{changed}");
+        cx.update(|_, cx| {
+            settings.update(cx, |view, cx| {
+                view.set_target(Target::Card("dev".into()), cx);
+            });
+        });
+        let on_card = read(card());
+        assert_eq!(on_card["settings"][capture]["source"], "global", "{on_card}");
+        assert_eq!(shown(cx, &on_card)["settings"], on_card["settings"]);
+        for (key, source) in [(interval, "card"), (capture, "global"), (key, "global")] {
+            let descriptor = Registry::builtin().get(key).unwrap();
+            let (value, from) = cx.update(|_, cx| settings.read(cx).value(descriptor, cx));
+            assert_eq!(value, on_card["settings"][key]["value"], "{key}");
+            assert_eq!(from, source, "{key}");
+        }
+        change(card(), SettingsOperation::Reset, interval, None);
+        let reset = read(card());
+        assert_eq!(reset["settings"][interval]["source"], "default", "{reset}");
+        cx.update(|_, cx| settings.update(cx, |view, cx| view.refresh(cx)));
+        assert_eq!(shown(cx, &reset)["settings"], reset["settings"]);
+
+        // Presets: a preset duplicated headless is offered by the window's preset control.
+        let presets = |operation, name: Option<&str>, to: Option<&str>| InputPresetArgs {
+            operation,
+            name: name.map(str::to_string),
+            to: to.map(str::to_string),
+            json: None,
+        };
+        tool(runtime.block_on(headless.lotus_input_presets(Parameters(presets(
+            InputPresetOperation::Duplicate,
+            Some("xbox-labels"),
+            Some("pad-b"),
+        )))));
+        let listed = tool(runtime.block_on(
+            headless.lotus_input_presets(Parameters(presets(InputPresetOperation::List, None, None))),
+        ));
+        assert_eq!(listed["saved"], serde_json::json!(["pad-b"]));
+        cx.update(|_, cx| settings.update(cx, |view, cx| view.refresh(cx)));
+        draw(cx);
+        let offered = cx.update(|_, cx| settings.read(cx).presets.clone());
+        assert_eq!(serde_json::to_value(&offered).unwrap(), listed["saved"]);
+
+        drop(headless);
+        let _ = std::fs::remove_dir_all(storage);
+    }
 }

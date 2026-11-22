@@ -105,7 +105,8 @@ impl Policy {
         self.budget(self.rewind_sessions)
     }
 
-    fn rewind_memory_limit(&self) -> Option<usize> {
+    #[must_use]
+    pub fn rewind_memory_limit(&self) -> Option<usize> {
         match (self.rewind_memory_mib, self.workload) {
             (Some(0), _) | (None, Workload::Batch) => None,
             (Some(limit), _) => Some(limit),

@@ -111,7 +111,7 @@ mcp-debug	lotus_debug	debug bridge	per operation	-	See the shared command invent
 mcp	lotus_focus_session	workspace	presentation change	-	Select a session in the desktop	Workspace
 mcp-debug	lotus_gdb	GDB inspector	control to start or stop	-	Shares the listener and client lease with the desktop (#152). CITnLO only.	GDB
 mcp	lotus_input	desktop input	control	-	Device input through the desktop router	Input
-mcp	lotus_input_presets	settings window	read or control by operation	-	Preset library and editor	fixture pending
+mcp	lotus_input_presets	settings window	read or control by operation	-	The Controls preset choice lists builtin and saved presets. Import, export, duplicate, rename and delete are MCP and ctr-cli only.	Settings
 mcp	lotus_list_cards	session status	read	-	Card sidebar	Session
 mcp	lotus_list_sessions	session status	read	-	Session sidebar	Session
 mcp	lotus_load	session controls	control	-	Asset picker	Session
@@ -121,9 +121,9 @@ mcp-debug	lotus_registers	inspector polling	read	-	CPU core is selectable	CPU
 mcp	lotus_release_artifacts	external only	control	-	External artifact retention	external
 mcp	lotus_run_until	session controls	control	-	Only single-frame advance in the desktop	Session
 mcp	lotus_session_status	session status	read	-	Cached session summaries and gauges	Session
-mcp	lotus_settings	settings window	read	-	Scoped settings view	fixture pending
-mcp	lotus_settings_change	settings window	control	-	Scope and application rules apply	fixture pending
-mcp	lotus_settings_schema	settings window	read	-	Settings registry drives the form	fixture pending
+mcp	lotus_settings	settings window	read	-	Scoped settings view	Settings
+mcp	lotus_settings_change	settings window	control	-	Scope and application rules apply	Settings
+mcp	lotus_settings_schema	settings window	read	-	Settings registry drives the form	Settings
 mcp	lotus_status	session status	read	-	Desktop gauges show session status, not MCP server diagnostics	Session
 mcp	lotus_validate_scenario	external only	read	-	Scenario authoring is currently external	external
 mcp	lotus_workspace	workspace	read or control by operation	-	Interactive tiling shares the workspace model	Workspace

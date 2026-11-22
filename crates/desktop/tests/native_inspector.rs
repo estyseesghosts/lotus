@@ -4327,3 +4327,191 @@ fn session_controls_and_reads_match_mcp() {
     assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Saved debugger defaults on a native worker (#56): card `desk` is configured the way
+/// the Settings window writes (`Supervisor::set_setting` as the desktop) and card `agent`
+/// through `lotus_settings_change`. Rewind and GPU requests that omit the fields then
+/// carry the card and global values on both clients; the worker echoes them
+/// (`ctr_worker/debug.h` `HistoryStatus`, `debug_gpu.h` `gpu_configure`). A worker
+/// without rewind must refuse it the same way in both clients.
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE"]
+fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
+    use lotus_mcp::tool_arguments::{
+        CreateArgs, KindArg, LoadArgs, SettingsArgs, SettingsChangeArgs, SettingsOperation,
+        SettingsTargetArg,
+    };
+    use lotus_session::supervisor::SettingsTarget;
+    use lotus_session::telemetry::Actor;
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-defaults-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, &root);
+    config.allow_control = true;
+    config.assets.insert("fixture".into(), fixture);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let host = controller.host().clone();
+    let call = |result: CallToolResult| {
+        let text = result.content[0].as_text().unwrap().text.clone();
+        if result.is_error == Some(true) {
+            Err(text)
+        } else {
+            Ok(serde_json::from_str::<Value>(&text).unwrap())
+        }
+    };
+    let debug = |session: &str, command| {
+        call(runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: session.into(),
+            command,
+        }))))
+    };
+    let target = |id: &str| {
+        let update = controller.latest.lock().unwrap();
+        let summary = update.sessions.iter().find(|s| s.info.id == id).unwrap();
+        SessionTarget {
+            id: summary.info.id.clone(),
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        }
+    };
+    let desktop =
+        |id: &str, panel, command| desktop_command(&controller, &target(id), panel, command);
+    let desktop_set = |target: SettingsTarget, key: &str, value: Option<Value>| {
+        runtime
+            .block_on(host.set_setting(&target, key, value, Actor::Desktop))
+            .unwrap()
+    };
+    let mcp_set = |card: &str, key: &str, value: Value| {
+        call(
+            runtime.block_on(mcp.lotus_settings_change(Parameters(SettingsChangeArgs {
+                target: SettingsTargetArg::Card { card: card.into() },
+                operation: SettingsOperation::Set,
+                key: Some(key.into()),
+                value: Some(value),
+            }))),
+        )
+        .unwrap()
+    };
+
+    controller
+        .commands
+        .send(Command::Create {
+            kind: SessionKind::Primary {
+                card: "desk".into(),
+            },
+            asset: None,
+        })
+        .unwrap();
+    wait(&controller, |update| update.sessions.len() == 1);
+    let a = controller.latest.lock().unwrap().sessions[0]
+        .info
+        .id
+        .clone();
+    let b = call(
+        runtime.block_on(mcp.lotus_create_session(Parameters(CreateArgs {
+            kind: KindArg::Primary,
+            card: Some("agent".into()),
+            asset: None,
+        }))),
+    )
+    .unwrap()["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait(&controller, |update| {
+        update.sessions.iter().any(|s| s.info.id == b)
+    });
+    for id in [&a, &b] {
+        call(runtime.block_on(mcp.lotus_load(Parameters(LoadArgs {
+            session: id.clone(),
+            asset: "fixture".into(),
+        }))))
+        .unwrap();
+        debug(id, D::Pause).unwrap();
+    }
+
+    let interval = "lotus.debug.rewind.interval_frames";
+    let level = "lotus.debug.rewind.compression_level";
+    let capture = "lotus.debug.gpu.capture";
+    desktop_set(SettingsTarget::Global, interval, Some(10.into()));
+    desktop_set(SettingsTarget::Global, capture, Some("events".into()));
+    let desk = || SettingsTarget::Card {
+        card: "desk".into(),
+    };
+    desktop_set(desk(), interval, Some(7.into()));
+    desktop_set(desk(), level, Some((-3).into()));
+    mcp_set("agent", interval, 7.into());
+    mcp_set("agent", level, (-3).into());
+    for card in ["desk", "agent"] {
+        let saved = call(runtime.block_on(mcp.lotus_settings(Parameters(SettingsArgs {
+            target: SettingsTargetArg::Card { card: card.into() },
+        }))))
+        .unwrap();
+        assert_eq!(saved["settings"][interval]["source"], "card", "{card}");
+        assert_eq!(saved["settings"][capture]["source"], "global", "{card}");
+    }
+
+    let rewind = D::RewindConfigure {
+        enabled: true,
+        capacity: 8,
+        budget_mib: 64,
+        interval_frames: None,
+        compression_level: None,
+        compression_queue: None,
+    };
+    let configured = same_outcome(
+        desktop(&a, Panel::States, rewind.clone()),
+        debug(&b, rewind.clone()),
+        SESSION_VOLATILE,
+    );
+    let Some(configured) = configured else {
+        // No rewind on this worker; the GPU request is refused or accepted alike.
+        let gpu = D::GpuConfigure {
+            enabled: true,
+            stop_events: Vec::new(),
+            capture: None,
+            draw_range: None,
+            max_draws: None,
+            resources: None,
+        };
+        same_outcome(
+            desktop(&a, Panel::Gpu, gpu.clone()),
+            debug(&b, gpu),
+            SESSION_VOLATILE,
+        );
+        let _ = std::fs::remove_dir_all(&root);
+        return;
+    };
+    assert_eq!(configured["interval_frames"], 7, "{configured}");
+    assert_eq!(configured["compression_level"], -3, "{configured}");
+
+    let gpu = D::GpuConfigure {
+        enabled: true,
+        stop_events: Vec::new(),
+        capture: None,
+        draw_range: None,
+        max_draws: None,
+        resources: None,
+    };
+    let captured = same_outcome(
+        desktop(&a, Panel::Gpu, gpu.clone()),
+        debug(&b, gpu),
+        SESSION_VOLATILE,
+    )
+    .unwrap();
+    assert_eq!(captured["capture"], "events", "{captured}");
+
+    // Removing the card value: the next request carries the global value, no restart.
+    desktop_set(desk(), interval, None);
+    let inherited = completed(desktop(&a, Panel::States, rewind.clone()));
+    let rows = result_rows(&inherited, ".interval_frames");
+    assert_eq!(rows.get(".interval_frames"), Some(&Value::from(10)), "{rows:?}");
+    assert_eq!(debug(&b, rewind).unwrap()["interval_frames"], 7);
+    let _ = std::fs::remove_dir_all(&root);
+}
