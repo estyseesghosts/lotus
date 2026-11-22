@@ -245,7 +245,15 @@ attach by ID to recover the saved record. Create and update require
 control permission. Update takes the whole `details` object and
 `expected_revision`; reload after a revision conflict.
 
-Breakpoint restoration, the CLI and the desktop editor remain in #97.
+Use `lotus_investigation_restore_breakpoint` with the investigation ID,
+revision, zero-based breakpoint index and current session reference. Pause
+the guest and bind the approved ELF with `lotus_debug` first. The host checks
+the lease, the target's creation and epoch, and both saved image hashes
+before resolving the source location. A later binding with different hashes
+leaves that restored breakpoint pending. The CITnLO fixture hit the restored
+Thumb breakpoint and left it pending when a different ELF was bound.
+
+The CLI and the desktop editor remain in #97.
 See [store](../crates/session/src/investigation.rs),
 [catalog tests](../crates/session/tests/investigations.rs), and the
 [Windows reconnect test](../tests/test_shared_desktop_mcp.py).

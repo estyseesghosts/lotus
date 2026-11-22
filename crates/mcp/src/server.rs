@@ -29,8 +29,8 @@ use crate::tool_arguments::{
     AdvanceArgs, CaptureImageArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs,
     GdbOperation, InputArgs, InputPresetArgs, InputPresetOperation, InvestigationArgs,
     InvestigationOperation, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs,
-    ReleaseArtifactsArgs, SessionArgs, SettingsArgs, SettingsChangeArgs, SettingsOperation,
-    SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
+    ReleaseArtifactsArgs, RestoreInvestigationBreakpointArgs, SessionArgs, SettingsArgs,
+    SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -708,6 +708,28 @@ impl LotusServer {
             .await
             .map_err(io::Error::other)
             .and_then(|result| result),
+        )
+    }
+
+    #[tool(
+        description = "Restore one saved logical source breakpoint onto a paused session. Requires the saved investigation revision, current session identity and an approved ELF already verified against the guest. Its content and ELF hashes must match the saved definition. Requires host control and the debugger lease."
+    )]
+    pub async fn lotus_investigation_restore_breakpoint(
+        &self,
+        Parameters(args): Parameters<RestoreInvestigationBreakpointArgs>,
+    ) -> CallToolResult {
+        let Some(host) = self.host.as_ref() else {
+            return tool_result(Err(unconfigured_host()));
+        };
+        tool_result(
+            host.restore_investigation_breakpoint(
+                args.id,
+                args.expected_revision,
+                args.index,
+                &args.target,
+                Actor::Mcp,
+            )
+            .await,
         )
     }
 

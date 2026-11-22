@@ -139,6 +139,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `lotus_input` | [desktop input](../crates/desktop/src/input_routing.rs) | control | - | Device input through the desktop router | [Input](../crates/desktop/tests/input_routing.rs) |
 | `lotus_input_presets` | [settings window](../crates/desktop/src/settings_window.rs) | read or control by operation | - | The Controls preset choice lists builtin and saved presets. Import, export, duplicate, rename and delete are MCP and ctr-cli only. | [Settings](../crates/desktop/src/settings_window/shared.rs) |
 | `lotus_investigation` | unavailable | read or control by operation | - | The host stores investigations; a desktop editor is pending. | [Investigations](../crates/desktop/../../tests/test_shared_desktop_mcp.py) |
+| `lotus_investigation_restore_breakpoint` | unavailable | control | - | Restore requires a verified ELF and content and a paused target. Desktop action pending. | [Investigations](../crates/desktop/../../tests/test_shared_desktop_mcp.py) |
 | `lotus_list_cards` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Card sidebar | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_list_sessions` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Session sidebar | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_load` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Asset picker | [Session](../crates/desktop/tests/native_inspector.rs) |

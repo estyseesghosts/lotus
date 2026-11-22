@@ -6,6 +6,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import ctypes.wintypes as wt
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,6 +20,43 @@ def investigation(client, op, *, expected_error=False, **fields):
     return client.tool("lotus_investigation", {"operation": {"op": op, **fields}}, expected_error)
 
 
+def check_saved_breakpoint(client, record, target):
+    def debug(operation, **fields):
+        return client.tool("lotus_debug", {
+            "session": target["session"], "command": {"operation": operation, **fields},
+        })
+
+    request = {"id": record["id"], "expected_revision": record["revision"],
+               "index": 0, "target": target}
+    tool = "lotus_investigation_restore_breakpoint"
+    client.tool(tool, request, expected_error=True)  # No verified ELF yet.
+    assert debug("source_breakpoints")["source_breakpoints"] == []
+    debug("load_symbols", asset="alternate")
+    refused = client.tool(tool, request, expected_error=True)
+    assert "hash differs" in refused
+    assert debug("source_breakpoints")["source_breakpoints"] == []
+
+    debug("load_symbols", asset="elf")
+    stale = dict(request, target=dict(target, epoch=target["epoch"] + 1))
+    refused = client.tool(tool, stale, expected_error=True)
+    assert "session or guest changed" in refused
+    restored = client.tool(tool, request)
+    assert restored["state"] == "armed"
+    assert restored["investigation_revision"] == record["revision"]
+    result = client.tool("lotus_run_until", {"session": target["session"], "frames": 1})
+    assert result["stop"]["reason"] == "breakpoint", result
+    assert result["stop"]["breakpoint"] in {site["breakpoint"] for site in restored["sites"]}
+
+    debug("load_symbols", asset="alternate")
+    pending, = debug("source_breakpoints")["source_breakpoints"]
+    assert pending["id"] == restored["id"]
+    assert pending["state"] == "pending" and "hash differs" in pending["reason"]
+    debug("load_symbols", asset="elf")
+    armed, = debug("source_breakpoints")["source_breakpoints"]
+    assert armed["id"] == restored["id"] and armed["state"] == "armed"
+    print("Verified breakpoint stops the owned guest and stays pending under another ELF.", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("desktop", type=Path)
@@ -27,14 +65,23 @@ def main():
     parser.add_argument("fixture", type=Path, nargs="?")
     parser.add_argument("--clients", type=int, choices=range(4, 65), default=8)
     parser.add_argument("--check-config-mismatch", action="store_true")
+    parser.add_argument("--check-breakpoint", action="store_true")
     args = parser.parse_args()
     desktop, worker, output = (path.resolve() for path in (args.desktop, args.worker, args.output))
     output.mkdir(parents=True, exist_ok=False)
     config = output / "host.json"
+    assets = {"owned": str(args.fixture.resolve())} if args.fixture else {}
+    if args.check_breakpoint:
+        if not args.fixture:
+            parser.error("--check-breakpoint needs the owned debugger fixture and its adjacent ELF")
+        elf = args.fixture.with_suffix(".elf").resolve()
+        alternate = output / "alternate.elf"
+        alternate.write_bytes(elf.read_bytes() + b"changed ELF identity")
+        assets.update(elf=str(elf), alternate=str(alternate))
     config.write_text(json.dumps({
         "worker": str(worker), "storage_root": str(output / "storage"),
         "allow_control": True, "prefer_vulkan": False,
-        "assets": {"owned": str(args.fixture.resolve())} if args.fixture else {},
+        "assets": assets,
     }), encoding="utf-8")
     os.environ["LOTUS_DESKTOP_PREFERENCES"] = str(output / "desktop.json")
     user32.PostMessageW.argtypes = [wt.HWND, wt.UINT, wt.WPARAM, wt.LPARAM]
@@ -105,6 +152,12 @@ def main():
             "sessions": [{"session": session, "created_unix_ms": live["created_unix_ms"],
                           "epoch": live["telemetry"]["epoch"]}],
         }
+        if args.check_breakpoint:
+            details["breakpoints"] = [{
+                "location": {"file": "fixtures/debugger/fixture.c", "line": 85},
+                "elf_sha256": hashlib.sha256(elf.read_bytes()).hexdigest(),
+                "content_sha256": hashlib.sha256(args.fixture.read_bytes()).hexdigest(),
+            }]
         record = investigation(clients[0], "create", details=details)
         other = investigation(clients[0], "create", details=dict(details, title="Parallel notes"))
         attached = investigation(clients[1], "attach", id=record["id"])
@@ -151,6 +204,8 @@ def main():
         if before is not None:
             after = clients[0].tool("lotus_run_until", {"session": session, "frames": 1})["frames"]
             assert after == before + 1
+        if args.check_breakpoint:
+            check_saved_breakpoint(clients[0], updated, details["sessions"][0])
         print(f"Close and all disconnects preserve session {session} and worker PID {worker_pid}", flush=True)
 
         quit_window(hwnd)

@@ -53,6 +53,8 @@ struct SourceBreakpoint {
     armed: Option<Armed>,
     /// Why the breakpoint is not armed.
     pending: Option<String>,
+    /// Restored investigations stay pinned to the recorded executable.
+    expected_hashes: Option<(String, String)>,
 }
 
 /// One session's source breakpoints.
@@ -171,7 +173,46 @@ pub(crate) async fn set(
     line: u32,
 ) -> io::Result<Value> {
     let image = bound(slot, native).await?;
-    let armed = arm(native, image_parts(&image), file, line).await?;
+    set_bound(registry, native, &image, file, line, None).await
+}
+
+pub(crate) async fn restore(
+    slot: &Mutex<SymbolSlot>,
+    registry: &Mutex<SourceBreakpoints>,
+    native: &mut NativeSession,
+    saved: &crate::investigation::SavedBreakpoint,
+) -> io::Result<Value> {
+    let image = bound(slot, native).await?;
+    if !image.matches_hashes(&saved.content_sha256, &saved.elf_sha256) {
+        return Err(investigation_image_mismatch());
+    }
+    set_bound(
+        registry,
+        native,
+        &image,
+        &saved.location.file,
+        saved.location.line,
+        Some((saved.content_sha256.clone(), saved.elf_sha256.clone())),
+    )
+    .await
+}
+
+fn investigation_image_mismatch() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "bound content or ELF hash differs from the saved investigation breakpoint",
+    )
+}
+
+async fn set_bound(
+    registry: &Mutex<SourceBreakpoints>,
+    native: &mut NativeSession,
+    image: &DebugImage,
+    file: &str,
+    line: u32,
+    expected_hashes: Option<(String, String)>,
+) -> io::Result<Value> {
+    let armed = arm(native, image_parts(image), file, line).await?;
     let mut registry = lock(registry);
     registry.next += 1;
     let id = registry.next;
@@ -180,6 +221,7 @@ pub(crate) async fn set(
         line,
         armed: Some(armed),
         pending: None,
+        expected_hashes,
     };
     let mut reply = entry.describe(id);
     reply["image"] = image.describe();
@@ -249,17 +291,25 @@ pub(crate) async fn rearm(
     let ids: Vec<u64> = lock(registry).entries.keys().copied().collect();
     let mut results = Vec::new();
     for id in ids {
-        let Some((file, line, previous)) = lock(registry)
-            .entries
-            .get_mut(&id)
-            .map(|entry| (entry.file.clone(), entry.line, entry.armed.take()))
+        let Some((file, line, previous, matching_image)) =
+            lock(registry).entries.get_mut(&id).map(|entry| {
+                let matching = entry
+                    .expected_hashes
+                    .as_ref()
+                    .is_none_or(|(content, elf)| image.matches_hashes(content, elf));
+                (entry.file.clone(), entry.line, entry.armed.take(), matching)
+            })
         else {
             continue;
         };
         if let Some(previous) = previous.filter(|p| p.epoch == native.epoch()) {
             disarm(native, &previous.sites).await;
         }
-        let armed = arm(native, image_parts(&image), &file, line).await;
+        let armed = if matching_image {
+            arm(native, image_parts(&image), &file, line).await
+        } else {
+            Err(investigation_image_mismatch())
+        };
         let mut registry = lock(registry);
         let Some(entry) = registry.entries.get_mut(&id) else {
             continue;

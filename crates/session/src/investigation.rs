@@ -79,6 +79,21 @@ pub struct Investigation {
     pub details: InvestigationDetails,
 }
 
+impl Investigation {
+    pub(crate) fn check_revision(&self, expected: u64) -> io::Result<()> {
+        if self.revision == expected {
+            return Ok(());
+        }
+        Err(io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!(
+                "investigation revision mismatch: current revision {}",
+                self.revision
+            ),
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceState {
@@ -236,15 +251,7 @@ impl InvestigationStore {
         validate(&details)?;
         self.with_catalog(|mut catalog| {
             let record = catalog.records.get_mut(id).ok_or_else(not_found)?;
-            if record.revision != revision {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    format!(
-                        "investigation revision mismatch: current revision {}",
-                        record.revision
-                    ),
-                ));
-            }
+            record.check_revision(revision)?;
             record.revision = record
                 .revision
                 .checked_add(1)

@@ -113,6 +113,10 @@ impl DebugImage {
         self.generation
     }
 
+    pub(crate) fn matches_hashes(&self, content: &str, elf: &str) -> bool {
+        self.content["sha256"].as_str() == Some(content) && self.elf_sha256 == elf
+    }
+
     /// Why this binding no longer describes the guest, if it doesn't.
     pub(crate) fn stale(&self, epoch: u64, regions: &Value) -> Option<String> {
         if epoch != self.epoch {

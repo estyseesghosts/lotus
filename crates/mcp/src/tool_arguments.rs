@@ -1,4 +1,4 @@
-use lotus_session::investigation::InvestigationDetails;
+use lotus_session::investigation::{InvestigationDetails, SessionReference};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -6,6 +6,16 @@ use serde::{Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct InvestigationArgs {
     pub operation: InvestigationOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreInvestigationBreakpointArgs {
+    pub id: String,
+    pub expected_revision: u64,
+    /// Zero-based position in the saved record's breakpoints.
+    pub index: usize,
+    pub target: SessionReference,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

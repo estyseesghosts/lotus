@@ -660,6 +660,61 @@ impl Supervisor {
         self.investigations.update(id, expected_revision, details)
     }
 
+    /// Restore one definition after checking the saved revision, live target,
+    /// debugger lease and verified executable. The guest must already be paused.
+    pub async fn restore_investigation_breakpoint(
+        self: &Arc<Self>,
+        id: String,
+        expected_revision: u64,
+        index: usize,
+        target: &crate::investigation::SessionReference,
+        actor: Actor,
+    ) -> io::Result<serde_json::Value> {
+        self.require_control()?;
+        let host = self.clone();
+        let record = tokio::task::spawn_blocking(move || host.investigations.get(&id))
+            .await
+            .map_err(io::Error::other)??;
+        record.check_revision(expected_revision)?;
+        let breakpoint = record.details.breakpoints.get(index).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "unknown investigation breakpoint index",
+            )
+        })?;
+        let handle = self.handle(&target.session)?;
+        let mut native = handle.native.lock().await;
+        check_debug_target(
+            Some((target.created_unix_ms, target.epoch)),
+            handle.info().created_unix_ms,
+            native.epoch(),
+        )?;
+        if self.is_closing() || handle.is_closed() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "debug session is stopping",
+            ));
+        }
+        check_lease(&handle, actor_client(actor))?;
+        if native.state() != SessionState::Paused || handle.is_playing() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "pause the guest before restoring an investigation breakpoint",
+            ));
+        }
+        let mut restored = crate::source_debug::restore(
+            &handle.symbols,
+            &handle.source_breakpoints,
+            &mut native,
+            breakpoint,
+        )
+        .await?;
+        restored["investigation"] = record.id.into();
+        restored["investigation_revision"] = record.revision.into();
+        handle.record(actor, "restore_investigation_breakpoint");
+        Ok(restored)
+    }
+
     /// Check a debugger target against the latest published worker state without
     /// waiting for its IPC lock. Scoped dispatch also checks the live epoch.
     pub fn debug_target_current(&self, id: &str, expected: (u64, u64)) -> bool {
