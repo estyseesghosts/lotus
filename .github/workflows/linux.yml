@@ -55,6 +55,7 @@ jobs:
       - name: Desktop unit and interaction tests
         # GPUI only records debug selectors with debug assertions enabled.
         run: |
+          cargo build --locked -p lotus-session --bin lotus-mock-native
           cargo test --locked -p lotus-desktop --lib --bins
           cargo test --locked -p lotus-desktop --doc
 
