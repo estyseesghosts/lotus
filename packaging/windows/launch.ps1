@@ -5,11 +5,12 @@
    resolves against the lotus.json that names it. -SetDataDir writes the
    %APPDATA% file, so the choice survives extracting a new release.
    Desktop: the window; open content from its sidebar or pass/drop a .3dsx.
-   MCP: headless MCP on stdio. WindowedMCP: the window, also serving MCP on stdio. #>
+   MCP: isolated headless MCP on stdio. WindowedMCP: stdio bridge to a shared
+   window. SharedDesktop: open that same persistent host from the desktop. #>
 [CmdletBinding()]
 param(
     [ValidateSet('CITnLO', 'AZAHAR')][string]$Backend = 'CITnLO',
-    [ValidateSet('Desktop', 'MCP', 'WindowedMCP')][string]$Mode = 'Desktop',
+    [ValidateSet('Desktop', 'MCP', 'WindowedMCP', 'SharedDesktop')][string]$Mode = 'Desktop',
     [Parameter(Position = 0)][string]$Fixture,
     [string]$DataDir,
     [string]$SetDataDir,
@@ -66,6 +67,7 @@ if ($ConfigureOnly) { return }
 switch ($Mode) {
     'MCP' { & (Join-Path $PSScriptRoot 'bin/lotus-mcp.exe') $config }
     'WindowedMCP' { & (Join-Path $PSScriptRoot 'bin/lotus-desktop.exe') --mcp $config }
+    'SharedDesktop' { & (Join-Path $PSScriptRoot 'bin/lotus-desktop.exe') --mcp-host $config }
     default { & (Join-Path $PSScriptRoot 'bin/lotus-desktop.exe') $config }
 }
 exit $LASTEXITCODE

@@ -150,6 +150,8 @@ impl From<&SessionTarget> for lotus_gdb::Target {
 pub enum McpMode {
     Off,
     Stdio,
+    #[cfg(windows)]
+    Shared,
 }
 
 /// MCP link as shown in the window.
@@ -159,6 +161,8 @@ pub enum McpLink {
     Off,
     Attached,
     Closed,
+    #[cfg(windows)]
+    Shared,
 }
 
 /// Newest screens of one session; `sequence` changes with every capture.
@@ -405,6 +409,16 @@ struct InspectorKeys {
 
 impl DesktopController {
     pub fn start(config: HostConfig, mcp: McpMode) -> io::Result<Self> {
+        let runtime = tokio::runtime::Runtime::new()?;
+        #[cfg(windows)]
+        let local = if mcp == McpMode::Shared {
+            let endpoint = crate::local_mcp::Endpoint::for_config(&config)?;
+            let _runtime = runtime.enter();
+            let listener = endpoint.listen(true)?;
+            Some((endpoint, listener))
+        } else {
+            None
+        };
         let host = Arc::new(Supervisor::new(config)?);
         // A desktop host has a window; previews follow what its workspace shows. The window
         // replaces these defaults with the saved ones.
@@ -423,7 +437,6 @@ impl DesktopController {
         let presence = Arc::new(Presence::start());
         let ui = Arc::new(UiMetrics::default());
         let preview_visible = Arc::new(AtomicBool::new(true));
-        let runtime = tokio::runtime::Runtime::new()?;
         let routing = InputRouting::new(host.clone());
         let controllers = Controllers::start(routing.clone(), shutdown.clone());
         let gdb = Arc::new(lotus_gdb::Manager::with_runtime(
@@ -456,7 +469,12 @@ impl DesktopController {
         let thread = std::thread::Builder::new()
             .name("lotus-supervisor".into())
             .spawn(move || {
-                runtime.block_on(context.run(receiver, mcp));
+                runtime.block_on(context.run(
+                    receiver,
+                    mcp,
+                    #[cfg(windows)]
+                    local,
+                ));
             })?;
         Ok(Self {
             routing,
@@ -549,10 +567,31 @@ struct Loops {
 impl Loops {
     /// Publishes state every tick without awaiting any worker. Preview, inspector polling
     /// and audio focus run as their own tasks; a slow worker delays only its own results.
-    async fn run(self, receiver: mpsc::Receiver<Command>, mcp: McpMode) {
+    async fn run(
+        self,
+        receiver: mpsc::Receiver<Command>,
+        mcp: McpMode,
+        #[cfg(windows)] local: Option<(
+            crate::local_mcp::Endpoint,
+            tokio::net::windows::named_pipe::NamedPipeServer,
+        )>,
+    ) {
         let mut background = Vec::new();
         if mcp == McpMode::Stdio {
             background.push(tokio::spawn(self.clone().serve_mcp()));
+        }
+        #[cfg(windows)]
+        if let Some((endpoint, listener)) = local {
+            lock(&self.published).mcp = McpLink::Shared;
+            let server = windowed_mcp(self.gdb.clone());
+            let published = self.published.clone();
+            background.push(tokio::spawn(async move {
+                if let Err(error) = endpoint.serve(listener, server).await {
+                    let mut update = lock(&published);
+                    update.error = format!("Local MCP: {error}");
+                    update.mcp = McpLink::Closed;
+                }
+            }));
         }
         background.push(tokio::spawn(self.clone().preview_loop()));
         background.push(tokio::spawn(self.clone().inspector_loop()));

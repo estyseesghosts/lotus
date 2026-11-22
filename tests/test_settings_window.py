@@ -1,10 +1,10 @@
 """lotus#53 Settings window check for the Windows desktop.
 
-Runs `lotus-desktop --mcp`, then with real key events: Ctrl+, three times must leave exactly
+Runs `lotus-desktop --mcp-stdio`, then with real key events: Ctrl+, three times must leave exactly
 one visible "LOTUS Settings" window; Esc closes it; Ctrl+, opens it again; closing the main
 window (WM_CLOSE) must close Settings with it. Each close saves the Settings bounds to
 desktop.json (here <output dir>/desktop.json, via LOTUS_DESKTOP_PREFERENCES), and reopening
-at saved bounds must not move the window. The process is killed afterwards: with `--mcp`
+at saved bounds must not move the window. The process is killed afterwards: with `--mcp-stdio`
 it keeps running after its window closes, with or without Settings.
 
 Moves real focus on this desktop for a few seconds.
@@ -37,7 +37,7 @@ def main():
     preferences = output / "desktop.json"
     os.environ["LOTUS_DESKTOP_PREFERENCES"] = str(preferences)
     popen = subprocess.Popen
-    subprocess.Popen = lambda args, **kw: popen([args[0], "--mcp", *args[1:]], **kw)
+    subprocess.Popen = lambda args, **kw: popen([args[0], "--mcp-stdio", *args[1:]], **kw)
     try:
         client = mcp_client.Client(desktop, config, output / "transcript.jsonl")
     finally:

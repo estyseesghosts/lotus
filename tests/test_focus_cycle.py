@@ -1,6 +1,6 @@
 """lotus#74 focus-cycle check for the Windows desktop.
 
-Runs `lotus-desktop --mcp` with one running session, then moves window focus the way a
+Runs `lotus-desktop --mcp-stdio` with one running session, then moves window focus the way a
 person does: Alt+Tab away and back (real key events), a click on the title bar,
 minimize/restore and rapid Alt+Tab cycles. It then uses Windows UI Automation
 to locate and click the Inspector toolbar button with accessibility active.
@@ -63,7 +63,7 @@ def main():
                                   "allow_control": True, "max_sessions": 2,
                                   "assets": {"content": str(args.content.resolve())}}))
     client = mcp_client.Client(args.desktop.resolve(), config, output / "transcript.jsonl",
-                               arguments=["--mcp", *theme], stderr_path=output / "desktop.stderr")
+                               arguments=["--mcp-stdio", *theme], stderr_path=output / "desktop.stderr")
     try:
         run(client, output, args.worker.stem == "lotus-mock-native", args.inspector_only)
     finally:

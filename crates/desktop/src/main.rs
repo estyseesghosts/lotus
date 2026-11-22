@@ -1,9 +1,7 @@
 //! Windowed LOTUS.
 //!
-//! `lotus-desktop [--mcp] [host.json]`. With `--mcp` the window also serves the
-//! full MCP toolset on stdio over the same sessions, so an agent can launch
-//! LOTUS as its MCP server while a person watches and uses the same window.
-//! stdout then carries only MCP frames.
+//! On Windows `--mcp` bridges stdio to a shared desktop. `--mcp-host`
+//! opens that desktop directly, and `--mcp-stdio` serves one client.
 use gpui::{App, AppContext, Bounds};
 #[cfg(not(feature = "silvestris-ui"))]
 use gpui::{TitlebarOptions, WindowBounds, WindowOptions};
@@ -11,10 +9,15 @@ use lotus_desktop::desktop_controller::McpMode;
 use lotus_desktop::lotus_window::LotusWindow;
 use lotus_session::supervisor::{parse_asset_dir, HostConfig};
 
-const USAGE: &str = "usage: lotus-desktop [--mcp] [host.json] [--asset-dir handle=path ...] [--theme aqua-light|aqua-dark|geist-light|geist-dark (silvestris-ui)]";
+const USAGE: &str = "usage: lotus-desktop [--mcp | --mcp-host (Windows) | --mcp-stdio] [host.json] [--asset-dir handle=path ...] [--theme aqua-light|aqua-dark|geist-light|geist-dark (silvestris-ui)]";
+
+#[cfg(windows)]
+gpui::actions!(lotus, [QuitSharedHost]);
 
 fn main() {
     let mut mcp = McpMode::Off;
+    #[cfg(windows)]
+    let mut bridge = false;
     let mut config_path = None;
     let mut asset_dirs = Vec::new();
     #[cfg(feature = "silvestris-ui")]
@@ -49,8 +52,26 @@ fn main() {
                     std::process::exit(2);
                 }
             }
-        } else if argument == "--mcp" {
+        } else if argument == "--mcp-stdio" {
+            require_first_mcp_mode(mcp);
             mcp = McpMode::Stdio;
+        } else if argument == "--mcp" {
+            require_first_mcp_mode(mcp);
+            #[cfg(windows)]
+            {
+                bridge = true;
+                mcp = McpMode::Shared;
+            }
+            #[cfg(not(windows))]
+            {
+                mcp = McpMode::Stdio;
+            }
+        } else if cfg!(windows) && argument == "--mcp-host" {
+            #[cfg(windows)]
+            {
+                require_first_mcp_mode(mcp);
+                mcp = McpMode::Shared;
+            }
         } else if argument == "--help" || argument == "-h" {
             eprintln!("{USAGE}");
             return;
@@ -80,7 +101,49 @@ fn main() {
         eprintln!("--asset-dir needs a host.json\n{USAGE}");
         std::process::exit(2);
     }
+    #[cfg(windows)]
+    let _host_lock = if mcp == McpMode::Shared || bridge {
+        let Some(config) = config.as_ref() else {
+            eprintln!("shared MCP needs a host.json");
+            std::process::exit(2);
+        };
+        let endpoint = lotus_desktop::local_mcp::Endpoint::for_config(config)
+            .unwrap_or_else(shared_mcp_error);
+        if bridge {
+            let arguments: Vec<_> = std::env::args_os()
+                .skip(1)
+                .map(|argument| {
+                    if argument == "--mcp" {
+                        "--mcp-host".into()
+                    } else {
+                        argument
+                    }
+                })
+                .collect();
+            let executable =
+                std::env::current_exe().unwrap_or_else(shared_mcp_error);
+            endpoint
+                .bridge(&executable, &arguments)
+                .unwrap_or_else(shared_mcp_error);
+            return;
+        }
+        let Some(lock) = endpoint
+            .claim_host()
+            .unwrap_or_else(shared_mcp_error)
+        else {
+            eprintln!("LOTUS already has a shared desktop for this storage root. Open it from the taskbar.");
+            return;
+        };
+        Some(lock)
+    } else {
+        None
+    };
     gpui_platform::application().run(move |cx: &mut App| {
+        #[cfg(windows)]
+        if mcp == McpMode::Shared {
+            cx.bind_keys([gpui::KeyBinding::new("ctrl-shift-q", QuitSharedHost, None)]);
+            cx.on_action(|_: &QuitSharedHost, cx| cx.quit());
+        }
         #[cfg(feature = "silvestris-ui")]
         if let Err(error) = lotus_desktop::ui_framework::initialize(initial_theme, cx) {
             eprintln!("cannot initialize Silvestris: {error}");
@@ -125,6 +188,19 @@ fn main() {
         let _ = handle.update(cx, |_, window, _| ensure_visible(window));
         cx.activate(true);
     });
+}
+
+fn require_first_mcp_mode(mode: McpMode) {
+    if mode != McpMode::Off {
+        eprintln!("Choose one MCP mode.\n{USAGE}");
+        std::process::exit(2);
+    }
+}
+
+#[cfg(windows)]
+fn shared_mcp_error<T>(error: std::io::Error) -> T {
+    eprintln!("LOTUS shared MCP: {error}");
+    std::process::exit(1);
 }
 
 /// Show the window if the launching process hid it.

@@ -324,10 +324,15 @@ impl LotusWindow {
         // The Settings window belongs to this one; it never outlives it (lotus#53).
         #[cfg(feature = "silvestris-ui")]
         let close_owner = cx.weak_entity();
-        window.on_window_should_close(cx, move |_, cx| {
+        window.on_window_should_close(cx, move |_window, cx| {
             #[cfg(feature = "silvestris-ui")]
             let _ = close_owner.read_with(cx, |view, _| view.preferences.save());
             crate::settings_window::close(cx);
+            #[cfg(windows)]
+            if mcp == McpMode::Shared {
+                _window.minimize_window();
+                return false;
+            }
             true
         });
         cx.on_blur(&focus, window, |view, _, _| view.release_input())
@@ -2377,6 +2382,8 @@ impl LotusWindow {
         let theme = theme::palette(cx);
         let (colour, text) = match self.mcp {
             McpLink::Attached => (theme.success, "MCP attached"),
+            #[cfg(windows)]
+            McpLink::Shared => (theme.success, "Shared MCP ready"),
             McpLink::Closed => (theme.warning, "MCP disconnected"),
             McpLink::Off => (theme.border_strong, "MCP off"),
         };
@@ -6126,9 +6133,11 @@ pub(crate) fn hex_string(value: &Value) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
-/// MCP is stdio-only and enabled per process (`main.rs` `--mcp`), so this is status, not a setting.
+/// MCP transport is chosen when the desktop starts.
 pub(crate) fn mcp_line(link: McpLink) -> &'static str {
     match link {
+        #[cfg(windows)]
+        McpLink::Shared => "Local MCP clients share this window and its workers. Close minimizes to the taskbar. Use Quit Lotus or press Ctrl+Shift+Q to stop the host.",
         McpLink::Attached => "MCP is serving this window over stdio; a client is attached.",
         McpLink::Closed => {
             "MCP stopped: the stdio client disconnected or the transport failed. Restart Lotus to serve it again."

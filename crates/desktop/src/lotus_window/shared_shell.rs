@@ -122,6 +122,8 @@ impl LotusWindow {
         let theme = theme::palette(cx);
         let mcp = match self.mcp {
             McpLink::Attached => "MCP attached",
+            #[cfg(windows)]
+            McpLink::Shared => "Shared MCP ready",
             McpLink::Closed => "MCP disconnected",
             McpLink::Off => "MCP off",
         };

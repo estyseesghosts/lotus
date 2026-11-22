@@ -29,7 +29,7 @@ def main():
     desktop, config, asset = str(args.desktop.resolve()), str(args.config.resolve()), args.asset
     storage = pathlib.Path(json.loads(pathlib.Path(config).read_text(encoding="utf-8"))["storage_root"])
     messages = queue.Queue()
-    with subprocess.Popen([desktop, "--mcp", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    with subprocess.Popen([desktop, "--mcp-stdio", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.DEVNULL, text=True, encoding="utf-8") as process:
         def screenshot(name):
             if args.screenshots is None:

@@ -220,6 +220,7 @@ impl LotusServer {
         serde_json::json!({
             "protocol_version": lotus_protocol::protocol_id(),
             "frontend": self.frontend.name(),
+            "frontend_pid": std::process::id(),
             "control": host.is_some_and(Supervisor::allows_control),
             "sessions": host.map(Supervisor::summaries).unwrap_or_default(),
             "cards": host.and_then(|host| host.cards().ok()).unwrap_or_default(),

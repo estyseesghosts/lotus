@@ -80,6 +80,15 @@ Never silently fall back from `step_cpu_instruction` to `step_frame`. Return `UN
 
 Local MCP stdio is a good initial transport. Refuse broad remote-listen defaults. Require per-session grants for writes, launch, attaching to user-provided firmware and reading captures. Validate every path under a managed run root and never let model-generated commands pass directly to shell execution. Allow explicit user approval for destructive file/restore operations.
 
+On Windows, `lotus-desktop --mcp host.json` bridges stdio to the desktop host's
+named pipe. A logon-SID access list and remote-client rejection restrict it to
+the current interactive Windows logon. A storage-root lock admits one shared
+desktop, and the endpoint identity includes the requested host configuration
+so a bridge cannot inherit different asset or control permissions. Each
+connection has a separate MCP message stream over the same supervisor.
+`lotus_status.frontend_pid` identifies that process. `lotus-mcp` keeps its
+isolated stdio lifecycle.
+
 ## API versioning and tests
 
 Include tool compatibility matrix (`MCP tool version -> protocol -> worker capability`). Generate tool schemas from shared Rust types. Contract tests must run the *same* command through CLI and MCP and compare normalized result. Add fuzz tests for invalid addresses, malformed tool payloads, huge lists and expired artifact handles.

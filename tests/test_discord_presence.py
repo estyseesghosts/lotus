@@ -119,7 +119,7 @@ class FakeDiscord:
 class Desktop:
     def __init__(self, exe, config, prefs):
         env = dict(os.environ, LOTUS_DESKTOP_PREFERENCES=str(prefs))
-        self.process = subprocess.Popen([exe, "--mcp", str(config)], stdin=subprocess.PIPE,
+        self.process = subprocess.Popen([exe, "--mcp-stdio", str(config)], stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                                         text=True, encoding="utf-8", env=env)
         self.messages = queue.Queue()

@@ -1,9 +1,9 @@
 # Local MCP adapter
 
-`lotus-mcp [host-config.json]` serves stdio only (headless). `lotus-desktop
---mcp host-config.json` serves the same tools from the window over the same
-sessions; session kinds, cards and the full tool list are in
-[30](30-sessions-and-interface.md). Without configuration it can
+`lotus-mcp [host-config.json]` serves stdio in an isolated headless host.
+On Windows, `lotus-desktop --mcp host-config.json` connects stdio to one
+desktop and its existing sessions. Session kinds, cards and the full tool
+list are in [30](30-sessions-and-interface.md). An unconfigured headless server can
 report status but cannot spawn workers or read files. Host configuration fixes
 the executable, root, approved asset handles and control permission:
 
@@ -40,6 +40,15 @@ discarded. Primary manifests record `lifecycle: closed|crashed` and clear the
 PID after verified termination. The reusable `worker.lock` file is an OS-lock
 sentinel: its existence never means a worker is alive. Shutdown reports the
 number of closed sessions, and each one that did not stop cleanly, on stderr.
+
+The Windows bridge starts the desktop if needed. The desktop holds a storage
+root lock and accepts up to 64 connections through a named pipe scoped to the
+current Windows logon and host configuration. Closing the shared window
+minimizes it to the taskbar. **Quit Lotus** ends sessions and disconnects the
+bridges. The Windows test ran 50 simultaneous connections on CITnLO and
+checked the host and worker PIDs before and after close and reconnect.
+See [transport](../crates/desktop/src/local_mcp.rs) and
+[acceptance](../tests/test_shared_desktop_mcp.py).
 
 `shader_seed` (default false) seeds new worker roots' shader caches from the
 last clean stop of the same worker binary ([30](30-sessions-and-interface.md#startup-cost-30)).

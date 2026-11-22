@@ -56,7 +56,7 @@ Pass options to either `.cmd`, e.g. `LOTUS.cmd -Mode WindowedMCP game.3dsx`.
 | Option | Values | Effect |
 | --- | --- | --- |
 | `-Backend` | `CITnLO` (default), `AZAHAR` | which worker; the `.cmd` files set it |
-| `-Mode` | `Desktop` (default), `MCP`, `WindowedMCP` | window; headless MCP on stdio; window that also serves MCP on stdio |
+| `-Mode` | `Desktop` (default), `MCP`, `WindowedMCP`, `SharedDesktop` | standalone window, headless MCP, MCP bridge to the shared window, or shared window started directly |
 | first argument | path to a `.3dsx` | approves it as asset `homebrew` |
 | `-DataDir` | path | use this data directory for this start only |
 | `-SetDataDir` | path | save this data directory in `%APPDATA%\LOTUS\lotus.json` and exit |
@@ -380,7 +380,7 @@ bin\ctr-cli.exe settings set data\citnlo\host.json card:main lotus.debug.gpu.cap
 
 | Program | Usage |
 | --- | --- |
-| `lotus-desktop` | `lotus-desktop [--mcp] [host.json] [--asset-dir handle=path ...]` |
+| `lotus-desktop` | `lotus-desktop [--mcp \| --mcp-host \| --mcp-stdio] [host.json] [--asset-dir handle=path ...]` |
 | `lotus-mcp` | `lotus-mcp [host.json] [--asset-dir handle=path ...]` |
 | `ctr-cli` | `ctr-cli help` (section 6) |
 
@@ -391,13 +391,23 @@ and session IDs expire.
 
 ## 6. MCP (for agents)
 
-LOTUS serves the Model Context Protocol over **stdio only**: no network port.
-Two ways to run it:
+MCP clients connect over stdio. Lotus opens no network port.
 
 - **Headless**: `lotus-mcp host.json`, or `launch.ps1 -Mode MCP`.
-- **Windowed**: `lotus-desktop --mcp host.json`, or `launch.ps1 -Mode
-  WindowedMCP`. The agent and you drive the same sessions; you watch and can
-  take over. `lotus_status` reports `frontend: windowed`.
+- **Shared Windows desktop**. Use `lotus-desktop --mcp host.json` or
+  `launch.ps1 -Mode WindowedMCP` in each client. The first bridge starts the
+  window. Later bridges connect to it without opening another window or
+  bringing it forward. Use the same host configuration and storage root in
+  all clients. To start it yourself, use `lotus-desktop --mcp-host host.json`
+  or `launch.ps1 -Mode SharedDesktop`.
+- **Single-client window**. Use `lotus-desktop --mcp-stdio host.json` for a
+  dedicated window and stdio connection.
+
+In a shared window, Close minimizes Lotus to the taskbar. Closing an MCP
+client leaves the window and workers running. Restore it from the taskbar
+and choose **Quit Lotus** or press **Ctrl+Shift+Q** to stop the workers. Session handles
+expire on Quit. `lotus_status` reports `frontend: windowed` and
+`frontend_pid`, which is the desktop process shared by the clients.
 
 Client configuration (Claude Code, Claude Desktop and similar clients use this
 shape; adjust paths):

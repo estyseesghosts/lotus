@@ -29,3 +29,5 @@ pub mod ui_metrics;
 
 #[cfg(feature = "silvestris-ui")]
 pub mod navigation;
+#[cfg(windows)]
+pub mod local_mcp;

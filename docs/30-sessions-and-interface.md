@@ -1076,9 +1076,8 @@ popover.
   Tracing → Source) are read-only rows from `host.json`, shown as paths and
   `handle = path` lists. The launcher rewrites `host.json` on start, so they
   are changed there or with `--asset-dir`, never in Settings.
-- **MCP.** MCP is stdio-only and enabled per process with `--mcp`, so the MCP
-  & Automation group shows its state (`McpLink`: off, attached, stopped) as a
-  note, not a toggle.
+- **MCP.** The MCP & Automation group shows whether the transport is off,
+  attached to a single stdio client, shared, or disconnected.
 - **Host budgets.** `lotus.host.policy.rewind_sessions`,
   `rewind_memory_mib`, `gpu_capture_sessions` and `snapshot_slots` are
   optional. Unset, the field is empty but the supervisor still enforces the
@@ -1269,7 +1268,7 @@ Replaced frames are dropped from GPUI's sprite atlas immediately
   controller's supervisor lists both, advances the secondary and moves the
   window's selection; crash isolation; crashed secondary discarded with logs
   kept; primary card persists after stop.
-- `tests/test_windowed_mcp.py`: an MCP client launches `lotus-desktop --mcp`
+- `tests/test_windowed_mcp.py`: an MCP client launches `lotus-desktop --mcp-stdio`
   and requires each tile's worker-sequence and gauge frame count to advance.
   It verifies horizontal, vertical and auto orientations, swap, stale CAS
   refusal, stable PIDs after untile, and redisplay of a paused worker after

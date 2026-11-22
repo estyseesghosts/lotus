@@ -49,6 +49,7 @@ pub(super) enum GlobalCommand {
     Sidebar,
     Inspector,
     Settings,
+    Quit,
     Open,
     OpenTrace,
     DebuggerCommands,
@@ -62,10 +63,11 @@ pub(super) enum GlobalCommand {
     Screens(ScreenLayout),
 }
 impl GlobalCommand {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 18] = [
         Self::Sidebar,
         Self::Inspector,
         Self::Settings,
+        Self::Quit,
         Self::Open,
         Self::OpenTrace,
         Self::DebuggerCommands,
@@ -86,6 +88,7 @@ impl GlobalCommand {
             Self::Sidebar => "view.sidebar",
             Self::Inspector => "view.inspector",
             Self::Settings => "app.settings",
+            Self::Quit => "app.quit",
             Self::Open => "file.open",
             Self::OpenTrace => "debug.trace.open",
             Self::DebuggerCommands => "debug.commands",
@@ -119,6 +122,7 @@ impl GlobalCommand {
             Self::Settings => CommandDescriptor::action(self.id(), "Settings")
                 .needs_input()
                 .shortcut("secondary-,"),
+            Self::Quit => CommandDescriptor::action(self.id(), "Quit Lotus"),
             Self::Open => CommandDescriptor::action(self.id(), "Open")
                 .needs_input()
                 .shortcut("secondary-o")
@@ -414,6 +418,7 @@ impl LotusWindow {
             GlobalCommand::Settings => {
                 self.open_settings(crate::settings_window::Target::Global, cx)
             }
+            GlobalCommand::Quit => cx.quit(),
             GlobalCommand::Open => {
                 let session = self
                     .selected_summary()
@@ -837,7 +842,7 @@ impl LotusWindow {
         vec![
             MenuModel {
                 label: "Lotus".into(),
-                entries: vec![global(GlobalCommand::Settings)],
+                entries: vec![global(GlobalCommand::Settings), global(GlobalCommand::Quit)],
             },
             MenuModel {
                 label: "File".into(),
