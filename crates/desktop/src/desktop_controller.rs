@@ -75,6 +75,12 @@ pub enum Command {
         command: DebugCommand,
         generation: u64,
     },
+    KernelAt {
+        target: SessionTarget,
+        process: u32,
+        thread: u32,
+        command: DebugCommand,
+    },
     CompareGpuDraws {
         a: DrawArtifact,
         b: DrawArtifact,
@@ -198,6 +204,7 @@ pub enum DebugAction {
     Native(DebugCommand),
     PatchMemory(DebugCommand, Vec<u8>),
     ScanAt(DebugCommand, u64),
+    KernelAt(DebugCommand, u32, u32),
     CompareGpuDraws { a: DrawArtifact, b: DrawArtifact },
     PreviewGpuTexture { draw: DrawArtifact, resource: usize },
 }
@@ -207,7 +214,8 @@ impl DebugRequest {
         match &*self.action {
             DebugAction::Native(command)
             | DebugAction::PatchMemory(command, _)
-            | DebugAction::ScanAt(command, _) => Some(command),
+            | DebugAction::ScanAt(command, _)
+            | DebugAction::KernelAt(command, _, _) => Some(command),
             _ => None,
         }
     }
@@ -1266,6 +1274,20 @@ impl Loops {
                 );
                 continue;
             }
+            if let Command::KernelAt {
+                target,
+                process,
+                thread,
+                command,
+            } = command
+            {
+                self.start_debug(
+                    target,
+                    Panel::Threads,
+                    DebugAction::KernelAt(command, process, thread),
+                );
+                continue;
+            }
             if let Command::CompareGpuDraws { a, b } = command {
                 self.start_debug(
                     b.target.clone(),
@@ -1356,7 +1378,8 @@ impl Loops {
         let (operation, requires_control) = match &action {
             DebugAction::Native(command)
             | DebugAction::PatchMemory(command, _)
-            | DebugAction::ScanAt(command, _) => (
+            | DebugAction::ScanAt(command, _)
+            | DebugAction::KernelAt(command, _, _) => (
                 serde_json::to_value(command)
                     .ok()
                     .and_then(|value| value["operation"].as_str().map(str::to_owned))
@@ -1486,7 +1509,8 @@ impl Loops {
         let reply = match &*action {
             DebugAction::Native(command)
             | DebugAction::PatchMemory(command, _)
-            | DebugAction::ScanAt(command, _) => {
+            | DebugAction::ScanAt(command, _)
+            | DebugAction::KernelAt(command, _, _) => {
                 let precondition = match &*action {
                     DebugAction::PatchMemory(_, original) => {
                         DebugPrecondition::MemoryBytes(original)
@@ -1494,6 +1518,10 @@ impl Loops {
                     DebugAction::ScanAt(_, generation) => {
                         DebugPrecondition::ScanGeneration(*generation)
                     }
+                    DebugAction::KernelAt(_, process, thread) => DebugPrecondition::Thread {
+                        process: *process,
+                        thread: *thread,
+                    },
                     _ if matches!(
                         (panel, command),
                         (
@@ -1543,7 +1571,8 @@ impl Loops {
                 tokio::task::spawn_blocking(move || match &*action {
                     DebugAction::Native(command)
                     | DebugAction::PatchMemory(command, _)
-                    | DebugAction::ScanAt(command, _) => {
+                    | DebugAction::ScanAt(command, _)
+                    | DebugAction::KernelAt(command, _, _) => {
                         loops.format_debug(&target, command, value, &cancellation)
                     }
                     DebugAction::CompareGpuDraws { a, b } => {
@@ -1699,6 +1728,13 @@ impl Loops {
                 | DebugCommand::CitraceStop
                 | DebugCommand::CitraceStatus
                 | DebugCommand::CitraceReplay
+                | DebugCommand::ThreadRegisters { .. }
+                | DebugCommand::WriteThreadRegister { .. }
+                | DebugCommand::Backtrace { .. }
+                | DebugCommand::Handles
+                | DebugCommand::Deadlocks
+                | DebugCommand::Processes
+                | DebugCommand::Threads
         ) {
             view.data = Some(Arc::new(value));
         }
@@ -1739,6 +1775,7 @@ impl Loops {
             Command::DebugAt { .. }
             | Command::PatchMemory { .. }
             | Command::ScanAt { .. }
+            | Command::KernelAt { .. }
             | Command::CompareGpuDraws { .. }
             | Command::PreviewGpuTexture { .. }
             | Command::CancelDebug(_)

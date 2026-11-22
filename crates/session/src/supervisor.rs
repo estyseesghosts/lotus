@@ -104,6 +104,10 @@ pub enum DebugPrecondition<'a> {
     Paused,
     MemoryBytes(&'a [u8]),
     ScanGeneration(u64),
+    Thread {
+        process: u32,
+        thread: u32,
+    },
 }
 
 #[derive(Default)]
@@ -2033,10 +2037,13 @@ impl Supervisor {
                 "debug session is stopping",
             ));
         }
-        if matches!(
+        let needs_pause = matches!(
             scope.precondition,
             DebugPrecondition::Paused | DebugPrecondition::MemoryBytes(_)
-        ) && (handle.playing.load(Ordering::Acquire) || native.state() != SessionState::Paused)
+        ) || matches!(scope.precondition, DebugPrecondition::Thread { .. })
+            && !matches!(command, DebugCommand::ThreadRegisters { .. });
+        if needs_pause
+            && (handle.playing.load(Ordering::Acquire) || native.state() != SessionState::Paused)
         {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -2270,6 +2277,49 @@ impl Supervisor {
             }
             _ => None,
         };
+        if let DebugPrecondition::Thread { process, thread } = scope.precondition {
+            if command.mutates() {
+                check_lease(&handle, client)?;
+            }
+            let matches_thread = match command {
+                DebugCommand::ThreadRegisters { thread: id }
+                | DebugCommand::WriteThreadRegister { thread: id, .. }
+                | DebugCommand::Suspend {
+                    thread: Some(id), ..
+                } => *id == thread,
+                DebugCommand::Backtrace { .. } => true,
+                _ => false,
+            };
+            if !matches_thread {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid thread action",
+                ));
+            }
+            let snapshot = native.debug(&DebugCommand::Threads).await?;
+            let current = snapshot["threads"].as_array().is_some_and(|threads| {
+                threads
+                    .iter()
+                    .any(|entry| entry["id"] == thread && entry["process"] == process)
+            });
+            if !current {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "The selected guest thread no longer exists",
+                ));
+            }
+            if let DebugCommand::Backtrace { core, .. } = command {
+                let context = native
+                    .debug(&DebugCommand::ThreadRegisters { thread })
+                    .await?;
+                if context["core"] != *core || context["thread"] != thread {
+                    return Err(io::Error::new(
+                        io::ErrorKind::WouldBlock,
+                        "The selected thread is no longer active on this core",
+                    ));
+                }
+            }
+        }
         if command.mutates() {
             check_lease(&handle, client)?;
             if let Some((original, _, read)) = &memory_check {

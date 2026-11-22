@@ -48,6 +48,24 @@ fn desktop_command(
     panel: Panel,
     command: D,
 ) -> DebugStatus {
+    desktop_request(
+        controller,
+        target,
+        panel,
+        Command::DebugAt {
+            target: target.clone(),
+            panel,
+            command,
+        },
+    )
+}
+
+fn desktop_request(
+    controller: &DesktopController,
+    target: &SessionTarget,
+    panel: Panel,
+    request: Command,
+) -> DebugStatus {
     let previous = controller
         .latest
         .lock()
@@ -55,14 +73,7 @@ fn desktop_command(
         .debug_requests()
         .last()
         .map(|r| r.id);
-    controller
-        .commands
-        .send(Command::DebugAt {
-            target: target.clone(),
-            panel,
-            command,
-        })
-        .unwrap();
+    controller.commands.send(request).unwrap();
     let status = |update: &Update| {
         update
             .debug_requests()
@@ -98,6 +109,184 @@ fn selected_target(controller: &DesktopController) -> SessionTarget {
         created_unix_ms: summary.info.created_unix_ms,
         epoch: summary.telemetry.epoch,
     }
+}
+
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE"]
+fn kernel_explorer_observes_thread_identity_and_native_deadlock() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-kernel-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, &root);
+    config.allow_control = true;
+    config.assets = BTreeMap::from([
+        ("fixture".into(), fixture.clone()),
+        ("elf".into(), fixture.with_extension("elf")),
+    ]);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let send = |command| controller.commands.send(command).unwrap();
+    send(Command::Create {
+        kind: SessionKind::Secondary { parent: None },
+        asset: Some("fixture".into()),
+    });
+    wait(&controller, |update| {
+        update
+            .sessions
+            .iter()
+            .any(|summary| summary.info.id == update.selected)
+    });
+    let target = selected_target(&controller);
+    send(Command::Pause(target.id.clone()));
+    wait(&controller, |update| {
+        target.resolve(&update.sessions).is_some_and(|summary| {
+            !summary.telemetry.playing
+                && summary.telemetry.state == lotus_session::SessionState::Paused
+        })
+    });
+    let desktop = |command| desktop_command(&controller, &target, Panel::Threads, command);
+    completed(desktop(D::Advance { frames: 1 }));
+    *controller.inspection_selection.lock().unwrap() =
+        InspectionSelection::first_page(Panel::Threads);
+    controller.inspector.store(true, Ordering::Release);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let debug = |command| {
+        tool_json(runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: target.id.clone(),
+            command,
+        }))))
+    };
+    let native = debug(D::Registers { core: 0 });
+    let thread = native["thread"].as_u64().unwrap() as u32;
+    assert_ne!(thread, 0);
+    let expected = debug(D::Processes);
+    let process = expected["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["id"] == thread)
+        .unwrap()["process"]
+        .as_u64()
+        .unwrap() as u32;
+    wait(&controller, |update| {
+        update.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot.target.as_ref() == Some(&target)
+                && snapshot.view.data.as_ref().is_some_and(|data| {
+                    data["processes"] == expected["processes"]
+                        && data["threads"] == expected["threads"]
+                })
+        })
+    });
+    let scoped = |pid, command| {
+        desktop_request(
+            &controller,
+            &target,
+            Panel::Threads,
+            Command::KernelAt {
+                target: target.clone(),
+                process: pid,
+                thread,
+                command,
+            },
+        )
+    };
+    let registers = D::ThreadRegisters { thread };
+    let data = completed(scoped(process, registers.clone()));
+    assert_eq!(
+        data.data.as_ref().unwrap()["registers"],
+        debug(registers)["registers"]
+    );
+    let backtrace = completed(scoped(process, D::Backtrace { core: 0, limit: 8 }));
+    assert_eq!(
+        backtrace.data.as_ref().unwrap()["frames"],
+        debug(D::Backtrace { core: 0, limit: 8 })["frames"]
+    );
+    let old_r0 = native["registers"][0].as_u64().unwrap() as u32;
+    let write = |value| D::WriteThreadRegister {
+        thread,
+        register: 0,
+        value,
+    };
+    assert!(matches!(
+        scoped(process.wrapping_add(1), write(!old_r0)),
+        DebugStatus::Failed {
+            kind: ErrorKind::NotFound,
+            ..
+        }
+    ));
+    completed(scoped(process, write(!old_r0)));
+    let readback = debug(D::ThreadRegisters { thread });
+    assert_eq!(readback["registers"][0], !old_r0);
+    completed(scoped(process, write(old_r0)));
+    let suspended = |suspended| D::Suspend {
+        thread: Some(thread),
+        suspended,
+    };
+    completed(scoped(process, suspended(true)));
+    let check_suspended = |expected| {
+        wait(&controller, |update| {
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.target.as_ref() == Some(&target)
+                    && snapshot.view.data.as_ref().is_some_and(|data| {
+                        data["threads"].as_array().is_some_and(|threads| {
+                            threads.iter().any(|entry| {
+                                entry["id"] == thread && entry["suspended"] == expected
+                            })
+                        })
+                    })
+            })
+        });
+    };
+    check_suspended(true);
+    completed(scoped(process, suspended(false)));
+    check_suspended(false);
+    let _ = debug(D::LoadSymbols {
+        asset: "elf".into(),
+    });
+    let mode = debug(D::ResolveSymbol {
+        query: "mode".into(),
+    })["addresses"][0]
+        .as_u64()
+        .unwrap() as u32;
+    let _ = debug(D::WriteMemory {
+        address: mode,
+        bytes: 6_u32.to_le_bytes().to_vec(),
+    });
+    completed(desktop(D::Advance { frames: 1 }));
+    let deadlocks = completed(desktop(D::Deadlocks));
+    let deadlocks = deadlocks.data.as_ref().unwrap();
+    assert!(
+        deadlocks["mutex_cycles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cycle| cycle.as_array().unwrap().len() == 2),
+        "{deadlocks}"
+    );
+    assert_eq!(deadlocks["wait_edges"], debug(D::Deadlocks)["wait_edges"]);
+    let handles = completed(desktop(D::Handles));
+    let handles = handles.data.as_ref().unwrap();
+    assert!(handles["handles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["process"] == process && entry["type"] == "Mutex"));
+    assert_eq!(handles["handles"], debug(D::Handles)["handles"]);
+    send(Command::Reset(target.id.clone()));
+    wait(&controller, |update| {
+        target.resolve(&update.sessions).is_none()
+    });
+    assert!(matches!(
+        scoped(process, write(!old_r0)),
+        DebugStatus::Expired
+    ));
+    drop(mcp);
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]

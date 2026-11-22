@@ -21,7 +21,7 @@ debug	citrace_stop	Event timeline	control	-	-	Timeline
 debug	content_transform	palette	control	-	-	fixture pending
 debug	continue	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	crash_report	palette	read	-	-	fixture pending
-debug	deadlocks	palette	read	-	-	fixture pending
+debug	deadlocks	Kernel explorer	read	-	-	Kernel
 debug	disassemble	CPU inspector	read	-	-	CPU
 debug	dsp_inspect	inspector polling	read	-	-	fixture pending
 debug	dsp_load_firmware	palette	control	-	-	fixture pending
@@ -31,7 +31,7 @@ debug	fork	palette	control	-	-	fixture pending
 debug	gpu_configure	GPU capture form	control	gpu_capture_levels when capture is set	Named presets and all capture options (#147).	GPU
 debug	gpu_draw	inspector rows	read	-	-	GPU
 debug	gpu_draws	inspector polling	read	-	-	GPU
-debug	handles	palette	read	-	-	fixture pending
+debug	handles	Kernel explorer	read	-	-	Kernel
 debug	hio_forward	palette	control	-	-	fixture pending
 debug	hio_reply	palette	control	-	-	fixture pending
 debug	input_state	desktop input	control	-	Local input devices supply state through the input router	Input
@@ -52,7 +52,7 @@ debug	nfc_remove	palette	control	-	-	fixture pending
 debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	perf	palette	read	-	-	fixture pending
 debug	pointer_chain	Memory search	read	-	-	Memory search
-debug	processes	palette	read	-	-	fixture pending
+debug	processes	Kernel explorer	read	-	-	Kernel
 debug	read_memory	Memory inspector	read	-	-	Memory
 debug	registers	inspector polling	read	-	-	CPU
 debug	reset	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
@@ -81,16 +81,16 @@ debug	step_over	CPU inspector	control	-	-	CPU
 debug	stop	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	storage_browse	palette	read	-	-	Guest tools
 debug	surface	inspector rows	control	-	-	fixture pending
-debug	suspend	palette	control	-	-	fixture pending
+debug	suspend	Kernel explorer	control	-	-	Kernel
 debug	symbolize	palette	read	-	-	fixture pending
 debug	system_regenerate	palette	control	-	-	fixture pending
-debug	thread_registers	palette	read	-	-	fixture pending
-debug	threads	inspector polling	read	-	-	fixture pending
+debug	thread_registers	Kernel explorer	read	-	-	Kernel
+debug	threads	Kernel explorer	read	-	-	Kernel
 debug	titles	palette	read	-	-	fixture pending
 debug	trace	Event timeline	control	-	-	Timeline
 debug	write_memory	Memory inspector	control	-	-	Memory
 debug	write_register	CPU inspector	control	-	-	CPU
-debug	write_thread_register	palette	control	-	-	fixture pending
+debug	write_thread_register	Kernel explorer	control	-	-	Kernel
 mcp-debug	lotus_capture	external only	read	-	Raw artifacts are exposed to external clients	external
 mcp-debug	lotus_capture_image	external only	read	-	Inline images are an MCP response format	external
 mcp	lotus_control	session controls	control	-	Run, pause, reset and stop	fixture pending

@@ -35,7 +35,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `content_transform` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `continue` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `crash_report` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
-| `deadlocks` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `deadlocks` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `disassemble` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `dsp_inspect` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
 | `dsp_load_firmware` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
@@ -45,7 +45,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `gpu_configure` | [GPU capture form](../crates/desktop/src/lotus_window/gpu_capture.rs) | control | gpu_capture_levels when capture is set | Named presets and all capture options (#147). | [GPU](../crates/desktop/tests/native_inspector.rs) |
 | `gpu_draw` | [inspector rows](../crates/desktop/src/inspection.rs) | read | - | - | [GPU](../crates/desktop/tests/native_inspector.rs) |
 | `gpu_draws` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [GPU](../crates/desktop/tests/native_inspector.rs) |
-| `handles` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `handles` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `hio_forward` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `hio_reply` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `input_state` | [desktop input](../crates/desktop/src/input_routing.rs) | control | - | Local input devices supply state through the input router | [Input](../crates/desktop/tests/input_routing.rs) |
@@ -66,7 +66,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `pause` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `perf` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
 | `pointer_chain` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | read | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
-| `processes` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `processes` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `read_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `reset` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
@@ -95,16 +95,16 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `stop` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `storage_browse` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Guest tools](../crates/desktop/src/lotus_window/command_palette.rs) |
 | `surface` | [inspector rows](../crates/desktop/src/inspection.rs) | control | - | - | fixture pending |
-| `suspend` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `suspend` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | control | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `symbolize` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
 | `system_regenerate` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `thread_registers` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
-| `threads` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
+| `thread_registers` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
+| `threads` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `titles` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
 | `trace` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `write_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | control | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `write_register` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
-| `write_thread_register` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `write_thread_register` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | control | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 
 ## MCP debugger tools
 

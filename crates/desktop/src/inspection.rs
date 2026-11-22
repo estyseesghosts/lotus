@@ -963,8 +963,11 @@ impl Inspection {
         };
         Self {
             rows: Arc::new(rows),
-            data: matches!(panel, Panel::States | Panel::Timeline | Panel::Ipc)
-                .then(|| Arc::new(value.clone())),
+            data: matches!(
+                panel,
+                Panel::States | Panel::Timeline | Panel::Ipc | Panel::Threads
+            )
+            .then(|| Arc::new(value.clone())),
             source: format!(
                 "{} · pin {} · profile {} · epoch {} · paused {} · cache flush {}",
                 value["identity"]["backend"],

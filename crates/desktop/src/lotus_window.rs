@@ -62,6 +62,8 @@ mod gdb_panel;
 #[cfg(feature = "silvestris-ui")]
 mod gpu_capture;
 #[cfg(feature = "silvestris-ui")]
+mod kernel_panel;
+#[cfg(feature = "silvestris-ui")]
 mod memory_panel;
 #[cfg(feature = "silvestris-ui")]
 mod memory_search;
@@ -262,6 +264,8 @@ pub struct LotusWindow {
     #[cfg(feature = "silvestris-ui")]
     timeline_forms:
         std::collections::BTreeMap<(SessionTarget, Panel), event_timeline::TimelineForm>,
+    #[cfg(feature = "silvestris-ui")]
+    kernel_panels: std::collections::BTreeMap<SessionTarget, kernel_panel::KernelPanel>,
     toggled_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
     inspector_state: InspectorState,
@@ -451,6 +455,8 @@ impl LotusWindow {
             snapshot_forms: Default::default(),
             #[cfg(feature = "silvestris-ui")]
             timeline_forms: Default::default(),
+            #[cfg(feature = "silvestris-ui")]
+            kernel_panels: Default::default(),
             toggled_debug_details: BTreeSet::new(),
             inspection_panel: {
                 #[cfg(feature = "silvestris-ui")]
@@ -845,6 +851,9 @@ impl LotusWindow {
         #[cfg(feature = "silvestris-ui")]
         self.timeline_forms
             .retain(|(target, _), _| target.resolve(&self.sessions).is_some());
+        #[cfg(feature = "silvestris-ui")]
+        self.kernel_panels
+            .retain(|target, _| target.resolve(&self.sessions).is_some());
         #[cfg(feature = "silvestris-ui")]
         self.cpu_forms
             .retain(|target, _| target.resolve(&self.sessions).is_some());
@@ -3603,7 +3612,8 @@ impl LotusWindow {
                         | Panel::Memory
                         | Panel::States
                         | Panel::Timeline
-                        | Panel::Ipc,
+                        | Panel::Ipc
+                        | Panel::Threads,
                     _
                 )
         );
@@ -4346,6 +4356,15 @@ impl LotusWindow {
                 })
         }) {
             return panel.child(self.render_event_timeline(target, current, snapshot, cx));
+        }
+        #[cfg(feature = "silvestris-ui")]
+        if let Some(target) = target.as_ref().filter(|target| {
+            current == Panel::Threads
+                && self.debug_request.as_ref().is_none_or(|request| {
+                    request.target != **target || !self.debug_details_visible(request)
+                })
+        }) {
+            return panel.child(self.render_kernel_panel(target, snapshot, cx));
         }
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Gpu) {
             panel = panel.children(self.render_draw_comparison_controls(
