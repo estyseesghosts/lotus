@@ -39,6 +39,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "desktop input" => Some("input_routing.rs"),
             "settings window" => Some("settings_window.rs"),
             "investigations window" => Some("investigation_window.rs"),
+            "regression history" => Some("regression_window.rs"),
             "debug bridge" if section == 1 => None,
             "palette" => Some("lotus_window/command_palette.rs"),
             "Builds inspector" => Some("lotus_window/builds_panel.rs"),
@@ -84,6 +85,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "Settings" => Some("src/settings_window/shared.rs"),
             "Input" => Some("tests/input_routing.rs"),
             "Investigations" => Some("../../tests/test_shared_desktop_mcp.py"),
+            "Regression history" => Some("../../tests/test_regression_history.py"),
             "external" if *route == "external only" => None,
             "fixture pending" if *route != "external only" => None,
             _ => {

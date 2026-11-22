@@ -132,3 +132,18 @@ A missing or invalid scenario is recorded as `INCOMPLETE`.
 disk. Each case points to its repeated assessment and full attempt
 reports. The suite returns nonzero if any case is incomplete, flaky, or
 failed, in that order of precedence.
+
+To browse suites in the Windows desktop or through MCP, use the host's
+`<storage_root>/regressions` directory as the suite output. Open
+**Actions → Debug → Regression History** (Ctrl+Shift+R), or call
+`lotus_regression_history` with an `operation` of `{"op":"list"}`,
+`{"op":"detail","id":"…"}`, or
+`{"op":"compare","baseline":"…","candidate":"…"}`. The CLI equivalents
+are `suite list <output>`, `suite detail <output> <id>`, and
+`suite compare <output> <baseline-id> <candidate-id>`.
+
+History lists the 32 most recent completed suites. Details include the
+first failed assertion with its expected and actual values. Comparisons
+align cases by manifest-relative scenario path and compare screen hashes and assertion values
+only when both runs have repeatable observations for the same scenario
+definition. All three interfaces use the same [history reader](../crates/runner/src/history.rs).

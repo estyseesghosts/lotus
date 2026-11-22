@@ -114,6 +114,7 @@ mcp	lotus_input	desktop input	control	-	Device input through the desktop router	
 mcp	lotus_input_presets	settings window	read or control by operation	-	The Controls preset choice lists builtin and saved presets. Import, export, duplicate, rename and delete are MCP and ctr-cli only.	Settings
 mcp	lotus_investigation	investigations window	read or control by operation	-	Windows editor covers notes, session references and redacted archives. CLI and MCP expose the full record and screenshot selection.	Investigations
 mcp	lotus_investigation_restore_breakpoint	unavailable	control	-	Restore requires a verified ELF and content and a paused target. Desktop action pending.	Investigations
+mcp	lotus_regression_history	regression history	read	-	List, inspect and compare the configured host's retained suites.	Regression history
 mcp	lotus_list_cards	session status	read	-	Card sidebar	Session
 mcp	lotus_list_sessions	session status	read	-	Session sidebar	Session
 mcp	lotus_load	session controls	control	-	Asset picker	Session

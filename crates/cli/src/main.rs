@@ -69,6 +69,9 @@ Usage:
                                 Retain a repeat assessment and all attempts (default: 3)
   ctr-cli suite run <manifest> <worker> <artifact-root> <source-revision>
   ctr-cli suite show <artifact-root> <suite-id>
+  ctr-cli suite list <artifact-root>
+  ctr-cli suite detail <artifact-root> <suite-id>
+  ctr-cli suite compare <artifact-root> <baseline-id> <candidate-id>
 ";
 
 fn main() -> Result<()> {
@@ -301,12 +304,14 @@ fn main() -> Result<()> {
 }
 
 fn suite(args: &[String]) -> Result<()> {
-    use lotus_runner::{assessment::Status, suite};
+    use lotus_runner::{assessment::Status, history, suite};
     let report = match args {
         [command, manifest, worker, output, revision] if command == "run" => {
             let report = tokio::runtime::Runtime::new()?.block_on(suite::run(
-                std::path::Path::new(manifest), std::path::Path::new(worker),
-                std::path::Path::new(output), revision,
+                std::path::Path::new(manifest),
+                std::path::Path::new(worker),
+                std::path::Path::new(output),
+                revision,
             ))?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             if report.status != Status::Pass {
@@ -314,8 +319,35 @@ fn suite(args: &[String]) -> Result<()> {
             }
             return Ok(());
         }
-        [command, output, id] if command == "show" => suite::show(std::path::Path::new(output), id)?,
-        _ => bail!("usage: ctr-cli suite run <manifest> <worker> <artifact-root> <source-revision> or suite show <artifact-root> <suite-id>"),
+        [command, output, id] if command == "show" => {
+            suite::show(std::path::Path::new(output), id)?
+        }
+        [command, output] if command == "list" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&history::list(std::path::Path::new(output))?)?
+            );
+            return Ok(());
+        }
+        [command, output, id] if command == "detail" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&history::detail(std::path::Path::new(output), id)?)?
+            );
+            return Ok(());
+        }
+        [command, output, baseline, candidate] if command == "compare" => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&history::compare(
+                    std::path::Path::new(output),
+                    baseline,
+                    candidate
+                )?)?
+            );
+            return Ok(());
+        }
+        _ => bail!("usage: ctr-cli suite <run|show|list|detail|compare>; see ctr-cli --help"),
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

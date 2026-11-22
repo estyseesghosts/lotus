@@ -4,7 +4,10 @@ typedef unsigned long long u64;
 volatile u32 mode = 0;
 volatile u32 watched = 0x11223344;
 volatile u32 counter = 1;
-volatile u32 canary[2] = {0xcafebabe, 0xdeadbeef};
+#ifndef LOTUS_CANARY_VALUE
+#define LOTUS_CANARY_VALUE 0xcafebabe
+#endif
+volatile u32 canary[2] = {LOTUS_CANARY_VALUE, 0xdeadbeef};
 volatile u32 mutex_a,mutex_b,thread_phase;
 volatile u32 raced_counter,race_expected=2,race_ready;
 static unsigned char child_stack[4096] __attribute__((aligned(16)));

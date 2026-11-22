@@ -3215,6 +3215,7 @@ dependencies = [
  "lotus-input",
  "lotus-mcp",
  "lotus-protocol",
+ "lotus-runner",
  "lotus-session",
  "lotus-settings",
  "lotus-trace",

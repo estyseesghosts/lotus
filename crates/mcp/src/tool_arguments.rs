@@ -10,6 +10,20 @@ pub struct InvestigationArgs {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct RegressionHistoryArgs {
+    pub operation: RegressionHistoryOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RegressionHistoryOperation {
+    List,
+    Detail { id: String },
+    Compare { baseline: String, candidate: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RestoreInvestigationBreakpointArgs {
     pub id: String,
     pub expected_revision: u64,

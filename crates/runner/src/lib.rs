@@ -12,6 +12,7 @@ use thiserror::Error;
 pub mod assertions;
 pub mod assessment;
 pub mod execution;
+pub mod history;
 pub mod suite;
 
 /// Maximum frames a scenario may request.

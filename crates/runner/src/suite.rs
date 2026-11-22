@@ -47,7 +47,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.into())
 }
 
-fn bounded_file(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
+pub(crate) fn bounded_file(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
@@ -56,7 +56,7 @@ fn bounded_file(path: &Path, limit: u64) -> io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn identifier(value: &str, lengths: &[usize]) -> bool {
+pub(crate) fn identifier(value: &str, lengths: &[usize]) -> bool {
     lengths.contains(&value.len())
         && value
             .bytes()
@@ -204,11 +204,21 @@ pub fn show(output: &Path, id: &str) -> io::Result<Report> {
     if !identifier(id, &[32]) {
         return Err(invalid("expected a lowercase 32-digit suite ID"));
     }
-    let report: Report = serde_json::from_slice(&bounded_file(
-        &output.join(id).join("suite.json"),
-        MAX_REPORT_BYTES,
-    )?)?;
-    if report.version != 1 || report.id != id {
+    let output = output.canonicalize()?;
+    let directory = output.join(id).canonicalize()?;
+    let path = directory.join("suite.json").canonicalize()?;
+    if directory.parent() != Some(output.as_path()) || path.parent() != Some(directory.as_path()) {
+        return Err(invalid(
+            "suite report resolves outside its history directory",
+        ));
+    }
+    let report: Report = serde_json::from_slice(&bounded_file(&path, MAX_REPORT_BYTES)?)?;
+    if report.version != 1
+        || report.id != id
+        || !identifier(&report.declared_revision, &[40, 64])
+        || !identifier(&report.worker_sha256, &[64])
+        || !(1..=16).contains(&report.cases.len())
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "suite report identity mismatch",

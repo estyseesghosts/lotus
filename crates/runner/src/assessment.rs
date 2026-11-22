@@ -18,7 +18,7 @@ pub enum Status {
     Flaky,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Attempt {
     pub number: u8,
     pub status: Status,
@@ -29,7 +29,7 @@ pub struct Attempt {
     pub worker_sha256: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Assessment {
     pub version: u32,
     pub id: String,
@@ -43,7 +43,7 @@ fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn outcome(report: &RunReport) -> Status {
+pub(crate) fn outcome(report: &RunReport) -> Status {
     if report
         .assertions
         .iter()
@@ -58,7 +58,7 @@ fn outcome(report: &RunReport) -> Status {
     }
 }
 
-fn fingerprint(report: &RunReport) -> io::Result<String> {
+pub(crate) fn fingerprint(report: &RunReport) -> io::Result<String> {
     let screens = report
         .checkpoints
         .iter()

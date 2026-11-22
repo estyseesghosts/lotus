@@ -29,8 +29,9 @@ use crate::tool_arguments::{
     AdvanceArgs, CaptureImageArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs,
     GdbOperation, InputArgs, InputPresetArgs, InputPresetOperation, InvestigationArgs,
     InvestigationOperation, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs,
-    ReleaseArtifactsArgs, RestoreInvestigationBreakpointArgs, SessionArgs, SettingsArgs,
-    SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
+    RegressionHistoryArgs, RegressionHistoryOperation, ReleaseArtifactsArgs,
+    RestoreInvestigationBreakpointArgs, SessionArgs, SettingsArgs, SettingsChangeArgs,
+    SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -728,6 +729,36 @@ impl LotusServer {
             }
         }
         tool_result(result)
+    }
+
+    #[tool(
+        description = "Read recent completed regression suites, inspect a suite by ID, or compare two suite IDs. Reads only the configured host's regression history."
+    )]
+    pub async fn lotus_regression_history(
+        &self,
+        Parameters(args): Parameters<RegressionHistoryArgs>,
+    ) -> CallToolResult {
+        use lotus_runner::history;
+        let result = self
+            .require_host()
+            .map(|host| host.config().storage_root.join(history::HISTORY_DIRECTORY));
+        let root = match result {
+            Ok(root) => root,
+            Err(error) => return tool_result(Err(error)),
+        };
+        tool_result(
+            tokio::task::spawn_blocking(move || match args.operation {
+                RegressionHistoryOperation::List => json(&history::list(&root)?),
+                RegressionHistoryOperation::Detail { id } => json(&history::detail(&root, &id)?),
+                RegressionHistoryOperation::Compare {
+                    baseline,
+                    candidate,
+                } => json(&history::compare(&root, &baseline, &candidate)?),
+            })
+            .await
+            .map_err(io::Error::other)
+            .and_then(|result| result),
+        )
     }
 
     #[tool(
