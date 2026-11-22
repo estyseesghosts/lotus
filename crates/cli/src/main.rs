@@ -67,6 +67,8 @@ Usage:
                                 Execute bounded native runs (default: 3)
   ctr-cli scenario assess <path> <worker> <artifact-root> [repeat-count]
                                 Retain a repeat assessment and all attempts (default: 3)
+  ctr-cli suite run <manifest> <worker> <artifact-root> <source-revision>
+  ctr-cli suite show <artifact-root> <suite-id>
 ";
 
 fn main() -> Result<()> {
@@ -233,14 +235,14 @@ fn main() -> Result<()> {
                 Ok::<(), anyhow::Error>(())
             })?;
         }
+        "suite" => suite(&args[1..])?,
         "scenario" => {
             let sub = args.get(1).map(String::as_str).unwrap_or("help");
             match sub {
                 "run" | "assess" => {
-                    let path = PathBuf::from(
-                        args.get(2)
-                            .with_context(|| format!("scenario {sub} requires path, worker and artifact root"))?,
-                    );
+                    let path = PathBuf::from(args.get(2).with_context(|| {
+                        format!("scenario {sub} requires path, worker and artifact root")
+                    })?);
                     let worker = PathBuf::from(args.get(3).context("missing worker executable")?)
                         .canonicalize()?;
                     let output = PathBuf::from(args.get(4).context("missing artifact root")?);
@@ -295,6 +297,27 @@ fn main() -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn suite(args: &[String]) -> Result<()> {
+    use lotus_runner::{assessment::Status, suite};
+    let report = match args {
+        [command, manifest, worker, output, revision] if command == "run" => {
+            let report = tokio::runtime::Runtime::new()?.block_on(suite::run(
+                std::path::Path::new(manifest), std::path::Path::new(worker),
+                std::path::Path::new(output), revision,
+            ))?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if report.status != Status::Pass {
+                bail!("suite {} finished with {:?}", report.id, report.status);
+            }
+            return Ok(());
+        }
+        [command, output, id] if command == "show" => suite::show(std::path::Path::new(output), id)?,
+        _ => bail!("usage: ctr-cli suite run <manifest> <worker> <artifact-root> <source-revision> or suite show <artifact-root> <suite-id>"),
+    };
+    println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 

@@ -110,3 +110,25 @@ Only `PASS` returns exit status zero. Host timing and filesystem paths
 are excluded from the comparison. Worker and guest content hashes are
 part of the comparison, so a file change during assessment cannot
 produce a stable verdict.
+
+A suite manifest lists scenario files and their repeat count.
+
+```yaml
+version: 1
+repeats: 2
+scenarios:
+  - basic-draw.yaml
+  - input-regression.yaml
+```
+
+Run `ctr-cli suite run <manifest> <worker> <output> <source-revision>`.
+The revision is a full Git object ID supplied by the caller. Each attempt
+records measured worker and guest content hashes in its report. Scenario
+files must resolve within the manifest directory. A suite can list up to
+16 files and reserve up to 1,800 seconds of scenario execution deadlines.
+A missing or invalid scenario is recorded as `INCOMPLETE`.
+
+`ctr-cli suite show <output> <suite-id>` reads a completed suite from
+disk. Each case points to its repeated assessment and full attempt
+reports. The suite returns nonzero if any case is incomplete, flaky, or
+failed, in that order of precedence.

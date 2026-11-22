@@ -5,11 +5,11 @@ use crate::{
     Scenario,
 };
 use lotus_protocol::envelope::SessionUuid;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{fs, io, path::Path};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Status {
     Pass,
@@ -26,6 +26,7 @@ pub struct Attempt {
     pub first_failure: Option<AssertionResult>,
     pub error: Option<String>,
     pub observation_sha256: Option<String>,
+    pub worker_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -141,6 +142,7 @@ pub async fn assess(
                     status: outcome(&report),
                     report: Some(format!("{folder}/report.json")),
                     observation_sha256: Some(fingerprint(&report)?),
+                    worker_sha256: Some(report.worker_executable_sha256),
                     first_failure: report
                         .assertions
                         .into_iter()
@@ -152,6 +154,7 @@ pub async fn assess(
                     status: Status::Incomplete,
                     report: None,
                     observation_sha256: None,
+                    worker_sha256: None,
                     first_failure: None,
                     error: Some(error.to_string()),
                 },
@@ -187,6 +190,7 @@ mod tests {
             first_failure: None,
             error: None,
             observation_sha256: Some(fingerprint.into()),
+            worker_sha256: None,
         }
     }
 
