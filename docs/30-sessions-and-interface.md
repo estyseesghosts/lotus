@@ -1065,7 +1065,8 @@ current saved value to the card. **Reset to Global** removes that entry. The
 card-wide reset requires confirmation and only clears the selected card's saved
 overrides. Worker rows report when a change applies at the next start or is
 unavailable on the mounted backend. Loading and unreadable saved settings
-disable writes to the affected scope.
+disable writes to the affected scope. Text and number editors keep invalid
+values beside their validation errors so they can be corrected before saving.
 
 ### Controller bindings (#64)
 

@@ -318,6 +318,7 @@ impl SettingsWindow {
             #[cfg(feature = "silvestris-ui")]
             {
                 self.prefs.fields.clear();
+                self.prefs.field_errors.clear();
                 self.prefs.reset_card = None;
                 self.binding_editor.clear_scope();
                 self.cancel_binding_capture(cx);
@@ -409,6 +410,10 @@ impl SettingsWindow {
                 return;
             }
         }
+        #[cfg(feature = "silvestris-ui")]
+        if self.prefs.field_errors.remove(&descriptor.key).is_some() {
+            cx.notify();
+        }
         if descriptor.owner == Owner::Desktop {
             self.error = None;
             if let Some(value) = value.or_else(|| Some(descriptor.default.clone())) {
@@ -446,6 +451,7 @@ impl SettingsWindow {
         let Some(host) = self.host.clone() else {
             return;
         };
+        self.prefs.field_errors.clear();
         let saved = target.settings_target();
         let saving =
             cx.background_spawn(async move { host.reset_settings(&saved, Actor::Desktop).await });

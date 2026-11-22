@@ -354,6 +354,7 @@ impl InputRouting {
         }
     }
 
+    #[cfg(feature = "silvestris-ui")]
     pub(crate) fn guest_state(&self, session: &str) -> GuestState {
         lock(&self.router).compose(session)
     }

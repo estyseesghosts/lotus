@@ -149,6 +149,7 @@ pub(super) struct PreferencesState {
     pub navigator: PreferencesNavigator,
     tabs: HashMap<Group, &'static str>,
     pub(super) fields: HashMap<String, Entity<TextField>>,
+    pub(super) field_errors: HashMap<String, String>,
     search: Option<Entity<TextField>>,
     pub(super) reset_card: Option<Target>,
     pane_scroll: gpui::ScrollHandle,
@@ -601,10 +602,12 @@ impl SettingsWindow {
             out.push(note(error, c.error));
         }
         if let Some(error) = &self.report_error {
-            out.push(note(
-                format!("Could not read saved settings. {error}"),
-                c.error,
-            ));
+            let context = if matches!(self.target, Target::Secondary(_)) {
+                "Could not read temporary settings."
+            } else {
+                "Could not read saved settings."
+            };
+            out.push(note(format!("{context} {error}"), c.error));
         } else if self.host.is_some() && self.report.is_none() {
             out.push(note("Loading saved settings…".into(), c.text_secondary));
         }
@@ -952,6 +955,24 @@ impl SettingsWindow {
                 .inset_0(),
             );
         }
+        if let Some(error) = self.prefs.field_errors.get(&key) {
+            let error_id = format!("invalid-{key}");
+            control = div()
+                .flex()
+                .flex_col()
+                .w_full()
+                .min_w_0()
+                .gap(px(2.0))
+                .child(control)
+                .child(
+                    div()
+                        .id(SharedString::from(error_id.clone()))
+                        .debug_selector(move || error_id.clone())
+                        .text_size(px(cx.theme().type_.size_small))
+                        .text_color(silvestris::convert::hsla(cx.theme().colors.error))
+                        .child(error.clone()),
+                );
+        }
         // The consumer citation is a help tag, not body text (HIG p. 82 help tags).
         let control: AnyElement = if descriptor.sources.is_empty() {
             control.into_any_element()
@@ -1043,6 +1064,9 @@ impl SettingsWindow {
                     }
                     if *event == TextFieldEvent::Changed {
                         dirty.set(true);
+                        if view.prefs.field_errors.remove(&descriptor.key).is_some() {
+                            cx.notify();
+                        }
                         return;
                     }
                     if !dirty.replace(false) {
@@ -1057,9 +1081,9 @@ impl SettingsWindow {
                         Ok(next) if next != current => view.write(descriptor, Some(next), cx),
                         Ok(_) => {}
                         Err(error) => {
-                            view.error = Some(error);
-                            let saved = field_text(&descriptor.kind, &current);
-                            field.update(cx, |f, cx| f.set_text(saved, cx));
+                            view.prefs
+                                .field_errors
+                                .insert(descriptor.key.clone(), error);
                             cx.notify();
                         }
                     }
@@ -1072,8 +1096,9 @@ impl SettingsWindow {
             }
         };
         let focused = field.read(cx).focus_handle(cx).is_focused(window);
+        let invalid = self.prefs.field_errors.contains_key(&descriptor.key);
         field.update(cx, |f, cx| {
-            if !focused && f.text() != shown {
+            if (!focused && !invalid || !enabled) && f.text() != shown {
                 f.set_text(shown, cx);
             }
             f.set_disabled(!enabled, window, cx);
@@ -1096,26 +1121,19 @@ fn parse_field(descriptor: &Descriptor, text: &str) -> Result<Value, String> {
         Kind::Json { .. } | Kind::Bindings { .. } => {
             serde_json::from_str(text).map_err(|error| format!("{}: {error}", descriptor.label))?
         }
-        kind => {
-            let (_, min, max, integer) = stepper(kind).ok_or("Unsupported editor")?;
-            let mut number = text
-                .trim()
+        Kind::Integer { .. } => Value::from(
+            text.trim()
+                .parse::<i64>()
+                .map_err(|_| format!("{} requires a whole number.", descriptor.label))?,
+        ),
+        Kind::Float { .. } => Value::from(
+            text.trim()
                 .parse::<f64>()
                 .ok()
                 .filter(|number| number.is_finite())
-                .ok_or_else(|| format!("{} requires a number.", descriptor.label))?;
-            if let Some(min) = min {
-                number = number.max(min);
-            }
-            if let Some(max) = max {
-                number = number.min(max);
-            }
-            if integer {
-                Value::from(number.round() as i64)
-            } else {
-                Value::from(number)
-            }
-        }
+                .ok_or_else(|| format!("{} requires a finite number.", descriptor.label))?,
+        ),
+        _ => return Err("Unsupported editor".into()),
     };
     descriptor
         .validate(&value)
@@ -1177,6 +1195,66 @@ mod tests {
         );
         assert!(parse_field(bindings, "{}").is_err());
         assert!(parse_field(bindings, "[").is_err());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn invalid_text_stays_beside_the_control_until_corrected() {
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx)
+        });
+        let (main, _) = app.add_window_view(LotusWindow::test_preview);
+        let (settings, cx) = app.add_window_view(|window, cx| {
+            let mut view =
+                SettingsWindow::new(main.downgrade(), None, false, Target::Global, window, cx);
+            view.show_group(Group::Discord, window, cx);
+            view
+        });
+        let key = "lotus.desktop.discord_application_id";
+        let invalid = "invalid-lotus.desktop.discord_application_id";
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        cx.simulate_resize(gpui::size(px(668.), px(480.)));
+        cx.simulate_scale_factor_change(1.75);
+        draw(cx);
+        cx.update(|window, cx| {
+            let field = settings.read(cx).prefs.fields[key].clone();
+            window.focus(&field.focus_handle(cx), cx);
+        });
+        let too_long = "1234567890".repeat(4);
+        cx.simulate_input(&too_long);
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        let error = cx.debug_bounds(invalid).unwrap();
+        let row = cx
+            .debug_bounds("row-lotus.desktop.discord_application_id")
+            .unwrap();
+        assert!(error.left() >= row.left() && error.right() <= row.right());
+        cx.update(|_, cx| {
+            let view = settings.read(cx);
+            assert_eq!(view.prefs.fields[key].read(cx).text(), too_long);
+            assert_eq!(main.read(cx).preference(key), Value::Null);
+            assert!(view.error.is_none());
+        });
+        // A rejected draft is local to its row and survives a window resize.
+        cx.simulate_resize(gpui::size(px(1024.), px(640.)));
+        draw(cx);
+        let error = cx.debug_bounds(invalid).unwrap();
+        let row = cx
+            .debug_bounds("row-lotus.desktop.discord_application_id")
+            .unwrap();
+        assert!(error.left() >= row.left() && error.right() <= row.right());
+        cx.simulate_keystrokes("ctrl-a");
+        cx.simulate_input("123456789012345678");
+        cx.simulate_keystrokes("enter");
+        draw(cx);
+        assert!(cx.debug_bounds(invalid).is_none());
+        assert_eq!(
+            cx.update(|_, cx| main.read(cx).preference(key)),
+            Value::from("123456789012345678")
+        );
     }
 
     #[test]
