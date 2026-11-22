@@ -11,6 +11,10 @@ documents; this page only says what changed. Labels follow the
   preview and gauge frame counters through [MCP](24-desktop.md).
 - A stale desktop tile drop leaves the current workspace and selection
   intact (#73).
+- Settings search opens the matching control in its category. Primary card
+  overrides can be created or reset individually and cleared together (#54).
+- Settings → Controls assigns and identifies devices by connection, shows
+  their primary or secondary sessions, and selects saved input presets (#64).
 
 ## v0.1.2
 

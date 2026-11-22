@@ -732,6 +732,8 @@ impl LotusWindow {
         let controllers = controller.input().controllers();
         if controllers != self.controllers {
             self.controllers = controllers;
+            #[cfg(feature = "silvestris-ui")]
+            self.shared_sources.update(cx, |_, cx| cx.notify());
         }
         let target = self.keyboard_target();
         let (previews, selected, snapshot, surface, save_preferences) = {
@@ -2194,6 +2196,39 @@ impl LotusWindow {
         {
             self.error = format!("Controller: {error}");
         }
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    pub(crate) fn input_routing(&self) -> Option<Arc<crate::input_routing::InputRouting>> {
+        self.controller
+            .as_ref()
+            .map(|controller| controller.input().clone())
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    fn paired_controller_badge(&self, session: &str, theme: theme::Palette) -> Option<AnyElement> {
+        let pad = self
+            .controllers
+            .pads
+            .iter()
+            .find(|pad| pad.session.as_deref() == Some(session))?;
+        Some(
+            with_tooltip(
+                div()
+                    .id(SharedString::from(format!("paired-{session}")))
+                    .aria_label(format!("Controller {} ({})", pad.name, pad.id))
+                    .flex_none()
+                    .px(px(4.0))
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(theme.border_strong)
+                    .text_color(theme.text_secondary)
+                    .text_size(px(10.0))
+                    .child("Pad"),
+                format!("{} ({})", pad.name, pad.id),
+            )
+            .into_any_element(),
+        )
     }
 
     /// Connected controllers (lotus#62): which session each drives, assign/unassign against

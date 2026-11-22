@@ -316,7 +316,11 @@ impl InputRouting {
         replace: bool,
     ) -> Result<(), String> {
         if let Some(session) = session {
-            if !self.host.sessions().iter().any(|s| s == session) {
+            if !self
+                .host
+                .summary(session)
+                .is_ok_and(|summary| summary.telemetry.state.is_active())
+            {
                 return Err(format!("session {session} is not running"));
             }
             if !lock(&self.layouts).sessions.contains_key(session) {

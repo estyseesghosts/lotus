@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 
+use gpui::prelude::FluentBuilder;
 use gpui::{AnyElement, Entity, Focusable, ImageFormat, Pixels, StatefulInteractiveElement};
 use silvestris::controls::{
     Button, CheckState, Checkbox, ControlSize, PopUpButton, Segment, SegmentedControl, Stepper,
@@ -149,6 +150,9 @@ pub(super) struct PreferencesState {
     tabs: HashMap<Group, &'static str>,
     pub(super) fields: HashMap<String, Entity<TextField>>,
     search: Option<Entity<TextField>>,
+    pub(super) reset_card: Option<Target>,
+    pane_scroll: gpui::ScrollHandle,
+    reveal: Option<&'static Descriptor>,
     sized_for: Option<Option<SharedString>>,
     /// Set when the pane or tab changes; cleared once the window fits, so
     /// the window is resized only on navigation, never every frame.
@@ -190,11 +194,16 @@ impl SettingsWindow {
     }
 
     fn after_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.prefs.pane_scroll = gpui::ScrollHandle::new();
+        self.prefs.reveal = None;
         if let Some(search) = &self.prefs.search {
             search.update(cx, |field, cx| field.set_text("", cx));
         }
         if let Some(group) = self.prefs.navigator.current().and_then(|id| group_from(id)) {
             self.group = group;
+            if group == Group::Controls {
+                self.refresh_controllers(cx);
+            }
         }
         window.focus(&self.focus, cx);
         cx.notify();
@@ -267,12 +276,7 @@ impl SettingsWindow {
             .clone()
     }
 
-    fn render_search(
-        &mut self,
-        query: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_search(&self, query: &str, cx: &mut Context<Self>) -> AnyElement {
         let words: Vec<_> = query.split_whitespace().collect();
         let rows: Vec<_> = BANDS
             .iter()
@@ -280,11 +284,13 @@ impl SettingsWindow {
             .flat_map(|group| self.rows(group))
             .filter(|setting| {
                 let haystack = format!(
-                    "{} {} {} {}",
+                    "{} {} {} {} {} {}",
                     setting.key,
                     setting.label,
                     setting.subgroup,
-                    setting.group.label()
+                    setting.group.label(),
+                    setting.description,
+                    setting.keywords.join(" "),
                 )
                 .to_lowercase();
                 words.iter().all(|word| haystack.contains(word))
@@ -305,11 +311,33 @@ impl SettingsWindow {
                     .child("No settings match your search."),
             );
         } else {
-            let mut form = Form::new(LABEL_WIDTH);
-            for descriptor in rows {
-                form = form.row(self.form_row(descriptor, window, cx));
-            }
-            results = results.child(form);
+            results = results.children(rows.into_iter().map(|setting| {
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(12.0))
+                    .py(px(5.0))
+                    .child(
+                        Button::new(
+                            SharedString::from(format!("find-{}", setting.key)),
+                            setting.label.clone(),
+                        )
+                        .size(ControlSize::Small)
+                        .on_click(cx.listener(
+                            move |view, _: &ClickEvent, window, cx| {
+                                view.show_group(setting.group, window, cx);
+                                view.prefs.tabs.insert(setting.group, setting.subgroup);
+                                view.prefs.reveal = Some(setting);
+                            },
+                        )),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(theme.type_.size_small))
+                            .text_color(silvestris::convert::hsla(theme.colors.text_secondary))
+                            .child(format!("{} · {}", setting.group.label(), setting.subgroup)),
+                    )
+            }));
         }
         results.into_any_element()
     }
@@ -341,7 +369,7 @@ impl SettingsWindow {
                     .child(div().w(px(166.0)).child(search)),
             );
         let content = if !query.is_empty() {
-            self.render_search(&query, window, cx)
+            self.render_search(&query, cx)
         } else {
             match self.prefs.navigator.current().and_then(|id| group_from(id)) {
                 None => {
@@ -391,6 +419,14 @@ impl SettingsWindow {
                     .size_full()
                     .flex()
                     .flex_col()
+                    .when(matches!(self.target, Target::Card(_)), |root| {
+                        root.child(
+                            div()
+                                .px(px(16.0))
+                                .py(px(8.0))
+                                .child(self.card_reset_control(cx)),
+                        )
+                    })
                     .child(content),
             )
             .into_any_element()
@@ -436,6 +472,9 @@ impl SettingsWindow {
         if group == Group::General && self.target == Target::Global {
             body = body.child(Form::new(LABEL_WIDTH).rows(self.appearance_rows(cx)));
         }
+        if group == Group::Controls {
+            body = body.child(self.render_controllers(cx));
+        }
         let mut current: Option<&'static str> = None;
         let mut form_rows = Vec::new();
         for descriptor in rows {
@@ -457,7 +496,8 @@ impl SettingsWindow {
         if !form_rows.is_empty() {
             body = body.child(Form::new(LABEL_WIDTH).rows(form_rows));
         }
-        let mut view = TabView::new(SharedString::from(format!("pane-{}", group_id(group))));
+        let mut view = TabView::new(SharedString::from(format!("pane-{}", group_id(group))))
+            .scroll_handle(self.prefs.pane_scroll.clone());
         if tabbed {
             let this = cx.entity().downgrade();
             let tabs = subgroups
@@ -473,6 +513,7 @@ impl SettingsWindow {
                         .find(|s| *s == id.as_ref())
                     {
                         view.prefs.tabs.insert(group, s);
+                        view.prefs.pane_scroll = gpui::ScrollHandle::new();
                         view.prefs.fit_pending = true;
                         cx.notify();
                     }
@@ -511,6 +552,20 @@ impl SettingsWindow {
         if let Some(error) = self.error.clone() {
             out.push(note(error, c.error));
         }
+        if let Some(error) = &self.report_error {
+            out.push(note(
+                format!("Could not read saved settings. {error}"),
+                c.error,
+            ));
+        } else if self.host.is_some() && self.report.is_none() {
+            out.push(note("Loading saved settings…".into(), c.text_secondary));
+        }
+        if self.saved_read_only() {
+            out.push(note(
+                "The saved settings file could not be read. Its values are read-only.".into(),
+                c.warning,
+            ));
+        }
         if self.host.is_none() {
             out.push(note(
                 "No host configuration: only desktop preferences can be changed.".into(),
@@ -545,6 +600,49 @@ impl SettingsWindow {
             }
         }
         out
+    }
+
+    fn card_reset_control(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let target = self.target.clone();
+        let confirm = self.prefs.reset_card.as_ref() == Some(&target);
+        div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(prefs::CONTROL_GAP))
+            .when(!confirm, |row| {
+                row.child(
+                    Button::new("reset-card-overrides", "Reset Card Overrides…")
+                        .disabled(!self.saved_editable())
+                        .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                            if view.target == target {
+                                view.prefs.reset_card = Some(target.clone());
+                                cx.notify();
+                            }
+                        })),
+                )
+            })
+            .when(confirm, |row| {
+                row.child("Clear all saved overrides for this card?")
+                    .child(
+                        Button::new("cancel-reset-card", "Cancel").on_click(cx.listener(
+                            |view, _: &ClickEvent, _, cx| {
+                                view.prefs.reset_card = None;
+                                cx.notify();
+                            },
+                        )),
+                    )
+                    .child(
+                        Button::new("confirm-reset-card", "Reset to Global")
+                            .disabled(!self.saved_editable())
+                            .on_click(cx.listener(|view, _: &ClickEvent, _, cx| {
+                                if let Some(target) = view.prefs.reset_card.take() {
+                                    view.reset_card(target, cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+            })
     }
 
     fn appearance_rows(&self, cx: &mut Context<Self>) -> Vec<FormRow> {
@@ -622,10 +720,51 @@ impl SettingsWindow {
             _ => source == self.target.layer(),
         };
         let key = descriptor.key.clone();
-        let enabled = editable.is_ok();
-        let mut control = div().flex().items_center().gap(px(prefs::CONTROL_GAP));
+        let card_value = matches!(self.target, Target::Card(_))
+            && matches!(descriptor.owner, Owner::Azahar | Owner::Input)
+            && source != "managed";
+        let enabled = editable.is_ok() && (!card_value || overridden);
+        let mut control = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(prefs::CONTROL_GAP));
         let mut labelled = true;
         match &descriptor.kind {
+            _ if key == "lotus.input.preset" => {
+                let current = value.as_str().unwrap_or(lotus_input::layout::BUILTIN);
+                let mut presets: Vec<String> = lotus_input::layout::builtins()
+                    .into_iter()
+                    .map(|preset| preset.name)
+                    .chain(self.presets.iter().cloned())
+                    .collect();
+                let missing = !presets.iter().any(|name| name == current);
+                if missing {
+                    presets.push(current.to_string());
+                }
+                let selected = presets.iter().position(|name| name == current);
+                let items = presets
+                    .iter()
+                    .map(|name| {
+                        if missing && name == current {
+                            SharedString::from(format!("{name} (missing)"))
+                        } else {
+                            SharedString::from(name.clone())
+                        }
+                    })
+                    .collect();
+                control = control.child(
+                    PopUpButton::new("input-preset", descriptor.label.clone(), items)
+                        .selected(selected)
+                        .disabled(!enabled)
+                        .min_width(140.0)
+                        .on_choose(cx.listener(move |view, index: &usize, _, cx| {
+                            if let Some(name) = presets.get(*index) {
+                                view.write(descriptor, Some(Value::String(name.clone())), cx);
+                            }
+                        })),
+                );
+            }
             Kind::Boolean => {
                 labelled = false;
                 control = control.child(
@@ -720,6 +859,38 @@ impl SettingsWindow {
                         move |view, _: &ClickEvent, _, cx| view.write(descriptor, None, cx),
                     )),
                 );
+        } else if card_value && editable.is_ok() {
+            control = control.child(
+                Button::new(SharedString::from(format!("override-{key}")), "Override")
+                    .size(ControlSize::Mini)
+                    .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
+                        let (value, source) = view.value(descriptor, cx);
+                        if matches!(view.target, Target::Card(_)) && source != view.target.layer() {
+                            view.write(descriptor, Some(value), cx);
+                        }
+                    })),
+            );
+        }
+        if self.prefs.reveal.is_some_and(|setting| setting.key == key) {
+            self.prefs.reveal = None;
+            let scroll = self.prefs.pane_scroll.clone();
+            control = control.relative().child(
+                gpui::canvas(
+                    move |bounds, window, cx| {
+                        let scroll = scroll.clone();
+                        window.defer(cx, move |window, _| {
+                            let offset = scroll.offset();
+                            let y = (offset.y + scroll.bounds().top() - bounds.top())
+                                .clamp(-scroll.max_offset().y, px(0.0));
+                            scroll.set_offset(gpui::point(offset.x, y));
+                            window.refresh();
+                        });
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            );
         }
         // The consumer citation is a help tag, not body text (HIG p. 82 help tags).
         let control: AnyElement = if descriptor.sources.is_empty() {
@@ -747,11 +918,25 @@ impl SettingsWindow {
             }
             _ => descriptor.description.clone(),
         };
+        if card_value && self.report.is_some() {
+            note.push_str(if overridden {
+                " Overridden for this card."
+            } else {
+                " Inherited from Global."
+            });
+        }
         if let Some(pending) = self.pending_note(&key) {
             if !note.is_empty() {
                 note.push(' ');
             }
             note.push_str(&pending);
+        } else if matches!(
+            descriptor.apply,
+            lotus_settings::Apply::Renderer
+                | lotus_settings::Apply::Boot
+                | lotus_settings::Apply::CfgSavedata
+        ) {
+            note.push_str(" Changes apply at the next start.");
         }
         if !note.trim().is_empty() {
             row = row.note(note);
@@ -959,5 +1144,130 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("settings-search-results").is_none());
         assert!(cx.debug_bounds("preference-pane-general").is_some());
+        let key = "use_hw_shader";
+        let descriptor = Registry::builtin().get(key).unwrap();
+        cx.update(|window, cx| {
+            let search = settings.read(cx).prefs.search.as_ref().unwrap().clone();
+            search.update(cx, |field, cx| field.set_text(key, cx));
+            window.draw(cx).clear(cx);
+        });
+        assert!(cx.debug_bounds("toggle-use_hw_shader").is_none());
+        let found = cx.debug_bounds("find-use_hw_shader").unwrap();
+        cx.simulate_click(found.center(), gpui::Modifiers::default());
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        cx.update(|window, cx| {
+            window.draw(cx).clear(cx);
+            let view = settings.read(cx);
+            assert_eq!(view.group, descriptor.group);
+            assert_eq!(view.target, Target::Global);
+            assert_eq!(
+                view.prefs.tabs.get(&descriptor.group),
+                Some(&descriptor.subgroup)
+            );
+        });
+        assert!(cx.debug_bounds("settings-search-results").is_none());
+        let row = cx.debug_bounds("row-use_hw_shader").unwrap();
+        let viewport = cx.debug_bounds("tab-view-box").unwrap();
+        assert!(row.top() >= viewport.top() && row.top() < viewport.bottom());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn mounted_card_override_and_confirmed_reset_leave_global_settings_intact() {
+        use lotus_protocol::envelope::SessionUuid;
+        use lotus_session::supervisor::HostConfig;
+
+        let storage =
+            std::env::temp_dir().join(format!("lotus-settings-ui-{}", SessionUuid::generate()));
+        std::fs::create_dir_all(storage.join("cards/dev")).unwrap();
+        let mut config = HostConfig::new(std::env::current_exe().unwrap(), &storage);
+        config.allow_control = true;
+        let host = Arc::new(Supervisor::new(config).unwrap());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let key = "use_hw_shader";
+        let set_global = |value| {
+            runtime
+                .block_on(host.set_setting(
+                    &SettingsTarget::Global,
+                    key,
+                    Some(Value::Bool(value)),
+                    Actor::Mcp,
+                ))
+                .unwrap()
+        };
+        set_global(false);
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx)
+        });
+        let (main, _) = app.add_window_view(LotusWindow::test_preview);
+        let (settings, cx) = app.add_window_view(|window, cx| {
+            SettingsWindow::new(
+                main.downgrade(),
+                Some(host.clone()),
+                true,
+                Target::Card("dev".into()),
+                window,
+                cx,
+            )
+        });
+        let descriptor = Registry::builtin().get(key).unwrap();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let wait_for = |cx: &mut gpui::VisualTestContext, want: &str, value: bool| {
+            for _ in 0..100 {
+                draw(cx);
+                let source = cx.update(|_, cx| {
+                    let view = settings.read(cx);
+                    view.report.as_ref().map(|_| view.value(descriptor, cx))
+                });
+                if source.as_ref().is_some_and(|(current, source)| {
+                    current == &Value::Bool(value) && source == want
+                }) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("timed out waiting for {want} level");
+        };
+        wait_for(cx, "global", false);
+        let click = |cx: &mut gpui::VisualTestContext, selector| {
+            let bounds = cx.debug_bounds(selector).unwrap();
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            draw(cx);
+        };
+        cx.update(|window, cx| {
+            settings.update(cx, |view, cx| {
+                view.show_group(descriptor.group, window, cx);
+                view.prefs
+                    .tabs
+                    .insert(descriptor.group, descriptor.subgroup);
+                view.prefs.reveal = Some(descriptor);
+            });
+        });
+        draw(cx);
+        draw(cx);
+        click(cx, "toggle-use_hw_shader");
+        wait_for(cx, "global", false);
+        click(cx, "override-use_hw_shader");
+        wait_for(cx, "card", false);
+        click(cx, "toggle-use_hw_shader");
+        wait_for(cx, "card", true);
+        click(cx, "reset-use_hw_shader");
+        wait_for(cx, "global", false);
+        click(cx, "override-use_hw_shader");
+        wait_for(cx, "card", false);
+        click(cx, "reset-card-overrides");
+        click(cx, "cancel-reset-card");
+        wait_for(cx, "card", false);
+        click(cx, "reset-card-overrides");
+        click(cx, "confirm-reset-card");
+        wait_for(cx, "global", false);
+        set_global(true);
+        cx.update(|_, cx| settings.update(cx, |view, cx| view.refresh(cx)));
+        wait_for(cx, "global", true);
+        let _ = std::fs::remove_dir_all(storage);
     }
 }

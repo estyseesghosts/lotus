@@ -914,15 +914,20 @@ and the desktop applies it to running sessions. The editor is #64.
   the target session's layout. The session input-owner protocol (#48) is
   unchanged.
 
-**Editor interaction (#64, not built).** The Controls view sits inside the
-standalone Settings window. It shows a 3DS outline with every action. Selecting
-one lists its bindings with the layer each came from, and offers add (capture
-the next key or controller input), remove, and reset to inherited. A scope
-picker chooses global, card or the selected secondary. The view has preset
-create/rename/duplicate/delete and import/export; builtin presets are
-read-only. Conflicting bindings are marked on both actions, and unbound actions
-are listed. Keyboard and controller bindings are listed separately. Bindings for
-absent devices are greyed out.
+**Controller assignments (#64).** Settings → Controls shows connected devices
+by name and connection ID. Identify Controller marks the next pad to press a
+button. Each pad can be assigned to a loaded primary or secondary. Occupied
+sessions are listed with their pad ID. Unassign the old pad before moving
+another pad to that session. Disconnected devices show their last assignment
+while it can still be restored. The preset picker lists built-in and saved
+layouts for the current settings scope. Paired sessions show a Pad badge in
+the source list and for the selected session in the toolbar. The badge's
+tooltip identifies the controller.
+
+The mounted GPUI test assigns two identically named synthetic pads from the
+Settings menus and reads the two mock workers' independent input streams. The
+visual mapping editor, input capture and temporary secondary mapping edits
+remain open in #64.
 
 Evidence: **verified compiled**. Unit tests in `layout.rs` cover:
 
@@ -1048,6 +1053,17 @@ the bounds minimum. The reload on revision change and on activation is
 **source inspected** only. macOS and Linux are not built or run. `--mcp`
 mode keeps the process alive after its window closes, with or without
 Settings; that predates #53.
+
+### Search and overrides (#54)
+
+Search matches labels, descriptions, backend keys and registry keywords. A
+result opens its original category and subgroup and scrolls to the control.
+Card rows display whether their values are inherited. **Override** copies the
+current saved value to the card. **Reset to Global** removes that entry. The
+card-wide reset requires confirmation and only clears the selected card's saved
+overrides. Worker rows report when a change applies at the next start or is
+unavailable on the mounted backend. Loading and unreadable saved settings
+disable writes to the affected scope.
 
 ## Settings layers (#51)
 

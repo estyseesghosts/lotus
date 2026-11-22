@@ -373,11 +373,17 @@ impl LotusWindow {
     }
 
     fn shared_source_actions(&self, row: &SourceRow, cx: &mut Context<Self>) -> AnyElement {
+        let theme = theme::palette(cx);
         let mut container = div()
             .debug_selector(|| format!("source-actions-{}", row.id))
             .flex()
+            .items_center()
             .flex_none()
-            .gap(px(2.0));
+            .gap(px(2.0))
+            .children(
+                self.source_session(&row.id)
+                    .and_then(|target| self.paired_controller_badge(&target.id, theme)),
+            );
         for action in self.source_actions(row) {
             let id = SharedString::from(format!("source-{}-{}", action.key, row.id));
             container = container.child(

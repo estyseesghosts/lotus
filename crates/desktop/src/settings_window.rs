@@ -24,7 +24,7 @@ use gpui::{
 };
 #[cfg(not(feature = "silvestris-ui"))]
 use gpui::{Stateful, StatefulInteractiveElement};
-use lotus_session::supervisor::{SettingStatus, SettingsTarget, Supervisor};
+use lotus_session::supervisor::{SettingChange, SettingStatus, SettingsTarget, Supervisor};
 use lotus_session::telemetry::Actor;
 use lotus_settings::{Availability, Descriptor, Group, Kind, Owner, Registry, Scope};
 use serde_json::Value;
@@ -36,6 +36,8 @@ use crate::theme;
 #[cfg(not(feature = "silvestris-ui"))]
 use gpui::{TitlebarOptions, WindowBounds, WindowOptions};
 
+#[cfg(feature = "silvestris-ui")]
+mod controllers;
 #[cfg(feature = "silvestris-ui")]
 mod shared;
 
@@ -204,6 +206,7 @@ pub struct SettingsWindow {
     group: Group,
     /// `Supervisor::settings` for `target`; `None` until loaded or without a host.
     report: Option<Value>,
+    report_error: Option<String>,
     cards: Vec<String>,
     error: Option<String>,
     /// Bumped per target switch, so a late report for the previous target is dropped.
@@ -211,6 +214,10 @@ pub struct SettingsWindow {
     focus: FocusHandle,
     #[cfg(feature = "silvestris-ui")]
     prefs: shared::PreferencesState,
+    #[cfg(feature = "silvestris-ui")]
+    controllers: controllers::Panel,
+    #[cfg(feature = "silvestris-ui")]
+    presets: Vec<String>,
 }
 
 impl SettingsWindow {
@@ -233,12 +240,20 @@ impl SettingsWindow {
                         .timer(std::time::Duration::from_millis(250))
                         .await;
                     let now = host.settings_revision();
-                    if now != seen {
-                        seen = now;
-                        if this.update(cx, |view, cx| view.refresh(cx)).is_err() {
-                            break;
-                        }
-                    } else if this.upgrade().is_none() {
+                    let changed = now != seen;
+                    seen = now;
+                    if this
+                        .update(cx, |view, cx| {
+                            if changed {
+                                view.refresh(cx);
+                            }
+                            #[cfg(feature = "silvestris-ui")]
+                            if view.group == Group::Controls {
+                                view.refresh_controllers(cx);
+                            }
+                        })
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -258,13 +273,20 @@ impl SettingsWindow {
             target,
             group: Group::General,
             report: None,
+            report_error: None,
             cards: Vec::new(),
             error: None,
             generation: 0,
             focus: cx.focus_handle(),
             #[cfg(feature = "silvestris-ui")]
             prefs: shared::PreferencesState::default(),
+            #[cfg(feature = "silvestris-ui")]
+            controllers: controllers::Panel::default(),
+            #[cfg(feature = "silvestris-ui")]
+            presets: Vec::new(),
         };
+        #[cfg(feature = "silvestris-ui")]
+        view.init_controllers(cx);
         view.refresh(cx);
         view
     }
@@ -273,8 +295,12 @@ impl SettingsWindow {
         if self.target != target {
             self.target = target;
             #[cfg(feature = "silvestris-ui")]
-            self.prefs.fields.clear();
+            {
+                self.prefs.fields.clear();
+                self.prefs.reset_card = None;
+            }
             self.report = None;
+            self.report_error = None;
             self.error = None;
         }
         self.refresh(cx);
@@ -292,20 +318,39 @@ impl SettingsWindow {
         let loading = cx.background_spawn(async move {
             let report = host.settings(&target).await;
             let cards = host.cards();
-            (report, cards)
+            #[cfg(feature = "silvestris-ui")]
+            let presets = host
+                .input_presets()
+                .0
+                .into_iter()
+                .map(|preset| preset.name)
+                .collect();
+            #[cfg(not(feature = "silvestris-ui"))]
+            let presets = ();
+            (report, cards, presets)
         });
         cx.spawn(async move |this, cx| {
-            let (report, cards) = loading.await;
+            let (report, cards, _presets) = loading.await;
             let _ = this.update(cx, |view, cx| {
                 if view.generation != generation {
                     return;
                 }
                 match report {
-                    Ok(report) => view.report = Some(report),
-                    Err(error) => view.error = Some(error.to_string()),
+                    Ok(report) => {
+                        view.report = Some(report);
+                        view.report_error = None;
+                    }
+                    Err(error) => {
+                        view.report = None;
+                        view.report_error = Some(error.to_string());
+                    }
                 }
                 if let Ok(cards) = cards {
                     view.cards = cards;
+                }
+                #[cfg(feature = "silvestris-ui")]
+                {
+                    view.presets = _presets;
                 }
                 cx.notify();
             });
@@ -315,6 +360,17 @@ impl SettingsWindow {
 
     /// Save (`Some`) or remove (`None`) one value at the current target.
     fn write(&mut self, descriptor: &Descriptor, value: Option<Value>, cx: &mut Context<Self>) {
+        let (_, source) = self.value(descriptor, cx);
+        if self.editable(descriptor, &source).is_err() {
+            return;
+        }
+        if let Some(value) = &value {
+            if let Err(error) = descriptor.validate(value) {
+                self.error = Some(error.to_string());
+                cx.notify();
+                return;
+            }
+        }
         if descriptor.owner == Owner::Desktop {
             self.error = None;
             if let Some(value) = value.or_else(|| Some(descriptor.default.clone())) {
@@ -335,6 +391,29 @@ impl SettingsWindow {
         let saving = cx.background_spawn(async move {
             host.set_setting(&target, &key, value, Actor::Desktop).await
         });
+        self.track_write(ui_target, saving, cx);
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    fn reset_card(&mut self, target: Target, cx: &mut Context<Self>) {
+        if self.target != target || !matches!(target, Target::Card(_)) || !self.saved_editable() {
+            return;
+        }
+        let Some(host) = self.host.clone() else {
+            return;
+        };
+        let saved = target.settings_target();
+        let saving =
+            cx.background_spawn(async move { host.reset_settings(&saved, Actor::Desktop).await });
+        self.track_write(target, saving, cx);
+    }
+
+    fn track_write(
+        &self,
+        ui_target: Target,
+        saving: gpui::Task<std::io::Result<Vec<SettingChange>>>,
+        cx: &mut Context<Self>,
+    ) {
         cx.spawn(async move |this, cx| {
             let result = saving.await;
             let _ = this.update(cx, |view, cx| {
@@ -417,13 +496,52 @@ impl SettingsWindow {
                     Err("No host configuration: start LOTUS with a host.json to change this.")
                 } else if !self.control {
                     Err("This host is read-only (allow_control is off).")
+                } else if self.report.is_none() {
+                    Err("Saved settings are unavailable.")
+                } else if self.saved_read_only() {
+                    Err("The saved settings file is read-only until it can be repaired.")
                 } else if source == "managed" {
                     Err("Managed by the host configuration profile.")
+                } else if self.unavailable_on_mounted_worker(descriptor) {
+                    Err("Unavailable on the mounted worker backend.")
                 } else {
                     Ok(())
                 }
             }
         }
+    }
+
+    #[cfg(feature = "silvestris-ui")]
+    fn saved_editable(&self) -> bool {
+        self.control && self.report.is_some() && !self.saved_read_only()
+    }
+
+    fn saved_read_only(&self) -> bool {
+        let name = match self.target {
+            Target::Global => "global.json",
+            Target::Card(_) => "lotus-settings.json",
+        };
+        self.report
+            .as_ref()
+            .and_then(|report| report["read_only"].as_array())
+            .is_some_and(|paths| {
+                paths.iter().filter_map(Value::as_str).any(|path| {
+                    std::path::Path::new(path)
+                        .file_name()
+                        .is_some_and(|file| file == name)
+                })
+            })
+    }
+
+    fn unavailable_on_mounted_worker(&self, descriptor: &Descriptor) -> bool {
+        matches!(descriptor.availability, Availability::BranchOnly { .. })
+            && self
+                .report
+                .as_ref()
+                .and_then(|report| report["effective_settings"].as_object())
+                .is_some_and(|settings| {
+                    !settings.is_empty() && !settings.contains_key(&descriptor.key)
+                })
     }
 
     fn pending_note(&self, key: &str) -> Option<String> {

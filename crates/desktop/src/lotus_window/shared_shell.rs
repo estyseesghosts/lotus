@@ -101,6 +101,7 @@ impl LotusWindow {
                             .unwrap_or_else(|| "No session selected".into()),
                     ),
             )
+            .children(self.paired_controller_badge(&self.selected, theme))
             .when(wide, |bar| {
                 bar.child(button("shared-zoom", global(GlobalCommand::ZoomNext)))
                     .child(button("shared-screens", global(GlobalCommand::ScreensNext)))
