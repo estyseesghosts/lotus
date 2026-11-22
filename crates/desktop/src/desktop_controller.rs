@@ -961,15 +961,26 @@ impl Loops {
     ) -> io::Result<Value> {
         let mut value = self.dispatch_debug(target, command).await?;
         if panel == Panel::Cpu {
-            if let Some(pc) = value["registers"][15].as_u64() {
+            if let Some(pc) = value["registers"][15]
+                .as_u64()
+                .and_then(|pc| u32::try_from(pc).ok())
+            {
+                // Keep the automatic preview inside the guest page containing
+                // the PC. The neighboring page may not be mapped.
+                const PAGE_SIZE: u32 = 4096;
                 let command = DebugCommand::Disassemble {
-                    address: pc as u32,
-                    length: 64,
+                    address: pc,
+                    length: 64.min(PAGE_SIZE - pc % PAGE_SIZE),
                     thumb: value["cpsr"].as_u64().unwrap_or(0) & 32 != 0,
                 };
-                if let Ok(assembly) = self.dispatch_debug(target, &command).await {
-                    value["disassembly"] = assembly;
+                match self.dispatch_debug(target, &command).await {
+                    Ok(assembly) => value["disassembly"] = assembly,
+                    Err(error) => {
+                        value["disassembly_error"] = format!("0x{pc:08x} · {error}").into();
+                    }
                 }
+            } else {
+                value["disassembly_error"] = "The worker did not return a program counter".into();
             }
         }
         Ok(value)

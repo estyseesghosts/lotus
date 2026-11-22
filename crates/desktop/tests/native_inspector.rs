@@ -609,6 +609,12 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
                     .is_some_and(|target| target.is_current(&update.inspected, &update.sessions))
                     && snapshot.panel == Panel::Cpu
                     && snapshot.view.rows.iter().any(|r| r.key == "r15")
+                    && snapshot.view.rows.iter().any(|r| r.key == "CPSR")
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|r| r.key == "instruction" && r.lane == "PC")
             })
         });
         let pc = {
@@ -895,6 +901,51 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         assert_ne!(replacement.epoch, target.epoch);
         gdb_action(&controller, &replacement, GdbAction::Start { port: 0 });
         let until_stop = listener(&controller, &replacement);
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::first_page(Panel::Cpu);
+        controller
+            .commands
+            .send(Command::Pause(id.clone()))
+            .unwrap();
+        wait(&controller, |update| {
+            replacement
+                .resolve(&update.sessions)
+                .is_some_and(|session| {
+                    session.telemetry.state == lotus_session::SessionState::Paused
+                        && !session.telemetry.playing
+                })
+        });
+        controller
+            .commands
+            .send(Command::DebugAt {
+                target: replacement.clone(),
+                panel: Panel::Cpu,
+                command: D::WriteRegister {
+                    core: 0,
+                    register: 15,
+                    value: 0,
+                },
+            })
+            .unwrap();
+        wait(&controller, |update| {
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.target.as_ref() == Some(&replacement)
+                    && snapshot.panel == Panel::Cpu
+                    && snapshot.view.rows.iter().any(|row| {
+                        row.key == "Disassembly unavailable" && row.value.contains("unmapped")
+                    })
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|row| row.key == "r15" && row.value == "00000000")
+                    && !snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|row| row.key == "instruction")
+            })
+        });
         controller.inspector.store(false, Ordering::Release);
         *controller.inspection_selection.lock().unwrap() =
             InspectionSelection::first_page(Panel::Result);

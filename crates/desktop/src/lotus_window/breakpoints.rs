@@ -20,12 +20,6 @@ fn kind_name(kind: BreakpointKind) -> &'static str {
     }
 }
 
-/// Accept only the address prefix emitted by the host's LLVM decoder.
-pub(super) fn instruction_address(text: &str) -> Option<u32> {
-    let (address, _) = text.trim_start().split_once(':')?;
-    u32::from_str_radix(address, 16).ok()
-}
-
 #[derive(Default)]
 pub(super) struct BreakpointPanel {
     selected: Option<u64>,
@@ -808,7 +802,7 @@ mod tests {
                 .iter()
                 .find_map(|row| {
                     (row.key == "instruction")
-                        .then(|| instruction_address(&row.value))
+                        .then(|| inspection::instruction_address(&row.value))
                         .flatten()
                 })
                 .unwrap();

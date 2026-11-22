@@ -4411,7 +4411,7 @@ impl LotusWindow {
                             #[cfg(feature = "silvestris-ui")]
                             let jump = (current == Panel::Cpu && row.key == "instruction")
                                 .then(|| {
-                                    breakpoints::instruction_address(&row.value)
+                                    inspection::instruction_address(&row.value)
                                         .zip(instruction_width)
                                 })
                                 .flatten();
@@ -4436,7 +4436,10 @@ impl LotusWindow {
                                     .text_xs()
                             };
                             let line = with_tooltip(
-                                line.when(show_lane, |line| {
+                                line.when(current == Panel::Cpu && row.lane == "PC", |line| {
+                                    line.bg(theme.surface_active)
+                                })
+                                .when(show_lane, |line| {
                                     line.child(
                                         div()
                                             .w(px(48.0))

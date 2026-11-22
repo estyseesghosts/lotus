@@ -366,6 +366,12 @@ pub struct Row {
     pub value: String,
     pub action: Option<D>,
 }
+
+/// Parse the address prefix emitted by the host's LLVM decoder.
+pub(crate) fn instruction_address(text: &str) -> Option<u32> {
+    let (address, _) = text.trim_start().split_once(':')?;
+    u32::from_str_radix(address, 16).ok()
+}
 #[derive(Debug, Clone)]
 pub struct Inspection {
     pub rows: Arc<Vec<Row>>,
@@ -581,14 +587,39 @@ impl Inspection {
                     });
                 }
             }
+            if let Some(cpsr) = value["cpsr"].as_u64() {
+                let mode = if cpsr & 32 != 0 { "Thumb" } else { "ARM" };
+                rows.push(Row {
+                    lane: "CPU",
+                    key: "CPSR".into(),
+                    value: format!("0x{cpsr:08x} · {mode}"),
+                    action: None,
+                });
+            }
+            if let Some(error) = value["disassembly_error"].as_str() {
+                rows.push(Row {
+                    lane: "CPU",
+                    key: "Disassembly unavailable".into(),
+                    value: error.into(),
+                    action: None,
+                });
+            }
             if let Some(assembly) = value["disassembly"]["assembly"].as_str() {
+                let pc = value["registers"][15].as_u64();
                 for line in assembly
                     .lines()
                     .filter(|line| !line.trim().is_empty())
                     .take(100)
                 {
                     rows.push(Row {
-                        lane: "CPU",
+                        lane: if instruction_address(line)
+                            .map(u64::from)
+                            .is_some_and(|address| Some(address) == pc)
+                        {
+                            "PC"
+                        } else {
+                            "CPU"
+                        },
                         key: "instruction".into(),
                         value: line.into(),
                         action: None,

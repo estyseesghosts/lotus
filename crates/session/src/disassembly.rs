@@ -61,8 +61,18 @@ pub async fn decode(root: &Path, address: u32, bytes: &[u8], thumb: bool) -> io:
     command.creation_flags(0x0800_0000);
     let result = tokio::time::timeout(std::time::Duration::from_secs(3), command.output()).await;
     let _ = std::fs::remove_file(path);
-    let output =
-        result.map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "LLVM decode deadline"))??;
+    let output = result
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "LLVM decode deadline"))?
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Cannot find llvm-objdump on the host PATH",
+                )
+            } else {
+                error
+            }
+        })?;
     if !output.status.success() || output.stdout.len() > 131072 {
         return Err(io::Error::other(
             "LLVM ARM disassembler failed; install llvm-objdump on the host PATH",
