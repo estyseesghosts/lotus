@@ -556,9 +556,13 @@ fn two_pads_soak_without_crossover_or_stuck_input() {
         phase_cost(load_one, load_two, phase),
     );
 
-    // A stalls for 2 s; B's worker keeps accepting pad 2's input meanwhile.
-    std::fs::write(root(a).join("mock-stall-ms"), "2000").expect("stall");
-    std::thread::sleep(Duration::from_millis(100));
+    // The mock removes the marker as it starts delaying A's input reply.
+    // Observe that handoff before counting B's progress during the stall.
+    let stall = root(a).join("mock-stall-ms");
+    std::fs::write(&stall, "2000 input").expect("stall");
+    step(0, n);
+    n += 1;
+    until("A entered the input stall", || !stall.exists());
     let b_before = inputs(&root(b)).len();
     run(&[0, 1], Duration::from_millis(1500), &mut n);
     let b_during = inputs(&root(b)).len();
@@ -635,19 +639,18 @@ fn two_pads_soak_without_crossover_or_stuck_input() {
         cost_two.1
     );
     assert_eq!(service.diagnostics().dropped, 0, "device events dropped");
-    // A's stall must not reach B. B can still drop a few edges when its own exchange
-    // outlasts MAILBOX steps (8 x ~1 ms) on a loaded host (#48); a leaked stall would hold
-    // B for ~2 s and drop edges at A's rate.
+    // The delayed reply must reach A's delivery telemetry, while B stays responsive.
+    // Either mailbox can drop edges on a busy host (#48), so totals across the whole
+    // run don't identify a stall leaking from one worker to another.
+    assert!(
+        input_a.latency_max_ms >= 2_000.0,
+        "A's stalled reply took only {:.1} ms",
+        input_a.latency_max_ms
+    );
     assert!(
         input_b.latency_max_ms < 250.0,
         "B waited {:.1} ms during A's stall",
         input_b.latency_max_ms
-    );
-    assert!(
-        input_b.edges_dropped * 10 < input_a.edges_dropped,
-        "B lost {} presses against A's {}",
-        input_b.edges_dropped,
-        input_a.edges_dropped
     );
     assert_eq!((input_a.denied, input_b.denied), (0, 0));
 
