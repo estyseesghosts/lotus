@@ -114,6 +114,22 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python tools/bench_parallel.py --smoke --stall --server target/release/lotus-mcp.exe --worker mock=target/release/lotus-mock-native.exe --rom "mock=$PWD/build/mock.rom" --workers 2 --output build/bench-parallel-stall
           exit $LASTEXITCODE
+      - name: Stage native desktop smoke test
+        run: |
+          $build = cargo test --locked --release -p lotus-desktop --test native_inspector --no-run --message-format=json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $tests = @($build | ForEach-Object { ConvertFrom-Json -InputObject $_ } | Where-Object {
+            $_.reason -eq "compiler-artifact" -and $_.target.name -eq "native_inspector" -and $_.executable
+          })
+          if ($tests.Count -ne 1) { throw "Expected one native inspector test binary" }
+          New-Item -ItemType Directory -Force build/native-desktop-smoke | Out-Null
+          Copy-Item -LiteralPath $tests[0].executable -Destination build/native-desktop-smoke/native-inspector.exe
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: native-desktop-smoke
+          path: build/native-desktop-smoke/
+          if-no-files-found: error
+          retention-days: 7
       - name: Stage applications and notices
         run: |
           cargo metadata --locked --format-version 1 --filter-platform x86_64-pc-windows-gnu > build/metadata.json
@@ -213,6 +229,13 @@ jobs:
           path: build/citnlo-artifact
           run-id: ${{ inputs.reuse_build_run || github.run_id }}
           github-token: ${{ github.token }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        continue-on-error: ${{ inputs.reuse_build_run != '' }}
+        with:
+          name: native-desktop-smoke
+          path: build/native-desktop-smoke
+          run-id: ${{ inputs.reuse_build_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Assemble and test portable ZIP
         run: |
           $version = python -c "import tomllib; print(tomllib.load(open('Cargo.toml','rb'))['workspace']['package']['version'])"
@@ -225,6 +248,9 @@ jobs:
           # (clang from the runner image). Publication needs this job, so a failure blocks it.
           python tools/build-debug-fixture.py build/fixture
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (Test-Path -LiteralPath build/native-desktop-smoke/native-inspector.exe) {
+            $env:LOTUS_DESKTOP_SMOKE = (Resolve-Path -LiteralPath build/native-desktop-smoke/native-inspector.exe).Path
+          }
           python tests/test_packaged.py --zip "build/dist/LOTUS-v$version-windows-x64.zip" build/fixture/debugger.3dsx build/fixture/debugger.elf build/packaged
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Copy-Item build/packaged/packaged.json "build/dist/LOTUS-v$version-packaged-acceptance.json"

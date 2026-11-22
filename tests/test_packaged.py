@@ -20,11 +20,15 @@ Usage: test_packaged.py --zip <LOTUS-*-windows-x64.zip> <debugger.3dsx> <debugge
            <integration commit> <experimental commit> <debugger.3dsx> <debugger.elf> <output dir>
 `--zip` unpacks the assembled portable ZIP into the output directory and takes the host, both
 workers and the expected commits (`release-manifest.json` `native_pins`) from it. The report,
-`packaged.json`, records each worker's source commit and features (the release feature matrix).
+`packaged.json`, records each worker's source commit and features. When LOTUS_DESKTOP_SMOKE
+points to the native inspector test binary from the same Rust build, the report also records
+desktop checks against both extracted workers.
 """
 import json
+import os
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import time
 import zipfile
@@ -166,6 +170,34 @@ def check(backend, server, worker, commit, rom, elf, output):
     return result
 
 
+def desktop_smoke(server, azahar, citnlo, rom):
+    report = {
+        "citnlo": {"CPU stepping and ELF symbols": "untested",
+                   "GPU draw and shared GDB listener": "untested"},
+        "azahar": {"GDB and GPU capture levels": "untested"},
+    }
+    smoke = os.environ.get("LOTUS_DESKTOP_SMOKE")
+    if not smoke:
+        return report
+    env = dict(os.environ, LOTUS_NATIVE_WORKER=str(Path(citnlo).resolve()),
+               LOTUS_AZAHAR_WORKER=str(Path(azahar).resolve()),
+               LOTUS_FIXTURE=str(Path(rom).resolve()),
+               LOTUS_DEBUG_FIXTURE=str(Path(rom).resolve()))
+    env["PATH"] = str(Path(server).resolve().parent) + os.pathsep + env["PATH"]
+    for test in ("cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture",
+                 "gdb_reports_unsupported_on_azahar"):
+        capture = subprocess.run([str(Path(smoke).resolve()), "--ignored", "--exact", test],
+                                 env=env, capture_output=True, text=True, timeout=120)
+        print(capture.stdout, end="")
+        print(capture.stderr, end="", file=sys.stderr)
+        capture.check_returncode()
+        if "1 passed" not in capture.stdout:
+            raise RuntimeError(f"Expected to run one desktop smoke test: {test}")
+    report["citnlo"]["CPU stepping and ELF symbols"] = "passed"
+    report["azahar"]["GDB and GPU capture levels"] = "unsupported verified"
+    return report
+
+
 def main():
     if sys.argv[1] == "--zip":
         archive, rom, elf, output = sys.argv[2:]
@@ -185,6 +217,7 @@ def main():
     report = {
         "azahar": check("azahar", server, Path(azahar), integration, rom, elf, output),
         "citnlo": check("citnlo", server, Path(citnlo), experimental, rom, elf, output),
+        "desktop_debugger": desktop_smoke(server, azahar, citnlo, rom),
     }
     (output / "packaged.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=1))
