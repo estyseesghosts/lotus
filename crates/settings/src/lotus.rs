@@ -1,5 +1,6 @@
 //! Lotus-owned settings: host configuration (`HostConfig`, read by every frontend), desktop
-//! preferences (`desktop.json`, the window only) and session input layouts (lotus#63). Defaults and bounds here are checked against
+//! preferences (`desktop.json`, the window only), session input layouts (lotus#63) and
+//! debugger request defaults (lotus#56). Defaults and bounds here are checked against
 //! the owning code by tests in `lotus-session` and `lotus-desktop`, so they cannot drift apart.
 
 use serde_json::{json, Value};
@@ -188,6 +189,86 @@ fn input_descriptors() -> Vec<Descriptor> {
     list
 }
 
+/// `lotus.debug.*` (lotus#56): global and card defaults the supervisor fills into a
+/// `rewind_configure` or `gpu_configure` request that omits the field, for every frontend
+/// (`lotus_session::supervisor::Supervisor::debug_defaults`). Unset leaves the field out, so
+/// the worker keeps its own default. Bounds are `DebugCommand::validate`'s
+/// (`lotus-protocol/src/debug.rs`); worker defaults are cited from the field docs there.
+fn debug_descriptors() -> Vec<Descriptor> {
+    let source = "lotus_session::supervisor::Supervisor::debug_defaults";
+    let debug = |key: &str,
+                 subgroup: &'static str,
+                 label: &str,
+                 description: &str,
+                 kind: Kind,
+                 keywords: &[&'static str]| Descriptor {
+        key: key.to_string(),
+        owner: Owner::Debugger,
+        group: Group::DebuggingTracing,
+        subgroup,
+        label: label.to_string(),
+        description: description.to_string(),
+        kind,
+        default: Value::Null,
+        scopes: Scopes::SAVED,
+        apply: Apply::DebugRequest,
+        availability: Availability::Available,
+        sources: vec![source.to_string()],
+        keywords: keywords.to_vec(),
+    };
+    let optional = |min: i64, max: i64| Kind::Integer {
+        min: Some(min),
+        max: Some(max),
+        choices: None,
+        nullable: true,
+    };
+    vec![
+        debug(
+            "lotus.debug.rewind.interval_frames",
+            "Rewind Defaults",
+            "Checkpoint interval",
+            "Frames between rewind checkpoints when enabling rewind does not name one. Larger              values cut savestate cost; reverse steps then re-execute longer windows. Input              changes always force a checkpoint. Unset: the worker default, 1.",
+            optional(1, 60),
+            &["rewind", "checkpoint", "cadence", "interval"],
+        ),
+        debug(
+            "lotus.debug.rewind.compression_level",
+            "Rewind Defaults",
+            "Checkpoint compression level",
+            "zstd level of stored rewind checkpoints when the request does not name one. Every              level restores the same state; lower levels trade memory for checkpoint time.              Unset: the worker default, 3.",
+            optional(-7, 19),
+            &["rewind", "zstd", "compression", "memory"],
+        ),
+        debug(
+            "lotus.debug.rewind.compression_queue",
+            "Rewind Defaults",
+            "Background compression queue",
+            "Checkpoints compressed off the emulation thread at once when the request does not              name a count; 0 compresses on the emulation thread. Used only by workers that              report rewind_compression_queue (CITnLO). Unset: the worker default, 1.",
+            optional(0, 4),
+            &["rewind", "compression", "queue", "thread"],
+        ),
+        debug(
+            "lotus.debug.gpu.capture",
+            "GPU Capture Defaults",
+            "GPU capture level",
+            "Capture level when enabling GPU capture does not name one: counters, events,              draws or full. Used only by workers that report gpu_capture_levels (CITnLO).              Counters accepts no stop events, so a request with stop events keeps the worker              default. Unset: the worker default, full.",
+            Kind::String {
+                max_len: 8,
+                choices: Some(
+                    ["counters", "events", "draws", "full"]
+                        .iter()
+                        .map(|c| c.to_string())
+                        .collect(),
+                ),
+                nullable: true,
+                exact_len: None,
+                hex: false,
+            },
+            &["gpu", "pica", "capture", "trace"],
+        ),
+    ]
+}
+
 pub(crate) fn descriptors() -> Vec<Descriptor> {
     use Apply::{HostStart, Immediate, SessionCreate};
     use Group::*;
@@ -209,6 +290,58 @@ pub(crate) fn descriptors() -> Vec<Descriptor> {
             HostStart,
             host,
             &["limit", "workers"],
+        ),
+        setting(
+            "lotus.host.storage_root",
+            Host,
+            SessionsStorage,
+            "Storage",
+            "Storage root",
+            "Guest storage: cards/<card> holds each card's SD, NAND and system data and its              saved overrides; scratch/<session> holds a secondary's copy, deleted when it ends              (logs kept after a crash). Generated files: artifacts/ holds captures under the              artifact quota, removed when the next host opens the store. Host caches:              shader-seed/ holds shader caches copied into new workers. Global defaults are              settings/global.json.",
+            Kind::Json { max_bytes: 4096 },
+            Value::Null,
+            HostStart,
+            host,
+            &["storage", "folder", "location", "saves", "artifacts", "cache"],
+        ),
+        setting(
+            "lotus.host.assets",
+            Host,
+            McpAutomation,
+            "Approved Content",
+            "Approved content files",
+            "Content clients may load, by handle. Clients name a handle, never a path.",
+            Kind::Json { max_bytes: 65_536 },
+            json!({}),
+            HostStart,
+            host,
+            &["assets", "homebrew", "3dsx", "approved", "files"],
+        ),
+        setting(
+            "lotus.host.asset_directories",
+            Host,
+            McpAutomation,
+            "Approved Content",
+            "Approved content directories",
+            "Every .3dsx directly inside one of these is loadable as <handle>/<file>;              subdirectories are not.",
+            Kind::Json { max_bytes: 65_536 },
+            json!({}),
+            HostStart,
+            host,
+            &["assets", "directory", "folder", "approved"],
+        ),
+        setting(
+            "lotus.host.source_roots",
+            Host,
+            DebuggingTracing,
+            "Source",
+            "Source roots",
+            "Local directories source excerpts may read, by handle, with the build-time path              prefix each replaces.",
+            Kind::Json { max_bytes: 65_536 },
+            json!({}),
+            HostStart,
+            host,
+            &["source", "dwarf", "symbols", "path"],
         ),
         setting(
             "lotus.host.prefer_vulkan",
@@ -591,5 +724,6 @@ pub(crate) fn descriptors() -> Vec<Descriptor> {
     ]
     .into_iter()
     .chain(input_descriptors())
+    .chain(debug_descriptors())
     .collect()
 }

@@ -9,9 +9,11 @@
 //!    ([`crate::card_store::GUEST_DIRS`]) never carries it;
 //! 4. a secondary's runtime overrides, kept in memory by the supervisor only.
 //!
-//! Input-layout keys (`lotus.input.*`, [`Owner::Input`]) use the same files and layers but
-//! never reach a worker: [`Resolution::profile`] leaves them out and [`Resolution::input`]
-//! turns them into the session's layout.
+//! Input-layout keys (`lotus.input.*`, [`Owner::Input`]) and debugger defaults
+//! (`lotus.debug.*`, [`Owner::Debugger`], global and card only) use the same files and layers
+//! but never reach a worker: [`Resolution::profile`] leaves them out, [`Resolution::input`]
+//! turns the former into the session's layout and the supervisor reads the latter when a
+//! debugger request omits a field.
 //!
 //! The host configuration `profile` is applied above all of these and cannot be edited here:
 //! it is managed by the host JSON or command line, and a saved entry it shadows is reported
@@ -184,6 +186,29 @@ impl Resolution {
         }
     }
 
+    /// Debugger request defaults (`lotus.debug.*`, lotus#56). Values were validated when
+    /// loaded; unset keys stay `None` so the worker keeps its own default.
+    #[must_use]
+    pub fn debug_defaults(&self) -> DebugDefaults {
+        let int = |key: &str| {
+            self.settings
+                .get(key)
+                .and_then(|entry| entry.value.as_i64())
+        };
+        DebugDefaults {
+            rewind_interval_frames: int("lotus.debug.rewind.interval_frames")
+                .and_then(|v| u32::try_from(v).ok()),
+            rewind_compression_level: int("lotus.debug.rewind.compression_level")
+                .and_then(|v| i8::try_from(v).ok()),
+            rewind_compression_queue: int("lotus.debug.rewind.compression_queue")
+                .and_then(|v| u8::try_from(v).ok()),
+            gpu_capture: self
+                .settings
+                .get("lotus.debug.gpu.capture")
+                .and_then(|entry| serde_json::from_value(entry.value.clone()).ok()),
+        }
+    }
+
     /// Layer a secondary's runtime overrides over its snapshot. The supervisor refuses runtime
     /// changes to managed keys, so the managed layer stays on top.
     pub fn apply_runtime(&mut self, values: &BTreeMap<String, Value>) {
@@ -202,6 +227,76 @@ impl Resolution {
             entry.value = value.clone();
             entry.source = layer;
         }
+    }
+}
+
+/// Saved debugger defaults (lotus#56) for fields a debugger request may omit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct DebugDefaults {
+    pub rewind_interval_frames: Option<u32>,
+    pub rewind_compression_level: Option<i8>,
+    pub rewind_compression_queue: Option<u8>,
+    pub gpu_capture: Option<lotus_protocol::debug::GpuCapture>,
+}
+
+impl DebugDefaults {
+    /// `command` with the fields it omits filled from these defaults, or `None` when nothing
+    /// changes. Only enabling requests are filled, so disabling sends what the client sent.
+    /// A field that needs a worker feature (`DebugCommand::required_feature`) is filled only
+    /// when `features` lists it, so a default never makes an AZAHAR request fail. `counters`
+    /// is not filled into a GPU request with stop events, which it refuses.
+    #[must_use]
+    pub fn fill(
+        &self,
+        command: &lotus_protocol::debug::DebugCommand,
+        features: &std::collections::BTreeSet<String>,
+    ) -> Option<lotus_protocol::debug::DebugCommand> {
+        use lotus_protocol::capabilities::feature;
+        use lotus_protocol::debug::{DebugCommand, GpuCapture};
+        let mut filled = command.clone();
+        let mut changed = false;
+        fn set<T>(changed: &mut bool, slot: &mut Option<T>, default: Option<T>) {
+            if slot.is_none() && default.is_some() {
+                *slot = default;
+                *changed = true;
+            }
+        }
+        match &mut filled {
+            DebugCommand::RewindConfigure {
+                enabled: true,
+                interval_frames,
+                compression_level,
+                compression_queue,
+                ..
+            } => {
+                set(&mut changed, interval_frames, self.rewind_interval_frames);
+                set(
+                    &mut changed,
+                    compression_level,
+                    self.rewind_compression_level,
+                );
+                if features.contains(feature::REWIND_COMPRESSION_QUEUE) {
+                    set(
+                        &mut changed,
+                        compression_queue,
+                        self.rewind_compression_queue,
+                    );
+                }
+            }
+            DebugCommand::GpuConfigure {
+                enabled: true,
+                capture,
+                stop_events,
+                ..
+            } if features.contains(feature::GPU_CAPTURE_LEVELS) => {
+                let level = self
+                    .gpu_capture
+                    .filter(|level| *level != GpuCapture::Counters || stop_events.is_empty());
+                set(&mut changed, capture, level);
+            }
+            _ => {}
+        }
+        changed.then_some(filled)
     }
 }
 
@@ -295,7 +390,7 @@ pub fn check(key: &str, value: &Value, scope: Scope, branch: Option<Branch>) -> 
             .or_else(|_| registry.validate(key, value, scope, Some(Branch::Experimental))),
     }
     .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
-    if !matches!(checked.owner, Owner::Azahar | Owner::Input) {
+    if !checked.owner.saved_in_layers() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             format!(
@@ -385,7 +480,7 @@ impl SettingsStore {
     pub fn resolve(&self, card: Option<&str>) -> io::Result<Resolution> {
         let mut resolution = Resolution::default();
         for descriptor in Registry::builtin().descriptors() {
-            let usable = matches!(descriptor.owner, Owner::Azahar | Owner::Input)
+            let usable = descriptor.owner.saved_in_layers()
                 && !matches!(descriptor.availability, Availability::Excluded { .. });
             if usable {
                 resolution.settings.insert(

@@ -2,6 +2,7 @@ use super::*;
 use breakpoints::Input;
 use gpui::App;
 use lotus_protocol::capabilities::feature;
+use lotus_session::settings_store::DebugDefaults;
 
 pub(super) struct SnapshotForm {
     capacity: Input,
@@ -15,16 +16,22 @@ pub(super) struct SnapshotForm {
 }
 
 impl SnapshotForm {
-    fn new(window: &mut Window, cx: &mut Context<LotusWindow>, status: &Value) -> Self {
-        let value = |key: &str, default| status[key].as_i64().unwrap_or(default).to_string();
+    fn new(
+        window: &mut Window,
+        cx: &mut Context<LotusWindow>,
+        status: &Value,
+        defaults: DebugDefaults,
+    ) -> Self {
         let budget = status["budget_bytes"].as_u64().unwrap_or(128 << 20) >> 20;
+        let capacity = status["capacity"].as_i64().unwrap_or(64).to_string();
+        let [interval, level, queue] = rewind_fields(status, defaults);
         let mut field = |label, text| Input::new(window, cx, label, text);
         Self {
-            capacity: field("Capacity", value("capacity", 64)),
+            capacity: field("Capacity", capacity),
             budget: field("Budget", budget.max(16).to_string()),
-            interval: field("Checkpoint interval", value("interval_frames", 1)),
-            level: field("Compression level", value("compression_level", 3)),
-            queue: field("Compression queue", value("compression_queue", 1)),
+            interval: field("Checkpoint interval", interval),
+            level: field("Compression level", level),
+            queue: field("Compression queue", queue),
             core: field("Core", "0".into()),
             checkpoint: field("Checkpoint name", String::new()),
             movie: field("Movie name", String::new()),
@@ -51,6 +58,37 @@ impl SnapshotForm {
         command.validate().map_err(str::to_owned)?;
         Ok(command)
     }
+}
+
+/// Interval, compression level and queue the rewind form starts from: the worker's active
+/// configuration while rewind runs, otherwise the saved debugger defaults (lotus#56), then
+/// the worker's reported values, then the worker defaults (`DebugCommand::RewindConfigure`).
+fn rewind_fields(status: &Value, defaults: DebugDefaults) -> [String; 3] {
+    let active = status["enabled"] == true;
+    let value = |key: &str, saved: Option<i64>, fallback: i64| {
+        saved
+            .filter(|_| !active)
+            .or_else(|| status[key].as_i64())
+            .unwrap_or(fallback)
+            .to_string()
+    };
+    [
+        value(
+            "interval_frames",
+            defaults.rewind_interval_frames.map(i64::from),
+            1,
+        ),
+        value(
+            "compression_level",
+            defaults.rewind_compression_level.map(i64::from),
+            3,
+        ),
+        value(
+            "compression_queue",
+            defaults.rewind_compression_queue.map(i64::from),
+            1,
+        ),
+    ]
 }
 
 impl LotusWindow {
@@ -158,8 +196,15 @@ impl LotusWindow {
                     )
                     .on_click(cx.listener(move |view, _, window, cx| {
                         if view.inspection_target().as_ref() == Some(&owner) {
-                            view.snapshot_forms
-                                .insert(owner.clone(), SnapshotForm::new(window, cx, &status));
+                            // A missing session or unreadable settings file leaves the
+                            // worker's reported values.
+                            let defaults = view
+                                .controller
+                                .as_ref()
+                                .and_then(|c| c.host().debug_defaults(&owner.id).ok())
+                                .unwrap_or_default();
+                            let form = SnapshotForm::new(window, cx, &status, defaults);
+                            view.snapshot_forms.insert(owner.clone(), form);
                             cx.notify();
                         }
                     })),
@@ -318,5 +363,29 @@ impl LotusWindow {
             ));
         }
         div().flex().flex_col().flex_1().min_h_0().child(body)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewind_form_prefers_active_config_then_saved_defaults() {
+        let defaults = DebugDefaults {
+            rewind_interval_frames: Some(30),
+            rewind_compression_level: Some(-3),
+            ..DebugDefaults::default()
+        };
+        let idle = serde_json::json!({"enabled": false, "interval_frames": 1,
+            "compression_level": 3, "compression_queue": 2});
+        assert_eq!(rewind_fields(&idle, defaults), ["30", "-3", "2"]);
+        let running = serde_json::json!({"enabled": true, "interval_frames": 4,
+            "compression_level": 5, "compression_queue": 0});
+        assert_eq!(rewind_fields(&running, defaults), ["4", "5", "0"]);
+        assert_eq!(
+            rewind_fields(&Value::Null, DebugDefaults::default()),
+            ["1", "3", "1"]
+        );
     }
 }

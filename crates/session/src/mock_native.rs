@@ -18,7 +18,8 @@
 //!   solid colour by frame) like the native ring files.
 //! - `mock-exit-code`: on the next request, exit with that code without replying.
 //! - `mock-reject-debug`: `debug` answers `unsupported`; otherwise `rewind_configure` and
-//!   `gpu_configure` are accepted.
+//!   `gpu_configure` are accepted and their params appended to `debug.jsonl`, one object
+//!   per line.
 //! - `debug` `settings_set` stores the value and `settings_list` returns every stored one
 //!   (`debug_api` is true in hello); `status.renderer` is the stored `graphics_api`.
 //! - `mock-backend-name`: its text is `backend_name` (default `mock-native`), so a test can pose
@@ -234,7 +235,22 @@ impl Machine {
                     return (Status::Unsupported, serde_json::Value::Null);
                 }
                 match command {
-                    "rewind_configure" | "gpu_configure" => {}
+                    "rewind_configure" | "gpu_configure" => {
+                        if let Ok(mut log) = std::fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(self.root.join("debug.jsonl"))
+                        {
+                            let _ = log.write_all(
+                                format!(
+                                    "{}
+",
+                                    request.params
+                                )
+                                .as_bytes(),
+                            );
+                        }
+                    }
                     "settings_set" => {
                         let name = request.params["name"].as_str().unwrap_or("").to_string();
                         self.settings.insert(name, request.params["value"].clone());

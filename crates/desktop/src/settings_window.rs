@@ -541,7 +541,7 @@ impl SettingsWindow {
                     .unwrap_or_else(|| descriptor.default.clone()),
                 "host.json".into(),
             ),
-            Owner::Azahar | Owner::Input => {
+            Owner::Azahar | Owner::Input | Owner::Debugger => {
                 let entry = self
                     .report
                     .as_ref()
@@ -563,7 +563,7 @@ impl SettingsWindow {
             Owner::Host => {
                 Err("Set in the host configuration (host.json); read when the host starts.")
             }
-            Owner::Azahar | Owner::Input => {
+            Owner::Azahar | Owner::Input | Owner::Debugger => {
                 if self.host.is_none() {
                     Err("No host configuration: start LOTUS with a host.json to change this.")
                 } else if !self.control {
@@ -757,7 +757,7 @@ impl SettingsWindow {
                         ),
                     );
                 }
-                controls = controls.child(value_text(theme, display(&value)));
+                controls = controls.child(value_text(theme, choice_text(descriptor, &value)));
             }
             (kind, Ok(())) if stepper(kind).is_some() => {
                 let (step, min, max, integer) = stepper(kind).unwrap_or((1.0, None, None, true));
@@ -986,6 +986,14 @@ impl SettingsWindow {
                                     header.child(div().text_xs().text_color(colour).child(text))
                                 },
                             )
+                            .when_some(
+                                (self.group == Group::McpAutomation)
+                                    .then(|| self.lotus.read_with(cx, |l, _| l.mcp_line()).ok())
+                                    .flatten(),
+                                |header, text| {
+                                    header.child(div().text_xs().text_color(theme.text_muted).child(text))
+                                },
+                            )
                             .when(
                                 !self.lotus.read_with(cx, |l, _| l.preferences_saved()).unwrap_or(true),
                                 |header| {
@@ -1017,18 +1025,45 @@ fn host_value(host: &Supervisor, key: &str) -> Option<Value> {
 }
 
 /// Allowed values of a choice setting.
+/// A nullable choice offers null ("unset") first.
 fn choices(kind: &Kind) -> Option<Vec<Value>> {
-    match kind {
+    let (nullable, list): (bool, Vec<Value>) = match kind {
         Kind::Integer {
             choices: Some(list),
+            nullable,
             ..
-        } => Some(list.iter().map(|c| Value::from(*c)).collect()),
+        } => (*nullable, list.iter().map(|c| Value::from(*c)).collect()),
         Kind::String {
             choices: Some(list),
+            nullable,
             ..
-        } => Some(list.iter().map(|c| Value::from(c.clone())).collect()),
-        _ => None,
+        } => (
+            *nullable,
+            list.iter().map(|c| Value::from(c.clone())).collect(),
+        ),
+        _ => return None,
+    };
+    Some(
+        nullable
+            .then_some(Value::Null)
+            .into_iter()
+            .chain(list)
+            .collect(),
+    )
+}
+
+/// Label of a choice; null on a debugger default leaves the request field to the worker.
+fn choice_text(descriptor: &Descriptor, value: &Value) -> String {
+    if value.is_null() {
+        return if descriptor.owner == Owner::Debugger {
+            "Worker default".into()
+        } else {
+            "Unset".into()
+        };
     }
+    descriptor
+        .choice_label(value)
+        .map_or_else(|| display(value), str::to_string)
 }
 
 /// Step, bounds and integer-ness of a numeric setting.
@@ -1445,7 +1480,7 @@ mod tests {
         // A card never offers host or desktop settings: they are not per card.
         assert!(registry
             .for_scope(Scope::Primary)
-            .all(|d| matches!(d.owner, Owner::Azahar | Owner::Input)));
+            .all(|d| d.owner.saved_in_layers()));
     }
 
     #[test]

@@ -214,10 +214,13 @@ comes from; **Reset to Global** (on a card) or **Reset to default** removes the 
 at that level. Live settings update affected mounted primary sessions.
 Boot, renderer and CFG changes show **Restart required**. Stop and start
 the card to apply them. Input layouts and window preferences apply at once.
-Host settings and `managed`
+Host settings, including the storage root,
+approved content and source folders, and `managed`
 values are read-only, and so is everything but window preferences when the host
 does not allow control. Search opens the matching control in its category.
 Esc closes the window when an editor or menu is inactive.
+**MCP & Automation** shows whether this window serves MCP; start it with
+`--mcp` to turn it on.
 
 Pane widths and open states are saved as you drag. Discord Rich Presence
 (Settings → Discord) is off by default; when on, it shows `Playing NAME` or
@@ -359,6 +362,19 @@ not parse is never overwritten; the Settings window says so.
 | `discord_application_id` | built-in LOTUS application |
 | `split_axis`, `split_ratio` | `auto`, 0.5 (0.2–0.8) |
 | `settings_bounds` | `null` (Settings window centred) |
+
+### Debugger defaults
+
+Rewind cadence and compression and the GPU capture level have saved defaults
+under **Settings → Debugging & Tracing**, globally or per card. They are used
+when you turn rewind or a GPU capture on without giving the value, starting
+with the next request. **Worker default** leaves it to the emulator. The
+compression queue applies to CITnLO only.
+
+```powershell
+bin\ctr-cli.exe settings set data\citnlo\host.json global lotus.debug.rewind.interval_frames 4
+bin\ctr-cli.exe settings set data\citnlo\host.json card:main lotus.debug.gpu.capture '"draws"'
+```
 
 ## 5. Running the programs directly
 

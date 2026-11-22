@@ -253,11 +253,19 @@ pub fn validate_profile(
     Ok(())
 }
 
-/// An input-layout key (lotus#63): layered like worker settings, never sent to a worker.
-fn is_input(key: &str) -> bool {
+/// An input-layout key (lotus#63) or debugger default (lotus#56): layered like worker
+/// settings, resolved by Lotus from the saved layers on every use, never sent to a worker.
+fn is_lotus_layered(key: &str) -> bool {
+    use lotus_settings::Owner;
     lotus_settings::Registry::builtin()
         .get(key)
-        .is_some_and(|d| d.owner == lotus_settings::Owner::Input)
+        .is_some_and(|d| matches!(d.owner, Owner::Input | Owner::Debugger))
+}
+
+/// Apply classes Lotus reads from the saved layers at use, so a saved change is in effect.
+fn resolved_live(apply: lotus_settings::Apply) -> bool {
+    use lotus_settings::Apply;
+    matches!(apply, Apply::Routing | Apply::DebugRequest)
 }
 
 fn same_setting(key: &str, left: &serde_json::Value, right: &serde_json::Value) -> bool {
@@ -1029,9 +1037,10 @@ impl Supervisor {
         } else {
             effective.clone()
         };
-        // Input settings resolve from the current saved layers on every revision.
+        // Input settings and debugger defaults resolve from the current saved layers on every
+        // revision.
         for (key, entry) in &saved.settings {
-            if is_input(key) {
+            if is_lotus_layered(key) {
                 effective.settings.insert(key.clone(), entry.clone());
                 desired.settings.insert(key.clone(), entry.clone());
             }
@@ -1041,7 +1050,7 @@ impl Supervisor {
         let available = native.state().is_active() && !handle.is_closed();
         let mut pending = BTreeMap::new();
         effective.settings.retain(|key, entry| {
-            if is_input(key) {
+            if is_lotus_layered(key) {
                 return true;
             }
             let observed = available
@@ -1196,7 +1205,7 @@ impl Supervisor {
         actor: Actor,
     ) -> io::Result<Vec<SettingChange>> {
         use crate::settings_store::{check, Layer, Store};
-        use lotus_settings::{Apply, Registry, Scope};
+        use lotus_settings::{Registry, Scope};
 
         let _edit_guard = self.settings_edits.lock().await;
         let card = match store {
@@ -1219,7 +1228,7 @@ impl Supervisor {
         for (name, handle) in mounted {
             let before = self.settings.resolve(Some(&name))?;
             if let Some((key, Some(value))) = edit.as_ref().filter(|(key, _)| {
-                !is_input(key)
+                !is_lotus_layered(key)
                     && !(card.is_none()
                         && before.settings.get(*key).is_some_and(|entry| {
                             matches!(entry.source, Layer::Card | Layer::Managed)
@@ -1306,12 +1315,12 @@ impl Supervisor {
                 changes.push(SettingChange {
                     key: key.into(),
                     session: None,
-                    status: if descriptor.apply == Apply::Routing {
+                    status: if resolved_live(descriptor.apply) {
                         SettingStatus::Applied
                     } else {
                         SettingStatus::Pending
                     },
-                    reason: (descriptor.apply != Apply::Routing)
+                    reason: (!resolved_live(descriptor.apply))
                         .then(|| "Saved for future session starts.".into()),
                 });
             }
@@ -1330,8 +1339,7 @@ impl Supervisor {
         use crate::settings_store::Layer;
         use lotus_settings::Apply;
 
-        if apply == Apply::Routing || (apply == Apply::CfgSavedata && next.source == Layer::Default)
-        {
+        if resolved_live(apply) || (apply == Apply::CfgSavedata && next.source == Layer::Default) {
             return Ok(SettingStatus::Applied);
         }
         let mut native = handle.native.lock().await;
@@ -1369,6 +1377,19 @@ impl Supervisor {
         }
         handle.record(actor, "settings");
         Ok(SettingStatus::Applied)
+    }
+
+    /// Saved debugger defaults (`lotus.debug.*`, lotus#56) for `session`: global, then its card
+    /// (a secondary's parent card). Read on every request, so saved edits reach running sessions.
+    pub fn debug_defaults(
+        &self,
+        session: &str,
+    ) -> io::Result<crate::settings_store::DebugDefaults> {
+        let handle = self.handle(session)?;
+        Ok(self
+            .settings
+            .resolve(handle.info().card())?
+            .debug_defaults())
     }
 
     /// Changes so far to settings and input presets; see [`Supervisor::input_layout`].
@@ -1467,7 +1488,7 @@ impl Supervisor {
                     format!("{key} is managed by the host configuration profile"),
                 ));
             }
-            if is_input(&key) {
+            if is_lotus_layered(&key) {
                 // Input layout: routed by the frontend, never sent to the worker.
                 if let Some(value) = &value {
                     crate::settings_store::check(
@@ -1964,6 +1985,22 @@ impl Supervisor {
             self.require_control()?;
         }
         let handle = self.handle(id)?;
+        // Saved debugger defaults fill fields the request omits (lotus#56), for every frontend.
+        let filled = match command {
+            DebugCommand::RewindConfigure { enabled: true, .. }
+            | DebugCommand::GpuConfigure { enabled: true, .. } => {
+                let features = Arc::clone(&handle.telemetry().worker_features);
+                self.debug_defaults(id)?.fill(command, &features)
+            }
+            _ => None,
+        };
+        let command = match &filled {
+            Some(filled) => {
+                filled.validate().map_err(io::Error::other)?;
+                filled
+            }
+            None => command,
+        };
         // Host-wide budgets (crate::policy). Session-long tools take a permit before any
         // await and record it after the worker accepted; one-shot full-state work holds a slot.
         let admission = match command {

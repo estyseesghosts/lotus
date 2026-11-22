@@ -1580,6 +1580,11 @@ impl LotusWindow {
         })
     }
 
+    /// MCP state for Settings → MCP & Automation: transport and how to enable it.
+    pub(crate) fn mcp_line(&self) -> &'static str {
+        mcp_line(self.mcp)
+    }
+
     /// Whether `desktop.json` is saved (a location exists and the file was readable).
     pub(crate) fn preferences_saved(&self) -> bool {
         self.preferences.path.is_some()
@@ -6121,9 +6126,30 @@ pub(crate) fn hex_string(value: &Value) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
+/// MCP is stdio-only and enabled per process (`main.rs` `--mcp`), so this is status, not a setting.
+pub(crate) fn mcp_line(link: McpLink) -> &'static str {
+    match link {
+        McpLink::Attached => "MCP is serving this window over stdio; a client is attached.",
+        McpLink::Closed => {
+            "MCP stopped: the stdio client disconnected or the transport failed. Restart Lotus to serve it again."
+        }
+        McpLink::Off => {
+            "MCP is off in this window. Start lotus-desktop --mcp host.json              (launch.ps1 -Mode WindowedMCP) to serve it over stdio; there is no network port."
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_line_names_transport_and_how_to_enable() {
+        assert!(mcp_line(McpLink::Off).contains("--mcp"));
+        assert!(mcp_line(McpLink::Off).contains("no network port"));
+        assert!(mcp_line(McpLink::Attached).contains("stdio"));
+        assert!(mcp_line(McpLink::Closed).contains("Restart"));
+    }
 
     #[cfg(feature = "silvestris-ui")]
     #[test]

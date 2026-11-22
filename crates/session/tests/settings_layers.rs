@@ -439,3 +439,138 @@ async fn input_layouts_layer_live_and_stay_out_of_workers() {
     }
     fixture.host.close().await;
 }
+
+/// Requests the mock worker in `root` accepted (`debug.jsonl`), oldest first.
+fn debug_requests(root: &Path) -> Vec<Value> {
+    std::fs::read_to_string(root.join("debug.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect()
+}
+
+/// lotus#56: saved debugger defaults fill only the fields a request omits, card over global,
+/// read on every request; features the worker lacks are never filled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debugger_defaults_fill_omitted_request_fields() {
+    use lotus_protocol::debug::{DebugCommand, GpuCapture};
+    let fixture = host("debug-defaults", |_| {});
+    let interval = "lotus.debug.rewind.interval_frames";
+    fixture
+        .set(&SettingsTarget::Global, interval, Some(json!(10)))
+        .await;
+    fixture
+        .set(
+            &SettingsTarget::Global,
+            "lotus.debug.rewind.compression_level",
+            Some(json!(-3)),
+        )
+        .await;
+    // The mock does not report rewind_compression_queue, so this is never sent.
+    fixture
+        .set(
+            &SettingsTarget::Global,
+            "lotus.debug.rewind.compression_queue",
+            Some(json!(2)),
+        )
+        .await;
+    let change = fixture
+        .host
+        .set_setting(&card("a"), interval, Some(json!(30)), Actor::Host)
+        .await
+        .unwrap();
+    assert_eq!(change[0].status, SettingStatus::Applied, "{change:?}");
+    assert_eq!(
+        fixture.effective(&card("a"), interval).await,
+        (json!(30), json!("card"))
+    );
+    assert_eq!(
+        fixture.effective(&card("b"), interval).await,
+        (json!(10), json!("global"))
+    );
+
+    let a = fixture
+        .create(SessionKind::Primary { card: "a".into() })
+        .await;
+    let b = fixture
+        .create(SessionKind::Primary { card: "b".into() })
+        .await;
+    let secondary = fixture
+        .create(SessionKind::Secondary { parent: None })
+        .await;
+    // Secondaries inherit; they have no runtime debugger defaults.
+    let refused = fixture
+        .host
+        .set_setting(&session(&secondary), interval, Some(json!(5)), Actor::Host)
+        .await
+        .unwrap_err();
+    assert!(refused.to_string().contains("scope"), "{refused}");
+
+    let rewind = |enabled, interval_frames| DebugCommand::RewindConfigure {
+        enabled,
+        capacity: 8,
+        budget_mib: 64,
+        interval_frames,
+        compression_level: None,
+        compression_queue: None,
+    };
+    let send = |id: String, command: DebugCommand| {
+        let host = Arc::clone(&fixture.host);
+        async move { host.debug(&id, &command, Actor::Host).await.unwrap() }
+    };
+    send(a.clone(), rewind(true, None)).await;
+    send(b.clone(), rewind(true, None)).await;
+    send(a.clone(), rewind(true, Some(5))).await;
+    send(a.clone(), rewind(false, None)).await;
+    let a_root = fixture.store.join("cards").join("a");
+    let b_root = fixture.store.join("cards").join("b");
+    let sent = debug_requests(&a_root);
+    assert_eq!(sent[0]["interval_frames"], json!(30));
+    assert_eq!(sent[0]["compression_level"], json!(-3));
+    assert!(sent[0].get("compression_queue").is_none(), "{}", sent[0]);
+    assert_eq!(sent[1]["interval_frames"], json!(5), "explicit value wins");
+    assert!(
+        sent[2].get("interval_frames").is_none(),
+        "disable unchanged"
+    );
+    assert_eq!(debug_requests(&b_root)[0]["interval_frames"], json!(10));
+
+    // A saved edit reaches the running card's next request without a restart.
+    fixture.set(&card("b"), interval, None).await;
+    fixture
+        .set(&SettingsTarget::Global, interval, Some(json!(60)))
+        .await;
+    send(b.clone(), rewind(true, None)).await;
+    assert_eq!(debug_requests(&b_root)[1]["interval_frames"], json!(60));
+
+    let gpu = |stop_events: Vec<u32>| DebugCommand::GpuConfigure {
+        enabled: true,
+        stop_events,
+        capture: None,
+        draw_range: None,
+        max_draws: None,
+        resources: None,
+    };
+    let capture = "lotus.debug.gpu.capture";
+    fixture
+        .set(&SettingsTarget::Global, capture, Some(json!("events")))
+        .await;
+    fixture
+        .set(&card("a"), capture, Some(json!("counters")))
+        .await;
+    send(b.clone(), gpu(vec![2])).await;
+    send(a.clone(), gpu(vec![])).await;
+    // Counters refuses stop events, so the worker default stays.
+    send(a.clone(), gpu(vec![2])).await;
+    assert_eq!(debug_requests(&b_root)[2]["capture"], json!("events"));
+    let sent = debug_requests(&a_root);
+    assert_eq!(sent[3]["capture"], json!("counters"));
+    assert!(sent[4].get("capture").is_none(), "{}", sent[4]);
+    // An explicit level is never replaced.
+    let mut explicit = gpu(vec![]);
+    if let DebugCommand::GpuConfigure { capture, .. } = &mut explicit {
+        *capture = Some(GpuCapture::Full);
+    }
+    send(a.clone(), explicit).await;
+    assert_eq!(debug_requests(&a_root)[5]["capture"], json!("full"));
+}

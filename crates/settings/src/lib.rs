@@ -9,8 +9,9 @@
 //! instead of keeping their own bounds and defaults.
 //!
 //! Keys: Azahar settings keep their worker names (`graphics_api`, `cfg.000a0000`), as host
-//! profiles already use them. Lotus settings are `lotus.host.*`, `lotus.desktop.*` and the
-//! per-session input layout `lotus.input.*` (lotus#63).
+//! profiles already use them. Lotus settings are `lotus.host.*`, `lotus.desktop.*`, the
+//! per-session input layout `lotus.input.*` (lotus#63) and debugger defaults `lotus.debug.*`
+//! (lotus#56).
 //! One-shot actions (capture a GPU frame, start a trace, set a breakpoint, create a session)
 //! are tools, not settings, and are not registered.
 
@@ -83,6 +84,17 @@ pub enum Owner {
     /// A session's input layout (lotus#63). Layered like worker settings (global, card,
     /// secondary runtime) but applied by the desktop's input router, never sent to a worker.
     Input,
+    /// Debugger defaults (lotus#56): saved at global and card scope like worker settings, read
+    /// by the supervisor to fill fields a debugger request omits; never sent as a setting.
+    Debugger,
+}
+
+impl Owner {
+    /// Stored in the saved global and card settings files (`lotus_session::settings_store`).
+    #[must_use]
+    pub fn saved_in_layers(self) -> bool {
+        matches!(self, Owner::Azahar | Owner::Input | Owner::Debugger)
+    }
 }
 
 /// When a new value takes effect.
@@ -107,6 +119,8 @@ pub enum Apply {
     Immediate,
     /// Input layout: applied to the session's input routing when it changes, while running.
     Routing,
+    /// Debugger default: read by the next debugger request that omits the value.
+    DebugRequest,
 }
 
 impl Apply {
@@ -140,6 +154,12 @@ impl Scopes {
         global: true,
         primary: true,
         secondary_runtime: true,
+    };
+    /// Saved global defaults and primary-card overrides; a secondary inherits its parent's.
+    pub const SAVED: Scopes = Scopes {
+        global: true,
+        primary: true,
+        secondary_runtime: false,
     };
     pub const NONE: Scopes = Scopes {
         global: false,

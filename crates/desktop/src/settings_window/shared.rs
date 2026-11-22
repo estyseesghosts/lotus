@@ -639,6 +639,11 @@ impl SettingsWindow {
                 c.warning,
             ));
         }
+        if group == Group::McpAutomation {
+            if let Ok(text) = self.lotus.read_with(cx, |l, _| l.mcp_line()) {
+                out.push(note(text.to_string(), c.text_secondary));
+            }
+        }
         if group == Group::Discord {
             let palette = theme::palette(cx);
             if let Some((_, text)) = self
@@ -776,7 +781,7 @@ impl SettingsWindow {
         };
         let key = descriptor.key.clone();
         let card_value = matches!(self.target, Target::Card(_))
-            && matches!(descriptor.owner, Owner::Azahar | Owner::Input)
+            && descriptor.owner.saved_in_layers()
             && source != "managed";
         let enabled = ready && editable.is_ok() && (!card_value || overridden);
         let mut control = div()
@@ -840,11 +845,7 @@ impl SettingsWindow {
                 let options = choices(kind).unwrap_or_default();
                 let items = options
                     .iter()
-                    .map(|o| {
-                        descriptor
-                            .choice_label(o)
-                            .map_or_else(|| display(o).into(), SharedString::from)
-                    })
+                    .map(|o| SharedString::from(choice_text(descriptor, o)))
                     .collect();
                 let selected = options.iter().position(|o| *o == value);
                 control = control.child(
@@ -996,9 +997,7 @@ impl SettingsWindow {
         // status_notes; rows add only their own.
         let window_wide = self.host.is_none() || !self.control;
         let mut note = match editable {
-            Err(reason)
-                if !(window_wide && matches!(descriptor.owner, Owner::Azahar | Owner::Input)) =>
-            {
+            Err(reason) if !(window_wide && descriptor.owner.saved_in_layers()) => {
                 format!("{} {reason}", descriptor.description)
             }
             _ => descriptor.description.clone(),
@@ -1044,7 +1043,7 @@ impl SettingsWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Entity<TextField> {
-        let shown = field_text(&descriptor.kind, value);
+        let shown = field_text(descriptor, value);
         let field = match self.prefs.fields.get(&descriptor.key) {
             Some(field) => field.clone(),
             None => {
@@ -1111,8 +1110,27 @@ impl SettingsWindow {
     }
 }
 
-fn field_text(kind: &Kind, value: &Value) -> String {
-    match kind {
+fn field_text(descriptor: &Descriptor, value: &Value) -> String {
+    // Host rows are read-only: show paths as text and handle maps as `handle = path`.
+    if descriptor.owner == Owner::Host && matches!(descriptor.kind, Kind::Json { .. }) {
+        let path = |value: &Value| {
+            value
+                .as_str()
+                .or_else(|| value["path"].as_str())
+                .map_or_else(|| value.to_string(), str::to_owned)
+        };
+        return match value {
+            Value::Object(map) if map.is_empty() => "None".into(),
+            Value::Object(map) => map
+                .iter()
+                .map(|(handle, value)| format!("{handle} = {}", path(value)))
+                .collect::<Vec<_>>()
+                .join("; "),
+            other => path(other),
+        };
+    }
+    match &descriptor.kind {
+        Kind::Integer { nullable: true, .. } if value.is_null() => String::new(),
         Kind::String { .. } => value.as_str().unwrap_or_default().to_owned(),
         Kind::Json { .. } | Kind::Bindings { .. } => value.to_string(),
         _ => display(value),
@@ -1125,6 +1143,7 @@ fn parse_field(descriptor: &Descriptor, text: &str) -> Result<Value, String> {
         Kind::Json { .. } | Kind::Bindings { .. } => {
             serde_json::from_str(text).map_err(|error| format!("{}: {error}", descriptor.label))?
         }
+        Kind::Integer { nullable: true, .. } if text.trim().is_empty() => Value::Null,
         Kind::Integer { .. } => Value::from(
             text.trim()
                 .parse::<i64>()
@@ -1166,6 +1185,25 @@ fn subgroup_label(subgroup: &str) -> String {
 mod tests {
     use super::*;
     use gpui::{Focusable, TestAppContext};
+
+    #[test]
+    fn host_locations_read_as_paths_and_handles() {
+        let registry = Registry::builtin();
+        let text = |key: &str, value: Value| field_text(registry.get(key).unwrap(), &value);
+        assert_eq!(
+            text("lotus.host.storage_root", Value::from(r"D:\lotus\data")),
+            r"D:\lotus\data"
+        );
+        assert_eq!(text("lotus.host.assets", serde_json::json!({})), "None");
+        assert_eq!(
+            text(
+                "lotus.host.source_roots",
+                serde_json::json!({"game": {"path": "C:/src", "from": "/opt/build"},
+                    "lib": {"path": "C:/lib", "from": null}})
+            ),
+            "game = C:/src; lib = C:/lib"
+        );
+    }
 
     #[test]
     fn scalar_and_structured_editors_use_registry_validation() {
@@ -1416,6 +1454,105 @@ mod tests {
         set_global(true);
         cx.update(|_, cx| settings.update(cx, |view, cx| view.refresh(cx)));
         wait_for(cx, "global", true);
+        let _ = std::fs::remove_dir_all(storage);
+    }
+    /// lotus#56: a card overrides a global debugger default through the mounted pop-up,
+    /// including an explicit "Worker default" (null), and the saved card file holds it.
+    #[gpui::test]
+    fn card_debugger_default_overrides_global_through_the_pop_up() {
+        use lotus_protocol::envelope::SessionUuid;
+        use lotus_session::supervisor::HostConfig;
+
+        let storage =
+            std::env::temp_dir().join(format!("lotus-settings-debug-{}", SessionUuid::generate()));
+        std::fs::create_dir_all(storage.join("cards/dev")).unwrap();
+        let mut config = HostConfig::new(std::env::current_exe().unwrap(), &storage);
+        config.allow_control = true;
+        let host = Arc::new(Supervisor::new(config).unwrap());
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let key = "lotus.debug.gpu.capture";
+        runtime
+            .block_on(host.set_setting(
+                &SettingsTarget::Global,
+                key,
+                Some(Value::from("events")),
+                Actor::Mcp,
+            ))
+            .unwrap();
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(silvestris::ThemePreference::default(), cx)
+        });
+        let (main, _) = app.add_window_view(LotusWindow::test_preview);
+        let (settings, cx) = app.add_window_view(|window, cx| {
+            SettingsWindow::new(
+                main.downgrade(),
+                Some(host.clone()),
+                true,
+                Target::Card("dev".into()),
+                window,
+                cx,
+            )
+        });
+        let descriptor = Registry::builtin().get(key).unwrap();
+        let draw = |cx: &mut gpui::VisualTestContext| {
+            cx.run_until_parked();
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+        };
+        let wait_for = |cx: &mut gpui::VisualTestContext, want: &str, value: Value| {
+            for _ in 0..100 {
+                draw(cx);
+                let current = cx.update(|_, cx| {
+                    let view = settings.read(cx);
+                    view.report.as_ref().map(|_| view.value(descriptor, cx))
+                });
+                if current
+                    .as_ref()
+                    .is_some_and(|(current, source)| current == &value && source == want)
+                {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("timed out waiting for {value} from {want}");
+        };
+        wait_for(cx, "global", Value::from("events"));
+        // `debug_bounds` takes a static selector; the test leaks a few short strings.
+        let click = |cx: &mut gpui::VisualTestContext, selector: &str| {
+            let selector: &'static str = Box::leak(selector.to_owned().into_boxed_str());
+            let bounds = cx.debug_bounds(selector).unwrap();
+            cx.simulate_click(bounds.center(), gpui::Modifiers::default());
+            draw(cx);
+        };
+        cx.update(|window, cx| {
+            settings.update(cx, |view, cx| {
+                view.show_group(descriptor.group, window, cx);
+                view.prefs
+                    .tabs
+                    .insert(descriptor.group, descriptor.subgroup);
+                view.prefs.reveal = Some(descriptor);
+            });
+        });
+        draw(cx);
+        draw(cx);
+        let choice = format!("choice-{key}");
+        click(cx, &format!("override-{key}"));
+        wait_for(cx, "card", Value::from("events"));
+        // Items: Worker default, counters, events, draws, full.
+        click(cx, &choice);
+        click(cx, "popup-item-1");
+        wait_for(cx, "card", Value::from("counters"));
+        click(cx, &choice);
+        click(cx, "popup-item-0");
+        wait_for(cx, "card", Value::Null);
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(storage.join("cards/dev/lotus-settings.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["values"][key], Value::Null, "{saved}");
+        assert!(saved["values"].get(key).is_some(), "{saved}");
+        click(cx, &format!("reset-{key}"));
+        wait_for(cx, "global", Value::from("events"));
         let _ = std::fs::remove_dir_all(storage);
     }
 }

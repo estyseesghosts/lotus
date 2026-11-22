@@ -1051,6 +1051,45 @@ popover.
   Settings. The main window maps guest keys only while its screens are
   focused.
 
+### Lotus settings in the window (#56)
+
+- **Debugger defaults.** `lotus.debug.rewind.interval_frames` (1–60),
+  `lotus.debug.rewind.compression_level` (−7–19),
+  `lotus.debug.rewind.compression_queue` (0–4, CITnLO only) and
+  `lotus.debug.gpu.capture` (`counters`, `events`, `draws`, `full`) are owner
+  `debugger`, group Debugging & Tracing, scopes `global` and `primary`, apply
+  class `debug_request`. They use the same files and layers as worker settings
+  but never reach `settings_set`. `null` (Worker default) leaves the field to
+  the worker. `Supervisor::debug_as_checked` fills them into a
+  `rewind_configure` or `gpu_configure` that enables and omits the field, then
+  re-validates the request; a secondary uses its parent card. A value in the
+  request wins, disabling requests are unchanged, the queue is sent only to a
+  worker reporting `rewind_compression_queue`, the capture level only to one
+  reporting `gpu_capture_levels`, and `counters` is not added to a capture
+  with stop events. Edits apply to the next request without a restart. A
+  secondary cannot set them (scope error), so breakpoints, leases and trace
+  state are never saved. The desktop rewind form shows the active worker
+  configuration while rewind is on, otherwise these defaults.
+- **Host locations.** `lotus.host.storage_root` (Sessions & Storage →
+  Storage), `lotus.host.assets` and `lotus.host.asset_directories` (MCP &
+  Automation → Approved Content) and `lotus.host.source_roots` (Debugging &
+  Tracing → Source) are read-only rows from `host.json`, shown as paths and
+  `handle = path` lists. The launcher rewrites `host.json` on start, so they
+  are changed there or with `--asset-dir`, never in Settings.
+- **MCP.** MCP is stdio-only and enabled per process with `--mcp`, so the MCP
+  & Automation group shows its state (`McpLink`: off, attached, stopped) as a
+  note, not a toggle.
+- **Discord.** Only `lotus-desktop` depends on `discord-rich-presence`;
+  `cargo tree -p lotus-mcp` and `-p lotus-cli` do not include it, so headless
+  modes cannot connect (**verified build graph**). Disabling clears the
+  activity (`presence.rs` `last_session_closing_disabling_and_shutdown_clear`).
+
+Tests: `settings_layers.rs` `debugger_defaults_fill_omitted_request_fields`
+(**verified emulator**, mock worker records each request in `debug.jsonl`);
+`settings_registry.rs` `debug_default_bounds_match_request_validation`; the
+mounted `card_debugger_default_overrides_global_through_the_pop_up` and
+`host_locations_read_as_paths_and_handles`; `rewind_form_prefers_active_config_then_saved_defaults`.
+
 `tests/test_settings_window.py` (**verified emulator**, mock worker, real key
 events): Ctrl+, three times leaves one Settings window. The test moves it,
 closes it with Esc, verifies the new position on reopen and checks that

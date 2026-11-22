@@ -244,11 +244,12 @@ fn values_are_checked_against_type_range_and_choices() {
 fn scopes_filter_host_and_desktop_settings_to_global() {
     let r = registry();
     for d in r.descriptors().iter().filter(|d| d.owner != Owner::Azahar) {
-        // Input layouts (lotus#63) layer like worker settings; host and desktop do not.
-        let expected = if d.owner == Owner::Input {
-            Scopes::ALL
-        } else {
-            Scopes::GLOBAL
+        // Input layouts (lotus#63) layer like worker settings and debugger defaults (lotus#56)
+        // like a card's saved ones; host and desktop do not.
+        let expected = match d.owner {
+            Owner::Input => Scopes::ALL,
+            Owner::Debugger => Scopes::SAVED,
+            _ => Scopes::GLOBAL,
         };
         assert_eq!(d.scopes, expected, "{}", d.key);
         assert!(d.key.starts_with("lotus."), "{}", d.key);
@@ -285,9 +286,7 @@ fn scopes_filter_host_and_desktop_settings_to_global() {
         )
         .is_err());
     let primary: Vec<_> = r.for_scope(Scope::Primary).collect();
-    assert!(primary
-        .iter()
-        .all(|d| matches!(d.owner, Owner::Azahar | Owner::Input)));
+    assert!(primary.iter().all(|d| d.owner.saved_in_layers()));
     assert!(primary
         .iter()
         .all(|d| d.available_on(Some(Branch::Experimental)).is_ok()));
