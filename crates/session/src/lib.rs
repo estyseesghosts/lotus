@@ -25,6 +25,7 @@ mod source_debug;
 pub mod storage;
 pub mod supervisor;
 pub mod telemetry;
+mod variables;
 pub mod worker;
 pub mod workspace;
 

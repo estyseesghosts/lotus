@@ -12,7 +12,7 @@ import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument("output", type=Path)
-parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence","source"],default="debugger")
+parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence","source","variables"],default="debugger")
 parser.add_argument("--gcc", help="devkitARM arm-none-eabi-gcc executable (uses matching objcopy)")
 parser.add_argument("--define", action="append", default=[], help="preprocessor macro for a fixture variant")
 args = parser.parse_args()
@@ -36,6 +36,8 @@ if args.fixture == "source":  # lotus#77: C++, one row per statement, DWARF 5 fi
     command[command.index("-O1")] = "-O0"
     command[command.index("-gdwarf-4")] = "-gdwarf-5"
     command[1:1] = ["-fno-exceptions", "-fno-rtti"]
+if args.fixture == "variables":  # lotus#78: optimized locals, location lists, DWARF 5
+    command[command.index("-gdwarf-4")] = "-gdwarf-5"
 command[1:1] = ["-D"+name for name in args.define]
 if args.gcc:  # devkitARM defaults to -mtp=cp15, which GCC rejects for 16-bit Thumb; fixtures use no TLS
     command.insert(1, "-mtp=soft")

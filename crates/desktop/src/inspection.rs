@@ -678,6 +678,89 @@ fn source_rows(value: &Value, rows: &mut Vec<Row>) {
     }
 }
 
+/// One variable node as `type = value`, or its state and reason (#78).
+fn variable_text(node: &Value) -> String {
+    let ty = node["type"].as_str().unwrap_or("?");
+    if node["state"] != "ok" {
+        return format!(
+            "{ty} · {}: {}",
+            node["state"].as_str().unwrap_or("unknown"),
+            node["reason"].as_str().unwrap_or("")
+        );
+    }
+    let mut text = match &node["value"] {
+        Value::String(text) => text.clone(),
+        Value::Null if node["children"].is_array() || node["truncated"] == true => "{…}".into(),
+        Value::Null => String::new(),
+        other => other.to_string(),
+    };
+    if let Some(symbol) = node["symbol"].as_str() {
+        text += &format!(" <{symbol}>");
+    }
+    if let Some(string) = node["string"].as_str() {
+        text += &format!(" {string:?}");
+    }
+    clipped(&format!("{ty} = {text}"), 300)
+}
+
+/// CPU rows for the stopped frame's parameters and locals, one level expanded.
+fn variable_rows(value: &Value, rows: &mut Vec<Row>) {
+    if let Some(error) = value["variables_error"].as_str() {
+        rows.push(Row {
+            lane: "Vars",
+            key: "Variables unavailable".into(),
+            value: clipped(error, 300),
+            action: None,
+        });
+        return;
+    }
+    let reply = &value["variables"];
+    let Some(variables) = reply["variables"].as_array() else {
+        return;
+    };
+    let frame = &reply["frame"];
+    rows.push(Row {
+        lane: "Vars",
+        key: "Frame 0".into(),
+        value: format!(
+            "{}{} · line {}",
+            frame["function"].as_str().unwrap_or("?"),
+            if frame["inline"] == true {
+                " (inlined)"
+            } else {
+                ""
+            },
+            frame["line"]
+        ),
+        action: None,
+    });
+    for variable in variables.iter().take(64) {
+        let name = variable["name"].as_str().unwrap_or("?");
+        rows.push(Row {
+            lane: "Vars",
+            key: clipped(name, 80),
+            value: variable_text(variable),
+            action: None,
+        });
+        for child in variable["children"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .take(32)
+        {
+            rows.push(Row {
+                lane: "Vars",
+                key: clipped(
+                    &format!("{name}.{}", child["name"].as_str().unwrap_or("?")),
+                    120,
+                ),
+                value: variable_text(child),
+                action: None,
+            });
+        }
+    }
+}
+
 pub(crate) fn json_preview(value: &Value, limit: usize) -> String {
     // The slice writer stops serialization at the display limit, including
     // nested data in a capture. A whole artifact need not be encoded again.
@@ -828,6 +911,7 @@ impl Inspection {
                 });
             }
             source_rows(value, &mut rows);
+            variable_rows(value, &mut rows);
             if let Some(assembly) = value["disassembly"]["assembly"].as_str() {
                 let pc = value["registers"][15].as_u64();
                 for line in assembly

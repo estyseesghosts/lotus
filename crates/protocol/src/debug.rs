@@ -140,6 +140,27 @@ pub enum DebugCommand {
         line: u32,
         context: u32,
     },
+    /// Parameters and locals of a stopped frame from the bound ELF's DWARF, or one
+    /// variable by name (a local in scope, else a global). Read-only (lotus#78).
+    InspectVariable {
+        core: u32,
+        #[serde(default)]
+        frame: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default = "inspect_depth")]
+        depth: u32,
+    },
+    /// A restricted typed expression over variables: names, `.`, `->`, `[n]`, unary `*`
+    /// and `&`, and parentheses. Nothing is executed in the host or the guest.
+    InspectExpression {
+        core: u32,
+        #[serde(default)]
+        frame: u32,
+        expression: String,
+        #[serde(default = "inspect_depth")]
+        depth: u32,
+    },
     Deadlocks,
     CrashReport {
         core: u32,
@@ -523,6 +544,10 @@ fn settings_page_size() -> u32 {
     32
 }
 
+fn inspect_depth() -> u32 {
+    2
+}
+
 fn state_hash_chunk_kib() -> u32 {
     1024
 }
@@ -754,6 +779,22 @@ impl DebugCommand {
                 ..
             } if *core > 3 || !(1..=100_000).contains(max_instructions) => {
                 Err("source step core 0..3, max_instructions 1..100000")
+            }
+            Self::InspectVariable {
+                core, frame, depth, ..
+            }
+            | Self::InspectExpression {
+                core, frame, depth, ..
+            } if *core > 3 || *frame > 63 || *depth > 8 => {
+                Err("variable inspection core 0..3, frame 0..63, depth 0..8")
+            }
+            Self::InspectVariable {
+                name: Some(name), ..
+            } if name.is_empty() || name.len() > 256 => Err("variable name 1..256 bytes"),
+            Self::InspectExpression { expression, .. }
+                if expression.trim().is_empty() || expression.len() > 256 =>
+            {
+                Err("expression 1..256 bytes")
             }
             Self::ResolveSymbol { query } if query.len() > 1024 => {
                 Err("symbol query exceeds budget")

@@ -35,6 +35,8 @@ debug	handles	Kernel explorer	read	-	-	Kernel
 debug	hio_forward	palette	control	-	-	fixture pending
 debug	hio_reply	palette	control	-	-	fixture pending
 debug	input_state	desktop input	control	-	Local input devices supply state through the input router	Input
+debug	inspect_expression	palette	read	-	-	Variables
+debug	inspect_variable	CPU inspector	read	-	-	Variables
 debug	install_cia	palette	control	-	-	fixture pending
 debug	lease_acquire	external only	control	-	Lease ownership belongs to the external controller	external
 debug	lease_release	external only	control	-	Lease ownership belongs to the external controller	external

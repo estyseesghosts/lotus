@@ -2281,6 +2281,43 @@ impl Supervisor {
                 )
                 .await;
             }
+            DebugCommand::InspectVariable {
+                core,
+                frame,
+                name,
+                depth,
+            } => {
+                let query = name.clone().map_or(
+                    lotus_debugger::variables::Query::Frame,
+                    lotus_debugger::variables::Query::Name,
+                );
+                return crate::variables::inspect(
+                    &handle.symbols,
+                    &mut native,
+                    *core,
+                    *frame,
+                    *depth,
+                    query,
+                )
+                .await;
+            }
+            DebugCommand::InspectExpression {
+                core,
+                frame,
+                expression,
+                depth,
+            } => {
+                let query = lotus_debugger::variables::Query::Expression(expression.clone());
+                return crate::variables::inspect(
+                    &handle.symbols,
+                    &mut native,
+                    *core,
+                    *frame,
+                    *depth,
+                    query,
+                )
+                .await;
+            }
             DebugCommand::SourceExcerpt {
                 file,
                 line,

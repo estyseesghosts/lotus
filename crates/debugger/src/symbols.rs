@@ -9,7 +9,7 @@ use object::{Object, ObjectSection, ObjectSymbol, SectionFlags, SectionKind, Sym
 use serde::Serialize;
 use std::{collections::BTreeMap, io, sync::Arc};
 
-type Reader = gimli::EndianArcSlice<gimli::RunTimeEndian>;
+pub(crate) type Reader = gimli::EndianArcSlice<gimli::RunTimeEndian>;
 
 /// Read-only bytes compared with guest memory; larger images are refused.
 pub const MAX_VERIFIED_BYTES: usize = 16 << 20;
@@ -30,6 +30,8 @@ pub struct Symbols {
     inline_entries: BTreeMap<u32, u32>,
     /// `.debug_frame` call-frame information, when the build has it.
     debug_frame: Option<gimli::DebugFrame<Reader>>,
+    /// Parsed units for variable inspection (lotus#78); shares section bytes with `context`.
+    pub(crate) debug: crate::variables::Debug,
     sections: Vec<ImageSection>,
     verify: Vec<(u32, Arc<[u8]>)>,
     build_id: Option<String>,
@@ -68,6 +70,31 @@ pub struct FrameRule {
     pub cfa_register: u16,
     pub cfa_offset: i64,
     pub return_address: ReturnAddress,
+}
+
+/// How one register of the caller is recovered at a PC (DWARF 5, 6.4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterRule {
+    Undefined,
+    SameValue,
+    /// Saved at CFA + offset.
+    Offset(i64),
+    /// The value is CFA + offset.
+    ValOffset(i64),
+    /// Held in another register.
+    Register(u16),
+    /// A DWARF expression or architectural rule this host does not evaluate.
+    Unsupported,
+}
+
+/// The full call-frame row at a PC: the CFA rule, the return-address column and every
+/// register rule the row states. Registers without a rule are unspecified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnwindRow {
+    pub cfa_register: u16,
+    pub cfa_offset: i64,
+    pub return_address: u16,
+    pub rules: Vec<(u16, RegisterRule)>,
 }
 
 /// One allocated ELF section at its link address.
@@ -109,7 +136,11 @@ impl Symbols {
                 "expected a little-endian ARM ELF build artifact",
             ));
         }
-        let dwarf = gimli::Dwarf::load(|section| -> io::Result<Reader> {
+        let loaded = std::cell::RefCell::new(std::collections::HashMap::new());
+        let load = |section: gimli::SectionId| -> io::Result<Reader> {
+            if let Some(data) = loaded.borrow().get(&section) {
+                return Ok(Reader::new(Arc::clone(data), gimli::RunTimeEndian::Little));
+            }
             let data = file
                 .section_by_name(section.name())
                 .map(|s| s.uncompressed_data())
@@ -119,11 +150,12 @@ impl Symbols {
             if data.len() > 64 << 20 {
                 return Err(io::Error::other("DWARF section exceeds budget"));
             }
-            Ok(Reader::new(
-                Arc::from(data.as_ref()),
-                gimli::RunTimeEndian::Little,
-            ))
-        })?;
+            let data: Arc<[u8]> = Arc::from(data.as_ref());
+            loaded.borrow_mut().insert(section, Arc::clone(&data));
+            Ok(Reader::new(data, gimli::RunTimeEndian::Little))
+        };
+        let dwarf = gimli::Dwarf::load(load)?;
+        let debug = crate::variables::Debug::parse(gimli::Dwarf::load(load)?)?;
         let lines = LineTable::parse(&dwarf)?;
         let inline_entries = crate::lines::inline_entries(&dwarf)?;
         let debug_frame = file
@@ -242,6 +274,7 @@ impl Symbols {
             lines,
             inline_entries,
             debug_frame,
+            debug,
             sections,
             verify,
             build_id,
@@ -370,6 +403,19 @@ impl Symbols {
             .next_back()
             .filter(|(_, (end, _))| pc < *end)
             .map(|(start, (end, name))| (*start as u32, *end as u32, name.as_str()))
+    }
+
+    /// The ELF symbol containing `address` and the offset into it. A Thumb function
+    /// pointer carries bit 0, so an odd address also matches the symbol at `address - 1`.
+    pub(crate) fn symbol_at(&self, address: u32) -> Option<(&str, u32)> {
+        let lookup = |address: u32| {
+            self.symbols
+                .range(..=u64::from(address))
+                .next_back()
+                .filter(|(start, (_, size))| u64::from(address) < **start + (*size).max(1))
+                .map(|(start, (name, _))| (name.as_str(), address - *start as u32))
+        };
+        lookup(address).or_else(|| (address & 1 == 1).then(|| lookup(address & !1)).flatten())
     }
 
     /// The post-prologue stop for a function entered at `address`, when `address` is a
@@ -546,6 +592,49 @@ impl Symbols {
             cfa_register: register.0,
             cfa_offset: offset,
             return_address,
+        }))
+    }
+
+    /// The `.debug_frame` row at `address`; `None` when no FDE covers it or the CFA is
+    /// a DWARF expression.
+    pub fn unwind_row(&self, address: u32) -> io::Result<Option<UnwindRow>> {
+        use gimli::UnwindSection as _;
+        let Some(frame) = &self.debug_frame else {
+            return Ok(None);
+        };
+        let bases = gimli::BaseAddresses::default();
+        let pc = u64::from(address & !1);
+        let fde = match frame.fde_for_address(&bases, pc, gimli::DebugFrame::cie_from_offset) {
+            Ok(fde) => fde,
+            Err(gimli::Error::NoUnwindInfoForAddress) => return Ok(None),
+            Err(error) => return Err(io::Error::other(error)),
+        };
+        let mut context = Box::new(gimli::UnwindContext::new());
+        let row = fde
+            .unwind_info_for_address(frame, &bases, &mut context, pc)
+            .map_err(io::Error::other)?;
+        let gimli::CfaRule::RegisterAndOffset { register, offset } = row.cfa().clone() else {
+            return Ok(None);
+        };
+        let rules = row
+            .registers()
+            .map(|(register, rule)| {
+                let rule = match rule {
+                    gimli::RegisterRule::Undefined => RegisterRule::Undefined,
+                    gimli::RegisterRule::SameValue => RegisterRule::SameValue,
+                    gimli::RegisterRule::Offset(offset) => RegisterRule::Offset(*offset),
+                    gimli::RegisterRule::ValOffset(offset) => RegisterRule::ValOffset(*offset),
+                    gimli::RegisterRule::Register(other) => RegisterRule::Register(other.0),
+                    _ => RegisterRule::Unsupported,
+                };
+                (register.0, rule)
+            })
+            .collect();
+        Ok(Some(UnwindRow {
+            cfa_register: register.0,
+            cfa_offset: offset,
+            return_address: fde.cie().return_address_register().0,
+            rules,
         }))
     }
 

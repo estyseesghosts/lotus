@@ -3189,3 +3189,381 @@ fn sites_of(elf: &std::path::Path, line: u32) -> (u32, usize) {
     }
     (sites[0], sites.len())
 }
+
+fn variables_marker(name: &str) -> u32 {
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/variables/fixture.c");
+    let text = std::fs::read_to_string(source).unwrap();
+    let tag = format!("// @{name}");
+    text.lines()
+        .position(|line| line.trim_end().ends_with(&tag))
+        .unwrap_or_else(|| panic!("marker {name} missing")) as u32
+        + 1
+}
+
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_VARIABLES_FIXTURE(_GCC) builds with adjacent ELFs"]
+fn variables_follow_dwarf_locations() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let builds = [
+        (
+            "clang",
+            PathBuf::from(std::env::var_os("LOTUS_VARIABLES_FIXTURE").unwrap()),
+        ),
+        (
+            "gcc",
+            PathBuf::from(std::env::var_os("LOTUS_VARIABLES_FIXTURE_GCC").unwrap()),
+        ),
+    ];
+    let root = std::env::temp_dir().join(format!("lotus-variables-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, root.join("host"));
+    config.allow_control = true;
+    for (name, fixture) in &builds {
+        config.assets.insert((*name).into(), fixture.clone());
+        config
+            .assets
+            .insert(format!("{name}_elf"), fixture.with_extension("elf"));
+    }
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let send = |command| controller.commands.send(command).unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let call = |target: &SessionTarget, command| {
+        runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: target.id.clone(),
+            command,
+        })))
+    };
+    let ok = |target: &SessionTarget, command| tool_json(call(target, command));
+    let mut known: Vec<String> = Vec::new();
+    for (build, fixture) in &builds {
+        let elf = fixture.with_extension("elf");
+        send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some((*build).into()),
+        });
+        wait(&controller, |update| {
+            !known.contains(&update.selected)
+                && update
+                    .sessions
+                    .iter()
+                    .any(|summary| summary.info.id == update.selected)
+        });
+        let target = selected_target(&controller);
+        known.push(target.id.clone());
+        send(Command::Pause(target.id.clone()));
+        wait(&controller, |update| {
+            target.resolve(&update.sessions).is_some_and(|summary| {
+                summary.telemetry.state == lotus_session::SessionState::Paused
+            })
+        });
+        ok(
+            &target,
+            D::LoadSymbols {
+                asset: format!("{build}_elf"),
+            },
+        );
+        let stop_at = |marker: &str| -> Value {
+            let set = ok(
+                &target,
+                D::SourceBreakpointSet {
+                    file: "fixture.c".into(),
+                    line: variables_marker(marker),
+                },
+            );
+            let ids: Vec<Value> = set["sites"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|site| site["breakpoint"].clone())
+                .collect();
+            ok(&target, D::Continue);
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let status = ok(&target, D::Status);
+                if status["paused"] == true
+                    && status["stop"]["reason"] == "breakpoint"
+                    && ids.contains(&status["stop"]["breakpoint"])
+                {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{build}: no stop at {marker}: {status}"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            ok(
+                &target,
+                D::SourceBreakpointRemove {
+                    id: set["id"].as_u64().unwrap(),
+                },
+            );
+            set
+        };
+        let frame = |frame: u32, depth: u32| {
+            ok(
+                &target,
+                D::InspectVariable {
+                    core: 0,
+                    frame,
+                    name: None,
+                    depth,
+                },
+            )
+        };
+        let expression = |text: &str, depth: u32| {
+            call(
+                &target,
+                D::InspectExpression {
+                    core: 0,
+                    frame: 0,
+                    expression: text.into(),
+                    depth,
+                },
+            )
+        };
+        let var = |reply: &Value, name: &str| -> Value {
+            reply["variables"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["name"] == name)
+                .unwrap_or_else(|| panic!("{build}: no {name} in {reply}"))
+                .clone()
+        };
+        let field = |node: &Value, path: &[&str]| -> Value {
+            let mut node = node.clone();
+            for name in path {
+                node = node["children"]
+                    .as_array()
+                    .and_then(|children| children.iter().find(|c| c["name"] == *name))
+                    .unwrap_or_else(|| panic!("{build}: no {name} in {node}"))
+                    .clone();
+            }
+            node
+        };
+        let functions = |reply: &Value| -> Vec<String> {
+            reply["frames"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| f["function"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let value = |text: &str, depth: u32| tool_json(expression(text, depth))["value"].clone();
+        let record = nm_address(&elf, "record");
+        let wrapped = |kept: u32| u64::from((-3i32 as u32).wrapping_mul(kept).wrapping_add(4));
+
+        // Values are read only from a paused guest.
+        ok(&target, D::Continue);
+        let running = tool_error(call(
+            &target,
+            D::InspectVariable {
+                core: 0,
+                frame: 0,
+                name: Some("record".into()),
+                depth: 1,
+            },
+        ));
+        assert!(running.contains("paused"), "{build}: {running}");
+        ok(&target, D::Pause);
+
+        // Registers, location lists and callee-saved registers restored by unwinding.
+        stop_at("probe_after");
+        let probe = frame(0, 1);
+        assert_eq!(
+            functions(&probe),
+            ["probe", "descend", "descend", "descend", "main", "_start"],
+            "{build}"
+        );
+        assert_eq!(probe["frame"]["line"], variables_marker("probe_after"));
+        assert_eq!(probe["consistency"]["paused"], true);
+        assert_eq!(probe["address_space"]["kind"], "guest_virtual");
+        assert_eq!(probe["image"]["elf_asset"], format!("{build}_elf"));
+        let counter = value("counter", 0)["value"].as_u64().unwrap() as u32;
+        let kept = var(&probe, "kept");
+        assert_eq!(
+            kept["value"],
+            u64::from(counter.wrapping_add(40)),
+            "{build}: {kept}"
+        );
+        assert_eq!(kept["location"]["kind"], "register");
+        let kept = counter.wrapping_add(40);
+        assert_eq!(var(&probe, "mixed")["value"], wrapped(kept), "{build}");
+        assert_eq!(var(&probe, "summed")["value"], 9, "{build}");
+        if *build == "clang" {
+            // clang's location list ends once the volatile load's value is dead; GCC
+            // describes `lost` as r3 for the whole function and is reported as such.
+            assert_eq!(var(&probe, "lost")["state"], "optimized_out");
+        }
+        // The pointer argument survives only as an entry value the call site never records.
+        let r = var(&probe, "r");
+        assert_eq!(r["state"], "unavailable", "{build}: {r}");
+        assert!(r["reason"].as_str().unwrap().contains("call site"), "{r}");
+        for (index, depth) in [(2, 1), (3, 2)] {
+            let caller = frame(index, 0);
+            let restored = var(&caller, "depth");
+            assert_eq!(
+                restored["value"], depth,
+                "{build} frame {index}: {restored}"
+            );
+            assert_eq!(restored["location"]["register"], "r4");
+            assert_eq!(var(&caller, "below")["state"], "optimized_out", "{build}");
+        }
+        let innermost = var(&frame(1, 0), "depth");
+        assert_eq!(innermost["state"], "unavailable", "{build}: {innermost}");
+        assert!(innermost["reason"].as_str().unwrap().contains("AAPCS"));
+        let missing_frame = tool_error(call(
+            &target,
+            D::InspectVariable {
+                core: 0,
+                frame: 63,
+                name: None,
+                depth: 0,
+            },
+        ));
+        assert!(missing_frame.contains("no frame 63"), "{missing_frame}");
+
+        // A global with nested structs, an array, bit-fields, an enum, a union, a cyclic
+        // list, a pointer into unmapped memory, a function pointer and a 64-bit integer.
+        let whole = value("record", 3);
+        assert_eq!(whole["address"], record);
+        assert_eq!(whole["location"]["kind"], "memory");
+        assert_eq!(field(&whole, &["label"])["string"], "probe");
+        assert_eq!(field(&whole, &["origin", "x"])["value"], -3);
+        assert_eq!(field(&whole, &["origin", "y"])["value"], 4);
+        assert_eq!(field(&whole, &["path", "[2]", "y"])["value"], 6);
+        for (name, expected) in [("ready", 1), ("level", 5), ("delta", -6), ("tail", 100)] {
+            assert_eq!(
+                field(&whole, &["flags", name])["value"],
+                expected,
+                "{build} {name}"
+            );
+        }
+        assert_eq!(field(&whole, &["mode"])["value"], "MODE_RUN");
+        assert_eq!(field(&whole, &["mode"])["raw"], 2);
+        assert_eq!(field(&whole, &["word", "raw"])["value"], 0x1122_3344);
+        assert_eq!(field(&whole, &["word", "bytes", "[0]"])["value"], 0x44);
+        assert_eq!(field(&whole, &["ring"])["symbol"], "ring_a");
+        assert_eq!(field(&whole, &["ring", "*", "id"])["value"], 1);
+        assert_eq!(field(&whole, &["missing", "*"])["state"], "invalid_pointer");
+        assert_eq!(field(&whole, &["hook"])["symbol"], "hook");
+        assert_eq!(field(&whole, &["big"])["value"], -1_234_567_890_123i64);
+        assert!(
+            value("record.ring", 8).to_string().contains("\"cycle\""),
+            "{build}"
+        );
+        assert_eq!(value("record.path[2].y", 0)["value"], 6);
+        assert_eq!(value("record.label[0]", 0)["value"], 112);
+        assert_eq!(value("&record.origin", 0)["points_to"], record + 4);
+        assert_eq!(value("(*record.ring).next->id", 0)["value"], 2);
+        assert_eq!(value("*record.missing", 0)["state"], "invalid_pointer");
+        for (text, expected) in [
+            ("record.path[3]", "outside"),
+            ("record + 1", "unexpected"),
+            ("record.nope", "no member"),
+            ("nowhere", "no variable"),
+        ] {
+            let error = tool_error(expression(text, 0));
+            assert!(error.contains(expected), "{text}: {error}");
+        }
+        let too_deep = tool_error(expression("record", 9));
+        assert!(too_deep.contains("depth"), "{too_deep}");
+        // The desktop request path returns the same value tree.
+        let origin = D::InspectExpression {
+            core: 0,
+            frame: 0,
+            expression: "record.origin".into(),
+            depth: 1,
+        };
+        let desktop = completed(desktop_command(
+            &controller,
+            &target,
+            Panel::Result,
+            origin.clone(),
+        ));
+        assert_eq!(
+            result_rows(&desktop, ".value"),
+            flattened(&ok(&target, origin)["value"], ".value")
+        );
+
+        // An inlined frame, shown in front of its caller at the same PC.
+        stop_at("inline_body");
+        let inline = frame(0, 1);
+        assert_eq!(functions(&inline)[..2], ["mix", "probe"], "{build}");
+        assert_eq!(inline["frames"][0]["inline"], true);
+        assert_eq!(inline["frames"][1]["inline"], false);
+        assert_eq!(inline["frames"][0]["pc"], inline["frames"][1]["pc"]);
+        let kept = var(&frame(1, 0), "kept")["value"].as_u64().unwrap() as u32;
+        assert_eq!(var(&inline, "p")["points_to"], record + 4, "{build}");
+        assert_eq!(var(&inline, "p")["symbol"], "record+0x4");
+        assert_eq!(var(&inline, "local")["value"], wrapped(kept), "{build}");
+        let k = var(&inline, "k");
+        if *build == "gcc" {
+            assert_eq!(k["value"], u64::from(kept), "{k}");
+        } else {
+            // clang's inlined copy has no DIE for `k`; it comes from the abstract instance.
+            assert_eq!(k["state"], "optimized_out", "{k}");
+            assert!(k["reason"].as_str().unwrap().contains("inlined copy"));
+        }
+
+        // Arguments past the fourth word are on the stack (AAPCS 6.5).
+        stop_at("stack_args");
+        let six = frame(0, 0);
+        assert_eq!(functions(&six)[..2], ["six", "probe"], "{build}");
+        let kept = var(&frame(1, 0), "kept")["value"].clone();
+        assert_eq!(var(&six, "a")["value"], kept, "{build}");
+        for (name, expected) in [("d", 4), ("e", 5), ("f", 6)] {
+            assert_eq!(var(&six, name)["value"], expected, "{build} {name}");
+        }
+        assert_eq!(var(&six, "e")["location"]["kind"], "memory");
+        assert_eq!(var(&six, "f")["location"]["kind"], "memory");
+        if *build == "gcc" {
+            // Entry values resolved through the caller's DW_TAG_call_site parameters.
+            assert_eq!(var(&six, "b")["value"], 2);
+            assert_eq!(var(&six, "c")["value"], 3);
+        } else {
+            // clang's call site records only r0.
+            assert_eq!(var(&six, "c")["state"], "unavailable");
+        }
+
+        // A Thumb frame, and its ARM caller unwound from it.
+        stop_at("thumb_loop");
+        let sum = frame(0, 0);
+        assert_eq!(functions(&sum)[..2], ["thumb_sum", "probe"], "{build}");
+        assert_eq!(sum["frames"][0]["thumb"], true);
+        assert_eq!(sum["frames"][1]["thumb"], false);
+        assert_eq!(var(&sum, "total")["value"], 0, "{build}");
+        if *build == "gcc" {
+            assert_eq!(var(&sum, "count")["value"], 3);
+        }
+        assert_eq!(var(&frame(1, 0), "kept")["state"], "ok", "{build}");
+        // The CPU inspector lists the stopped frame's variables.
+        send(Command::Select(target.id.clone()));
+        *controller.inspection_selection.lock().unwrap() =
+            InspectionSelection::first_page(Panel::Cpu);
+        controller.inspector.store(true, Ordering::Release);
+        wait(&controller, |update| {
+            update.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.panel == Panel::Cpu
+                    && snapshot.target.as_ref() == Some(&target)
+                    && snapshot.view.rows.iter().any(|row| {
+                        row.lane == "Vars" && row.key == "total" && row.value == "u32 = 0"
+                    })
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|row| row.lane == "Vars" && row.value.starts_with("thumb_sum"))
+            })
+        });
+        controller.inspector.store(false, Ordering::Release);
+        send(Command::Stop(target.id.clone()));
+    }
+    drop(controller);
+    let _ = std::fs::remove_dir_all(root);
+}

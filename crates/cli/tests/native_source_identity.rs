@@ -191,3 +191,80 @@ fn cli_sets_source_breakpoints_and_steps_lines() {
     assert!(child.wait().unwrap().success());
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_VARIABLES_FIXTURE with its adjacent ELF"]
+fn cli_inspects_variables() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_VARIABLES_FIXTURE").unwrap());
+    let elf = fixture.with_extension("elf");
+    let root = std::env::temp_dir().join(format!("lotus-cli-variables-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let config = root.join("host.json");
+    std::fs::write(
+        &config,
+        json!({
+            "worker": worker,
+            "storage_root": root.join("host"),
+            "allow_control": true,
+            "assets": {"fixture": fixture, "elf": elf},
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ctr-cli"))
+        .arg("debug")
+        .arg(&config)
+        .arg("fixture")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+    let info: Value = serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap();
+    assert!(info["id"].is_string(), "{info}");
+    let mut request = |command: Value| -> Value {
+        writeln!(stdin, "{command}").unwrap();
+        serde_json::from_str(&lines.next().unwrap().unwrap()).unwrap()
+    };
+    request(json!({"operation": "pause"}));
+    request(json!({"operation": "load_symbols", "asset": "elf"}));
+    let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/variables/fixture.c");
+    let line = std::fs::read_to_string(source)
+        .unwrap()
+        .lines()
+        .position(|l| l.trim_end().ends_with("// @stack_args"))
+        .unwrap()
+        + 1;
+    let set =
+        request(json!({"operation": "source_breakpoint_set", "file": "fixture.c", "line": line}));
+    let breakpoint = set["sites"][0]["breakpoint"].clone();
+    request(json!({"operation": "continue"}));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let status = request(json!({"operation": "status"}));
+        if status["paused"] == true && status["stop"]["breakpoint"] == breakpoint {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "{status}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let frame = request(json!({"operation": "inspect_variable", "core": 0}));
+    assert_eq!(frame["frame"]["function"], "six", "{frame}");
+    let variables = frame["variables"].as_array().unwrap();
+    let get = |name: &str| variables.iter().find(|v| v["name"] == name).unwrap();
+    assert_eq!(get("e")["value"], 5);
+    assert_eq!(get("f")["value"], 6);
+    let origin = request(
+        json!({"operation": "inspect_expression", "core": 0, "expression": "record.origin.x"}),
+    );
+    assert_eq!(origin["value"]["value"], -3, "{origin}");
+    let pointer =
+        request(json!({"operation": "inspect_expression", "core": 0, "expression": "&record"}));
+    assert_eq!(pointer["value"]["points_to"], nm_address(&elf, "record"));
+    writeln!(stdin, "quit").unwrap();
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+    std::fs::remove_dir_all(root).unwrap();
+}

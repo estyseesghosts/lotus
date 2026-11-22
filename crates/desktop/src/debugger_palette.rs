@@ -288,6 +288,8 @@ fn group(name: &str) -> &'static str {
         | "backtrace"
         | "crash_report"
         | "disassemble"
+        | "inspect_expression"
+        | "inspect_variable"
         | "load_symbols"
         | "registers"
         | "resolve_symbol"

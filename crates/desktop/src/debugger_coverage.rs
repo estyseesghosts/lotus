@@ -69,7 +69,7 @@ fn render(inventory: &str) -> Result<String, String> {
         }
         let verification_link = match *verification {
             "CPU" | "Memory search" | "Snapshots" | "Timeline" | "Kernel" | "Source identity"
-            | "Source debugging" => Some("tests/native_inspector.rs"),
+            | "Source debugging" | "Variables" => Some("tests/native_inspector.rs"),
             "Memory" | "Breakpoints" => Some("src/lotus_window/breakpoints.rs"),
             "Guest tools" => Some("src/lotus_window/command_palette.rs"),
             "GPU" | "GDB" => Some("tests/native_inspector.rs"),
@@ -134,6 +134,8 @@ fn render(inventory: &str) -> Result<String, String> {
         "Source identity binds clang and devkitARM builds of that fixture and checks refusals of other builds. ",
         "Source debugging sets line breakpoints and steps lines on clang and devkitARM builds of a C++ fixture, ",
         "checked against llvm-addr2line and llvm-objdump. ",
+        "Variables reads locals, arguments, globals and expressions of -O1 clang and devkitARM builds of a C fixture ",
+        "and compares them with the values the fixture defines. ",
         "Workspace and Input use mock workers. ",
         "Fixture pending means the route still needs mapped desktop acceptance. This inventory ",
         "records test coverage independently of the outcome of any release run.\n"

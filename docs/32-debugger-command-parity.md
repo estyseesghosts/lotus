@@ -42,6 +42,8 @@ This table records reachability, not native-backend acceptance.
 | `hio_forward` | `ctr-cli debug`: `hio_forward` | `lotus_debug`: `hio_forward` |
 | `hio_reply` | `ctr-cli debug`: `hio_reply` | `lotus_debug`: `hio_reply` |
 | `input_state` | `ctr-cli debug`: `input_state` | `lotus_debug`: `input_state` |
+| `inspect_expression` | `ctr-cli debug`: `inspect_expression` | `lotus_debug`: `inspect_expression` |
+| `inspect_variable` | `ctr-cli debug`: `inspect_variable` | `lotus_debug`: `inspect_variable` |
 | `install_cia` | `ctr-cli debug`: `install_cia` | `lotus_debug`: `install_cia` |
 | `lease_acquire` | `ctr-cli debug`: `lease_acquire` | `lotus_debug`: `lease_acquire` |
 | `lease_release` | `ctr-cli debug`: `lease_release` | `lotus_debug`: `lease_release` |

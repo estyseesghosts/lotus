@@ -1225,6 +1225,80 @@
     },
     {
       "additionalProperties": false,
+      "description": "Parameters and locals of a stopped frame from the bound ELF's DWARF, or one\nvariable by name (a local in scope, else a global). Read-only (lotus#78).",
+      "properties": {
+        "core": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "depth": {
+          "default": 2,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "frame": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "operation": {
+          "const": "inspect_variable",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "core"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "A restricted typed expression over variables: names, `.`, `->`, `[n]`, unary `*`\nand `&`, and parentheses. Nothing is executed in the host or the guest.",
+      "properties": {
+        "core": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "depth": {
+          "default": 2,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "expression": {
+          "type": "string"
+        },
+        "frame": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "inspect_expression",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "core",
+        "expression"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
       "properties": {
         "operation": {
           "const": "deadlocks",

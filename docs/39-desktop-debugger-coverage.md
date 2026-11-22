@@ -7,7 +7,7 @@ Linked desktop routes may expose a subset of arguments. The [command palette](..
 
 Route coverage is independent of native acceptance. The host checks [command requirements](../crates/protocol/src/debug.rs) against the selected worker's negotiated features and forwards the worker's own refusal. A dash in the feature column means the shared command declares no additional feature gate. It carries no backend support guarantee.
 
-Verification links to the corresponding desktop test family. GPU and GDB exercises include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. Source identity binds clang and devkitARM builds of that fixture and checks refusals of other builds. Source debugging sets line breakpoints and steps lines on clang and devkitARM builds of a C++ fixture, checked against llvm-addr2line and llvm-objdump. Workspace and Input use mock workers. Fixture pending means the route still needs mapped desktop acceptance. This inventory records test coverage independently of the outcome of any release run.
+Verification links to the corresponding desktop test family. GPU and GDB exercises include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. Source identity binds clang and devkitARM builds of that fixture and checks refusals of other builds. Source debugging sets line breakpoints and steps lines on clang and devkitARM builds of a C++ fixture, checked against llvm-addr2line and llvm-objdump. Variables reads locals, arguments, globals and expressions of -O1 clang and devkitARM builds of a C fixture and compares them with the values the fixture defines. Workspace and Input use mock workers. Fixture pending means the route still needs mapped desktop acceptance. This inventory records test coverage independently of the outcome of any release run.
 
 ## Shared debugger commands
 
@@ -49,6 +49,8 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `hio_forward` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `hio_reply` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `input_state` | [desktop input](../crates/desktop/src/input_routing.rs) | control | - | Local input devices supply state through the input router | [Input](../crates/desktop/tests/input_routing.rs) |
+| `inspect_expression` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Variables](../crates/desktop/tests/native_inspector.rs) |
+| `inspect_variable` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [Variables](../crates/desktop/tests/native_inspector.rs) |
 | `install_cia` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `lease_acquire` | external only | control | - | Lease ownership belongs to the external controller | external |
 | `lease_release` | external only | control | - | Lease ownership belongs to the external controller | external |

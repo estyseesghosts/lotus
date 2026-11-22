@@ -1128,6 +1128,22 @@ impl Loops {
                     }
                 }
             }
+            // The stopped frame's DWARF variables (#78); the worker refuses while running.
+            if value["paused"] == true && !value["disassembly"]["source"].is_null() {
+                let command = DebugCommand::InspectVariable {
+                    core: cpu.core,
+                    frame: 0,
+                    name: None,
+                    depth: 1,
+                };
+                match self.dispatch_debug(target, &command).await {
+                    Ok(reply) if target.accepts_reply(&reply) => value["variables"] = reply,
+                    Ok(_) => {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "Guest changed"))
+                    }
+                    Err(error) => value["variables_error"] = error.to_string().into(),
+                }
+            }
         }
         if panel == Panel::Memory {
             if let Some(address) = inspection::memory_address(offset) {

@@ -236,3 +236,4 @@ mod tests {
 
 pub mod lines;
 pub mod symbols;
+pub mod variables;

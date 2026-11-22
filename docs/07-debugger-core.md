@@ -145,6 +145,58 @@ line with a 10,000-instruction budget. These behaviours are verified natively on
 clang and GCC builds of [the C++ fixture](../fixtures/source/fixture.cpp), checked against
 `llvm-addr2line -i` and `llvm-objdump --line-numbers`.
 
+### Variables and expressions (lotus#78)
+
+`inspect_variable` returns the parameters and locals of a frame, or one variable by name (a
+local in scope, else a global, preferring the current compilation unit). `inspect_expression`
+accepts names, `.`, `->`, `[n]`, unary `*` and `&`, and parentheses. It has no arithmetic,
+calls, casts or assignment, so nothing executes in the host or the guest. Both are read-only;
+writes stay with `write_memory` and `write_register`, which have their own permission checks.
+[The reader](../crates/debugger/src/variables.rs) works as follows:
+
+- Frames are unwound with `.debug_frame` (DWARF 5, 6.4). Registers without a rule keep their
+  value only if AAPCS 6.1.1 has the callee preserve them (r4-r11; s16-s31 per 6.1.2.1). SP
+  becomes the CFA, and LR is unknown in a caller. A caller frame looks up scopes and location
+  lists at its return address minus one, as gdb's `get_frame_address_in_block` does.
+- Each concrete frame splits into one frame per inlined subroutine active at its address,
+  innermost first. After a source step that showed an inline call site (#77), frame 0 is that
+  call site. A lexical block without PC bounds belongs to its parent, as in gdb's
+  `read_lexical_block_scope`. Variables that the abstract instance declares but the inlined
+  copy omits are listed as optimized out, as gdb's `inherit_abstract_dies` does.
+- Locations are evaluated with `gimli::Evaluation`. That covers register, memory, `fbreg`,
+  `DW_OP_call_frame_cfa`, implicit and stack values, composite pieces, constants and location
+  lists. `DW_OP_entry_value` of a register is resolved from the caller's
+  `DW_TAG_call_site_parameter` `DW_AT_call_value`, evaluated in the caller frame (DWARF 5,
+  3.4.2). Implicit pointers, TLS and `DW_OP_call*` are reported as unsupported.
+- Values are rendered from their DWARF types: base types, enums, pointers with string
+  previews and symbols, references, structs, classes, unions, arrays and bit-fields (both
+  `DW_AT_data_bit_offset` and DWARF 3 `DW_AT_bit_offset`). Budgets per request:
+  - expansion depth up to 8
+  - 2,048 nodes
+  - 128 KiB of guest reads in whole 4 KiB pages
+  - 64 array elements
+  - 256 members
+  - 256-byte strings
+  - 32-link type chains
+
+  A pointer already expanded on the current path is shown as `cycle`.
+- Every node that is not `ok` carries a state and a reason: `optimized_out`, `unavailable`,
+  `invalid_pointer`, `unsupported` or `truncated`.
+
+Values are read only while the worker reports the guest paused. The stop sequence and epoch
+are compared before and after the read, and the reply is refused if either changed. Replies
+carry the selected frame, all unwound frames and why unwinding ended, the paused stop sequence
+and thread, the guest virtual address space of the bound process, and the ELF identity. Each
+value records its location: register, memory address, computed, constant or pieces. The CPU
+inspector lists frame 0's variables one level deep.
+
+Values are reported as the DWARF describes them. devkitARM GCC 16.1 describes the dead `lost` in the
+[fixture](../fixtures/variables/fixture.c) as r3 for its whole function, so the value shown
+after r3 is reused is r3's current contents, as gdb would show. A caller's argument that
+DWARF places in r0-r3 is refused rather than guessed. Verified natively on CITnLO with
+`-O1 -gdwarf-5` clang and devkitARM GCC builds of that fixture, against the values it defines;
+corrupt type chains are covered by a unit test with hand-assembled DWARF.
+
 ## Trace design
 
 Suggested event kinds:

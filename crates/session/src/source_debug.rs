@@ -154,7 +154,7 @@ fn image_parts(image: &DebugImage) -> (&lotus_debugger::symbols::Symbols, u64, u
 
 /// The validated binding, or why there is none. The caller holds the native lock, so
 /// the binding cannot change; the `Arc` lets awaits run without the slot lock.
-async fn bound(
+pub(crate) async fn bound(
     slot: &Mutex<SymbolSlot>,
     native: &mut NativeSession,
 ) -> io::Result<Arc<DebugImage>> {
@@ -475,6 +475,21 @@ pub(crate) struct Presented {
     /// The worker's stop sequence; any execution or new stop replaces it.
     sequence: Value,
     hidden: u32,
+}
+
+/// Inlined frames the last source step hid at this stop, so variable inspection counts
+/// frames as that step's location showed them; 0 for any other stop.
+pub(crate) fn presented_hidden(
+    slot: &Mutex<SymbolSlot>,
+    epoch: u64,
+    pc: u32,
+    sequence: &Value,
+) -> u32 {
+    lock(slot)
+        .presented
+        .as_ref()
+        .filter(|p| p.epoch == epoch && p.pc == pc && &p.sequence == sequence)
+        .map_or(0, |p| p.hidden)
 }
 
 pub(crate) async fn step(
