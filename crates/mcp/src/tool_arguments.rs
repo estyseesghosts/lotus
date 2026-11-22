@@ -1,5 +1,33 @@
+use lotus_session::investigation::InvestigationDetails;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InvestigationArgs {
+    pub operation: InvestigationOperation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum InvestigationOperation {
+    /// List saved investigations by ID, title and revision.
+    List,
+    /// Read a saved record and its reference status. Omit ID for the attached record.
+    Get { id: Option<String> },
+    /// Select a saved investigation for this connection and return its current view.
+    Attach { id: String },
+    /// Clear this connection's selection.
+    Detach,
+    /// Save a new investigation. Requires host control.
+    Create { details: Box<InvestigationDetails> },
+    /// Replace details if the revision still matches. Requires host control.
+    Update {
+        id: String,
+        expected_revision: u64,
+        details: Box<InvestigationDetails>,
+    },
+}
 
 /// Where a setting is set (`lotus_settings::Scope`).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]

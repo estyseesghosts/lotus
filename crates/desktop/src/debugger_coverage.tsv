@@ -112,6 +112,7 @@ mcp	lotus_focus_session	workspace	presentation change	-	Select a session in the 
 mcp-debug	lotus_gdb	GDB inspector	control to start or stop	-	Shares the listener and client lease with the desktop (#152). CITnLO only.	GDB
 mcp	lotus_input	desktop input	control	-	Device input through the desktop router	Input
 mcp	lotus_input_presets	settings window	read or control by operation	-	The Controls preset choice lists builtin and saved presets. Import, export, duplicate, rename and delete are MCP and ctr-cli only.	Settings
+mcp	lotus_investigation	unavailable	read or control by operation	-	The host stores investigations; a desktop editor is pending.	Investigations
 mcp	lotus_list_cards	session status	read	-	Card sidebar	Session
 mcp	lotus_list_sessions	session status	read	-	Session sidebar	Session
 mcp	lotus_load	session controls	control	-	Asset picker	Session

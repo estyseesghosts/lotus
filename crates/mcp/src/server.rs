@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use base64::Engine;
 use lotus_runner::Scenario;
@@ -27,9 +27,10 @@ use serde_json::Value;
 
 use crate::tool_arguments::{
     AdvanceArgs, CaptureImageArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs,
-    GdbOperation, InputArgs, InputPresetArgs, InputPresetOperation, KindArg, LoadArgs, MemoryArgs,
-    PinArtifactArgs, RegistersArgs, ReleaseArtifactsArgs, SessionArgs, SettingsArgs,
-    SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
+    GdbOperation, InputArgs, InputPresetArgs, InputPresetOperation, InvestigationArgs,
+    InvestigationOperation, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs,
+    ReleaseArtifactsArgs, SessionArgs, SettingsArgs, SettingsChangeArgs, SettingsOperation,
+    SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -56,6 +57,7 @@ pub struct LotusServer {
     gdb: Option<Arc<lotus_gdb::Manager>>,
     scenarios: BTreeMap<String, PathBuf>,
     screenshot_slots: Arc<tokio::sync::Semaphore>,
+    attached_investigation: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for LotusServer {
@@ -75,6 +77,7 @@ impl LotusServer {
             frontend: Frontend::Headless,
             scenarios: BTreeMap::new(),
             screenshot_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            attached_investigation: Arc::default(),
         }
     }
 
@@ -115,6 +118,7 @@ impl LotusServer {
             frontend,
             scenarios,
             screenshot_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            attached_investigation: Arc::default(),
         }
     }
 
@@ -137,18 +141,29 @@ impl LotusServer {
         self.gdb.as_ref()
     }
 
+    /// Start a connection with its own selected investigation and shared host resources.
+    #[must_use]
+    pub fn for_connection(&self) -> Self {
+        Self {
+            attached_investigation: Arc::default(),
+            ..self.clone()
+        }
+    }
+
     pub async fn resource_bytes(&self, uri: &str) -> io::Result<Vec<u8>> {
         self.require_host()?.read_artifact(uri)
     }
 
     fn require_host(&self) -> io::Result<&Supervisor> {
-        self.host.as_deref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "native host is not configured",
-            )
-        })
+        self.host.as_deref().ok_or_else(unconfigured_host)
     }
+}
+
+fn unconfigured_host() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        "native host is not configured",
+    )
 }
 
 fn tool_result(value: io::Result<Value>) -> CallToolResult {
@@ -160,6 +175,56 @@ fn tool_result(value: io::Result<Value>) -> CallToolResult {
 
 fn json<T: serde::Serialize>(value: &T) -> io::Result<Value> {
     serde_json::to_value(value).map_err(io::Error::other)
+}
+
+fn investigation_operation(
+    host: &Supervisor,
+    attached: &Mutex<Option<String>>,
+    operation: InvestigationOperation,
+) -> io::Result<Value> {
+    let selection = || {
+        attached
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    match operation {
+        InvestigationOperation::List => {
+            let investigations = host
+                .investigations()?
+                .into_iter()
+                .map(|record| {
+                    serde_json::json!({
+                        "id": record.id, "title": record.details.title, "revision": record.revision,
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(serde_json::json!({
+                "investigations": investigations,
+                "writable": host.allows_control(),
+            }))
+        }
+        InvestigationOperation::Get { id } => {
+            let id = id.or_else(|| selection().clone()).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "no investigation attached")
+            })?;
+            json(&host.investigation(&id)?)
+        }
+        InvestigationOperation::Attach { id } => {
+            let view = json(&host.investigation(&id)?)?;
+            *selection() = Some(id);
+            Ok(view)
+        }
+        InvestigationOperation::Detach => {
+            let previous = selection().take();
+            Ok(serde_json::json!({ "detached": previous }))
+        }
+        InvestigationOperation::Create { details } => json(&host.create_investigation(*details)?),
+        InvestigationOperation::Update {
+            id,
+            expected_revision,
+            details,
+        } => json(&host.update_investigation(&id, expected_revision, *details)?),
+    }
 }
 
 fn gdb_status(status: lotus_gdb::Status) -> Value {
@@ -622,6 +687,27 @@ impl LotusServer {
         tool_result(
             self.require_host()
                 .and_then(|host| json(&host.pin_artifact(&args.uri, args.pinned)?)),
+        )
+    }
+
+    #[tool(
+        description = "List, read, create or update persistent investigation records. Attach selects one record for this connection; detach clears the selection. Create and update require host control. Update replaces details at an expected revision."
+    )]
+    pub async fn lotus_investigation(
+        &self,
+        Parameters(args): Parameters<InvestigationArgs>,
+    ) -> CallToolResult {
+        let Some(host) = self.host.clone() else {
+            return tool_result(Err(unconfigured_host()));
+        };
+        let attached = self.attached_investigation.clone();
+        tool_result(
+            tokio::task::spawn_blocking(move || {
+                investigation_operation(&host, &attached, args.operation)
+            })
+            .await
+            .map_err(io::Error::other)
+            .and_then(|result| result),
         )
     }
 

@@ -78,6 +78,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "Workspace" => Some("tests/responsive_controller.rs"),
             "Settings" => Some("src/settings_window/shared.rs"),
             "Input" => Some("tests/input_routing.rs"),
+            "Investigations" => Some("../../tests/test_shared_desktop_mcp.py"),
             "external" if *route == "external only" => None,
             "fixture pending" if *route != "external only" => None,
             _ => {

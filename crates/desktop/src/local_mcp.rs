@@ -234,7 +234,7 @@ impl Endpoint {
             // Keep an available instance named while another client connects.
             let next = self.listen(false)?;
             let connection = std::mem::replace(&mut listener, next);
-            let server = server.clone();
+            let server = server.for_connection();
             clients.spawn(async move {
                 if let Ok(service) = server.serve(connection).await {
                     let _ = service.waiting().await;

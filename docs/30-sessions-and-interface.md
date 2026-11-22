@@ -237,9 +237,18 @@ compares those with its latest telemetry and reports `live`,
 does not restart workers or acquire input or debugger leases. Artifact
 references report their current pin and hash status from the live catalog.
 Source breakpoints store relative locations and content and ELF hashes.
-Their application and the client commands are part of the remaining #97
-workflow. See [store](../crates/session/src/investigation.rs) and
-[Windows mock-worker tests](../crates/session/tests/investigations.rs).
+MCP clients use `lotus_investigation` with `operation.op` set to `list`,
+`get`, `create`, `update`, `attach`, or `detach`. Attach selects an ID on
+that connection so subsequent `get` calls can omit the ID. Selection
+changes neither the desktop nor other clients. On reconnect, list or
+attach by ID to recover the saved record. Create and update require
+control permission. Update takes the whole `details` object and
+`expected_revision`; reload after a revision conflict.
+
+Breakpoint restoration, the CLI and the desktop editor remain in #97.
+See [store](../crates/session/src/investigation.rs),
+[catalog tests](../crates/session/tests/investigations.rs), and the
+[Windows reconnect test](../tests/test_shared_desktop_mcp.py).
 
 ## Gauges
 

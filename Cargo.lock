@@ -3313,6 +3313,7 @@ dependencies = [
  "lotus-protocol",
  "lotus-settings",
  "md-5",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.10.9",

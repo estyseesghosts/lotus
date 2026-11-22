@@ -1,6 +1,7 @@
 //! Host-owned investigation metadata. Session references identify one creation and epoch.
 use crate::supervisor::Supervisor;
 use lotus_protocol::envelope::SessionUuid;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs::{self, File};
@@ -12,35 +13,40 @@ const MAX_RECORDS: usize = 256;
 const MAX_CATALOG_BYTES: u64 = 2 << 20;
 const MAX_ITEMS: usize = 64;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SessionReference {
     pub session: String,
     pub created_unix_ms: u64,
     pub epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SourceLocation {
     /// Path relative to an approved source root, with forward slashes.
     pub file: String,
     pub line: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SavedBreakpoint {
     pub location: SourceLocation,
     pub content_sha256: String,
     pub elf_sha256: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Bookmark {
     pub label: String,
     pub target: SessionReference,
     pub frame: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactReference {
     pub uri: String,
     pub sha256: String,
@@ -48,7 +54,7 @@ pub struct ArtifactReference {
 
 /// Metadata supplied by a local client. Host authorization controls who can
 /// write; a record never grants worker access or control to its reader.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct InvestigationDetails {
     pub title: String,

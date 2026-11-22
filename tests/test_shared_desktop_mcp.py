@@ -15,6 +15,10 @@ from mcp_client import Client
 from test_settings_window import foreground, key, until, user32, windows
 
 
+def investigation(client, op, *, expected_error=False, **fields):
+    return client.tool("lotus_investigation", {"operation": {"op": op, **fields}}, expected_error)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("desktop", type=Path)
@@ -42,8 +46,8 @@ def main():
     kernel.WaitForSingleObject.argtypes = [wt.HANDLE, wt.DWORD]
     kernel.CloseHandle.argtypes = [wt.HANDLE]
 
-    def connect(index):
-        return Client(desktop, config, output / f"client-{index}.jsonl",
+    def connect(index, host_config=config):
+        return Client(desktop, host_config, output / f"client-{index}.jsonl",
                       arguments=["--mcp"], stderr_path=output / f"client-{index}.stderr")
 
     clients = []
@@ -77,9 +81,9 @@ def main():
         duplicate = subprocess.run([desktop, "--mcp-host", config], capture_output=True, timeout=8)
         assert duplicate.returncode == 0 and b"already has a shared desktop" in duplicate.stderr
 
+        read_only = output / "read-only.json"
+        read_only.write_text(json.dumps(dict(json.loads(config.read_text()), allow_control=False)))
         if args.check_config_mismatch:
-            read_only = output / "read-only.json"
-            read_only.write_text(json.dumps(dict(json.loads(config.read_text()), allow_control=False)))
             mismatch = subprocess.run([desktop, "--mcp", read_only], input=b"", capture_output=True, timeout=25)
             assert mismatch.returncode != 0 and not mismatch.stdout
             assert b"same host configuration" in mismatch.stderr
@@ -91,10 +95,33 @@ def main():
         own_session = lambda client: next(
             row for row in client.tool("lotus_list_sessions", {}) if row["id"] == session
         )
-        worker_pid = own_session(clients[1])["telemetry"]["pid"]
+        live = own_session(clients[1])
+        worker_pid = live["telemetry"]["pid"]
         assert worker_pid
         worker_handle = kernel.OpenProcess(0x00100000, False, worker_pid)
         assert worker_handle
+        details = {
+            "title": "Shared worker handoff",
+            "sessions": [{"session": session, "created_unix_ms": live["created_unix_ms"],
+                          "epoch": live["telemetry"]["epoch"]}],
+        }
+        record = investigation(clients[0], "create", details=details)
+        other = investigation(clients[0], "create", details=dict(details, title="Parallel notes"))
+        attached = investigation(clients[1], "attach", id=record["id"])
+        assert attached["session_states"] == ["live"]
+        assert investigation(clients[2], "attach", id=other["id"])["session_states"] == ["live"]
+        assert investigation(clients[1], "detach")["detached"] == record["id"]
+        assert "no investigation attached" in investigation(clients[1], "get", expected_error=True)
+        assert investigation(clients[2], "get")["id"] == other["id"]
+        revision = record["revision"]
+        updated = investigation(clients[0], "update", id=record["id"], expected_revision=revision,
+                                details=dict(details, next_steps="Confirm the same worker is live"))
+        conflict = investigation(clients[1], "update", id=record["id"], expected_revision=revision,
+                                 details=dict(details, next_steps="A stale edit"), expected_error=True)
+        assert "revision mismatch" in conflict
+        assert investigation(clients[2], "get", id=record["id"])["revision"] == updated["revision"]
+        before = (clients[0].tool("lotus_run_until", {"session": session, "frames": 1})["frames"]
+                  if args.fixture else None)
         assert user32.PostMessageW(hwnd, 0x10, 0, 0)  # WM_CLOSE
         until("Close minimizes the original window", lambda: user32.IsIconic(hwnd), 6)
         assert own_session(clients[2])["telemetry"]["pid"] == worker_pid
@@ -115,6 +142,15 @@ def main():
         assert status["frontend_pid"] == host_pid
         assert own_session(clients[0])["telemetry"]["pid"] == worker_pid
         assert user32.IsIconic(hwnd), "a reconnect raised the window"
+        assert "no investigation attached" in investigation(clients[0], "get", expected_error=True)
+        listed = investigation(clients[0], "list")["investigations"]
+        assert {item["id"] for item in listed} == {record["id"], other["id"]}
+        resumed = investigation(clients[0], "attach", id=record["id"])
+        assert resumed["session_states"] == ["live"]
+        assert resumed["details"]["next_steps"] == updated["details"]["next_steps"]
+        if before is not None:
+            after = clients[0].tool("lotus_run_until", {"session": session, "frames": 1})["frames"]
+            assert after == before + 1
         print(f"Close and all disconnects preserve session {session} and worker PID {worker_pid}", flush=True)
 
         quit_window(hwnd)
@@ -125,17 +161,24 @@ def main():
         kernel.CloseHandle(process_handle)
         process_handle, hwnd = None, None
 
-        clients.append(connect("fresh"))
+        clients.append(connect("fresh", read_only))
         new_pid = clients[0].tool("lotus_status", {})["frontend_pid"]
         assert new_pid != host_pid
         process_handle = kernel.OpenProcess(0x00100000, False, new_pid)
         assert process_handle
         assert clients[0].tool("lotus_list_sessions", {}) == []
+        reopened = investigation(clients[0], "attach", id=record["id"])
+        assert reopened["session_states"] == ["expired"]
+        assert reopened["revision"] == updated["revision"]
+        assert not reopened["writable"]
+        denied = investigation(clients[0], "update", id=record["id"], expected_revision=updated["revision"],
+                               details=details, expected_error=True)
+        assert "host has not enabled control" in denied
         until("fresh window visible", lambda: any(title == "lotus" for _, title in windows(new_pid)), 10)
         (hwnd,) = [handle for handle, title in windows(new_pid) if title == "lotus"]
         quit_window(hwnd)
         assert kernel.WaitForSingleObject(process_handle, 12000) == 0
-        print("Quit stopped the host, worker and bridge. The next launch starts clean.", flush=True)
+        print("Quit stopped the worker. The next launch restored the notes with an expired session.", flush=True)
     finally:
         for client in clients:
             try:
