@@ -152,8 +152,11 @@ impl Machine {
                 if self.state != "paused" {
                     return (Status::NotReady, serde_json::Value::Null);
                 }
-                let frames = request.params["frames"].as_u64().unwrap_or(600);
-                self.target = self.frames + frames;
+                self.target = match request.params["frames"].as_u64() {
+                    Some(frames) => self.frames.saturating_add(frames),
+                    None if self.root.join("mock-continuous-run").exists() => u64::MAX,
+                    None => self.frames + 600,
+                };
                 self.run_started = Some((Instant::now(), self.frames));
                 self.stop_reason = None;
                 self.state = "running";

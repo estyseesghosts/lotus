@@ -47,6 +47,7 @@ use crate::session_tree;
 use crate::session_tree::TreeNode;
 use crate::theme;
 use crate::tiling::{self, DividerDrag, SessionDrag, Source, Target};
+use crate::ui_metrics::{PreviewIdentity, RenderedTile};
 use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 #[cfg(feature = "silvestris-ui")]
@@ -733,7 +734,7 @@ impl LotusWindow {
             self.controllers = controllers;
         }
         let target = self.keyboard_target();
-        let (previews, selected, snapshot, surface) = {
+        let (previews, selected, snapshot, surface, save_preferences) = {
             let mut update = ui.lock_update(&latest);
             self.sessions = update.sessions.clone();
             self.cards = update.cards.clone();
@@ -778,20 +779,32 @@ impl LotusWindow {
                 };
                 controller.inspector.store(open, Ordering::Release);
             }
-            if let Layout::Split { axis, ratio, .. } = update.workspace.layout {
-                let values = &mut self.preferences.values;
-                if (values.split_axis, values.split_ratio) != (axis, ratio) {
+            let save_preferences =
+                if let Layout::Split { axis, ratio, .. } = update.workspace.layout {
+                    let values = &mut self.preferences.values;
+                    let changed = (values.split_axis, values.split_ratio) != (axis, ratio);
                     (values.split_axis, values.split_ratio) = (axis, ratio);
-                    self.preferences.save();
-                }
-            }
+                    changed
+                } else {
+                    false
+                };
             if update.error != self.error {
                 self.error = update.error.clone();
             }
             // Let any in-flight preview finish, but defer image creation until it can be
             // shown. A paused worker may have sent its final frame just before hiding.
             let previews = if preview_visible {
-                std::mem::take(&mut update.previews)
+                update
+                    .previews
+                    .extract_if(.., |session, preview| {
+                        !preview.frames.first().is_some_and(|frame| {
+                            self.sessions.iter().any(|summary| {
+                                summary.info.id == *session
+                                    && summary.telemetry.epoch < frame.lease.epoch
+                            })
+                        })
+                    })
+                    .collect()
             } else {
                 BTreeMap::new()
             };
@@ -830,8 +843,17 @@ impl LotusWindow {
                 }
                 None => (update.inspection.clone(), None),
             };
-            (previews, update.selected.clone(), snapshot, surface)
+            (
+                previews,
+                update.selected.clone(),
+                snapshot,
+                surface,
+                save_preferences,
+            )
         };
+        if save_preferences {
+            self.preferences.save();
+        }
         self.set_inspection(snapshot, cx);
         if selected != self.selected {
             self.selected = selected;
@@ -904,6 +926,7 @@ impl LotusWindow {
             {
                 drop_images(std::mem::take(&mut tile.images), cx);
                 tile.epoch = summary.telemetry.epoch;
+                tile.preview = None;
             }
         }
         for (session, preview) in previews {
@@ -921,17 +944,27 @@ impl LotusWindow {
             {
                 continue;
             }
-            tile.epoch = epoch;
-            ui.preview_installed(preview.sequence);
+            let identity = PreviewIdentity {
+                epoch,
+                sequence: preview.sequence,
+                worker_sequence: frame.lease.sequence,
+            };
             let images = preview
                 .frames
                 .into_iter()
-                .filter_map(|frame| {
-                    RgbaImage::from_raw(frame.lease.width, frame.lease.height, frame.bgra)
-                })
+                .map(|frame| RgbaImage::from_raw(frame.lease.width, frame.lease.height, frame.bgra))
+                .collect::<Option<Vec<_>>>();
+            let Some(images) = images.filter(|images| images.len() == 2) else {
+                continue;
+            };
+            let images = images
+                .into_iter()
                 .map(|image| Arc::new(RenderImage::new(vec![Frame::new(image)])))
                 .collect();
             drop_images(std::mem::replace(&mut tile.images, images), cx);
+            tile.epoch = epoch;
+            tile.preview = Some(identity);
+            ui.preview_installed(identity.sequence);
         }
         #[cfg(feature = "silvestris-ui")]
         self.sync_shared_sources(cx);
@@ -1613,14 +1646,6 @@ impl LotusWindow {
         else {
             return;
         };
-        // Outside a split the window shows the selection; select what stays.
-        match &operation {
-            Operation::Untile {
-                keep: Some(session),
-            }
-            | Operation::Single { session } => self.select(session.clone()),
-            _ => {}
-        }
         self.send(Command::WorkspaceAt(operation, drag.revision));
     }
 
@@ -1715,8 +1740,11 @@ impl LotusWindow {
             },
             "r" => Operation::Swap,
             "w" => {
-                self.select(keep.clone());
-                Operation::Untile { keep: Some(keep) }
+                self.send(Command::WorkspaceAt(
+                    Operation::Untile { keep: Some(keep) },
+                    self.workspace.revision,
+                ));
+                return true;
             }
             "left" | "up" => step(-0.05),
             "right" | "down" => step(0.05),
@@ -1738,6 +1766,7 @@ impl LotusWindow {
             .map(|(_, rect)| rect);
         div()
             .id("drop-stage")
+            .debug_selector(|| "drop-stage".into())
             .relative()
             .flex()
             .flex_col()
@@ -3465,11 +3494,12 @@ impl LotusWindow {
             )
             .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
-                view.send(Command::Workspace(Operation::Untile {
-                    keep: Some(keep.clone()),
-                }));
-                // Outside a split the window shows the selection; select what stays.
-                view.select(keep.clone());
+                view.send(Command::WorkspaceAt(
+                    Operation::Untile {
+                        keep: Some(keep.clone()),
+                    },
+                    view.workspace.revision,
+                ));
             })),
         );
         let body = match summary {
@@ -5158,7 +5188,22 @@ impl Render for LotusWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = theme::palette(cx);
         if let Some(controller) = &self.controller {
-            controller.ui.rendered();
+            let tiles = self
+                .workspace
+                .layout
+                .visible()
+                .into_iter()
+                .filter_map(|session| {
+                    let summary = self.sessions.iter().find(|row| row.info.id == session)?;
+                    Some(RenderedTile {
+                        session: session.to_owned(),
+                        summary_epoch: summary.telemetry.epoch,
+                        guest_frames: summary.telemetry.frames,
+                        preview: self.tiles.get(session).and_then(|tile| tile.preview),
+                    })
+                })
+                .collect();
+            controller.ui.rendered(self.workspace.revision, tiles);
         }
         if !cx.has_active_drag() {
             // A drag released outside every drop target, or cancelled.
@@ -5302,6 +5347,7 @@ impl Render for LotusWindow {
 struct TileView {
     images: Vec<Arc<RenderImage>>,
     epoch: u64,
+    preview: Option<PreviewIdentity>,
     touch: Arc<Mutex<Option<TouchTransform>>>,
 }
 

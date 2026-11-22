@@ -4,6 +4,14 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## Unreleased
+
+- The Windows Inspector opens with Windows accessibility active without
+  moving focus during layout. The desktop reports each tile's rendered
+  preview and gauge frame counters through [MCP](24-desktop.md).
+- A stale desktop tile drop leaves the current workspace and selection
+  intact (#73).
+
 ## v0.1.2
 
 Native worker pins remain AZAHAR `5ecbd982` and CITnLO `a3994c1d`.

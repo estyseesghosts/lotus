@@ -50,15 +50,33 @@ refresh-task polls started/completed and the heartbeat age, previews installed
 and the newest installed sequence (compare `published_preview_sequence`), GPUI
 render calls and age, and activation/deactivation counts. They are atomics in
 `ui_metrics.rs`, readable over MCP whether or not the window still refreshes. A
-poisoned shared-state mutex is recovered, logged and counted
+bounded `rendered_workspace` snapshot reports the workspace revision and each
+tile's session, gauge snapshot epoch and guest frame count, plus its installed
+preview epoch, controller sequence and worker sequence. This records the inputs
+to GPUI rendering. The OS compositor has its own presentation stage.
+
+A poisoned shared-state mutex is recovered, logged and counted
 (`polls_recovered`) instead of leaving the window stale; the poll used to
 return silently on poison. `tests/test_focus_cycle.py` cycles focus with real
 Alt+Tab, a title-bar click, minimize/restore and rapid Alt+Tab, and names the
 first stage that stops. On this machine (2026-11-17, release build, CITnLO and
 AZAHAR, t03.3dsx) every stage advanced in every phase: installed trailed
 published by at most 2 previews, and renders paused only while minimized. The
-Alt+Tab freeze in lotus#74 did not reproduce here; its cause is **not
-established**.
+Alt+Tab freeze did not reproduce. On 2026-11-22 the strengthened harness passed
+with the Windows debug desktop, the packaged CITnLO worker (`a3994c1d`) and
+the mock worker. After Alt+Tab back, CITnLO advanced 116 guest frames and
+rendered 48 new worker previews over the sampled interval. The guest advanced
+116 frames while minimized and preview publication stayed at zero. The
+original freeze's cause remains unknown.
+
+Opening the Inspector exposed a crash with Windows accessibility active.
+The toolbar and Inspector both registered focus in one GPUI frame because
+the shell transferred focus during layout. `b0b05a0` defers that transfer
+until the frame is built. `tests/test_focus_cycle.py --inspector-only` uses
+Windows UI Automation to locate and click the toolbar button, then checks that
+the accessibility subtree opens and closes. The old debug binary panicked
+with `set_focus called more than once in a single frame`. The fixed binary
+passed with CITnLO and the mock worker. macOS remains unverified.
 
 Only sessions the workspace shows are previewed. `Update::previews` holds the
 newest screen pair per shown session; a session that leaves the view is removed

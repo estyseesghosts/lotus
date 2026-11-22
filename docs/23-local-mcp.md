@@ -67,6 +67,16 @@ where one fills the store with leased artifacts and the others still get their
 floors, the pin limit, a failure in the second file of a batch, and orphan
 removal (**verified compiled**).
 
+To observe two owned sessions in one window, create and run each through
+`lotus-desktop --mcp`, then call `lotus_workspace` with
+`{"operation":{"op":"tile","first":"<A>","second":"<B>","axis":"auto"}}`.
+Use the returned revision for `expected_revision` on changes. Check
+`lotus_status.workspace.resolved` for the resolved orientation and
+`frontend_metrics.ui.rendered_workspace` for the revision and per-tile
+preview and gauge counters that GPUI rendered. Sample twice to confirm both
+tiles advance. `untile` with `keep` returns to one visible session and both
+workers remain available to MCP. See [workspace actions and shortcuts](30-sessions-and-interface.md#workspace-67).
+
 Worker features (#42). A native worker lists the optional control features it
 implements in `hello`/`status` `features` (`ctr_worker/control.h` `Features`;
 names in `lotus_protocol::capabilities::feature`): `flush_storage`,

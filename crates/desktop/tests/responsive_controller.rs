@@ -752,6 +752,12 @@ fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
         },
     );
     assert_eq!(controller.latest.lock().expect("snapshot").selected, a);
+    let before_swap = controller
+        .latest
+        .lock()
+        .expect("snapshot")
+        .workspace
+        .revision;
     send(Command::Workspace(Operation::Swap));
     wait(&controller, "the swapped split", |update| {
         update.workspace.layout.visible() == [b.as_str(), a.as_str()]
@@ -765,15 +771,44 @@ fn tile_inspector_targets_its_own_session_and_never_changes_selection() {
         );
         assert_eq!(update.selected, a);
     }
-    send(Command::Workspace(Operation::Untile {
-        keep: Some(a.clone()),
-    }));
+    let current_revision = controller
+        .latest
+        .lock()
+        .expect("snapshot")
+        .workspace
+        .revision;
+    send(Command::WorkspaceAt(
+        Operation::Untile {
+            keep: Some(b.clone()),
+        },
+        before_swap,
+    ));
+    wait(&controller, "stale desktop drop refused", |update| {
+        update.error.contains("workspace changed")
+    });
+    {
+        let update = controller.latest.lock().expect("snapshot");
+        assert_eq!(update.workspace.revision, current_revision);
+        assert_eq!(update.selected, a);
+        assert_eq!(update.inspect_tile.as_deref(), Some(b.as_str()));
+    }
+    send(Command::Select(b.clone()));
+    wait(&controller, "B selected in the split", |update| {
+        update.selected == b
+    });
+    send(Command::WorkspaceAt(
+        Operation::Untile {
+            keep: Some(a.clone()),
+        },
+        current_revision,
+    ));
     wait(
         &controller,
         "B's inspector closed with its tile",
         |update| {
             matches!(update.workspace.layout, Layout::Single { .. })
                 && update.inspect_tile.is_none()
+                && update.selected == a
                 && update.inspected == a
         },
     );

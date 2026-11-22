@@ -7,9 +7,16 @@ import threading
 import time
 
 class Client:
-    def __init__(self, executable, config, transcript):
-        self.process = subprocess.Popen([str(executable),str(config)],stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,encoding="utf-8")
+    def __init__(self, executable, config, transcript, *, arguments=(), stderr_path=None):
+        self.stderr_path = stderr_path
+        stderr = Path(stderr_path).open("wb") if stderr_path else None
+        try:
+            self.process = subprocess.Popen([str(executable), *arguments, str(config)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=stderr or subprocess.PIPE,
+                text=True, encoding="utf-8")
+        finally:
+            if stderr:
+                stderr.close()
         self.messages=queue.Queue(64);self.sequence=0
         self.transcript=Path(transcript).open("w",encoding="utf-8")
         def read():
@@ -76,5 +83,8 @@ class Client:
         except subprocess.TimeoutExpired:self.process.kill();self.process.wait();raise
         finally:
             self.transcript.close()
-        assert self.process.returncode==0,self.process.stderr.read()
+        assert self.process.returncode == 0, (
+            Path(self.stderr_path).read_text(encoding="utf-8", errors="replace")
+            if self.stderr_path else self.process.stderr.read()
+        )
 

@@ -1892,7 +1892,14 @@ impl Loops {
             }
             Command::WorkspaceAt(operation, revision) => {
                 let snapshot = host.update_workspace(&operation, Some(revision), actor)?;
-                lock(&self.published).workspace = snapshot;
+                let mut update = lock(&self.published);
+                if let lotus_session::workspace::Layout::Single { session, .. } = &snapshot.layout {
+                    // A desktop drop returning to single view also selects the remaining
+                    // tile, but only after the revision check succeeds.
+                    update.selected.clone_from(session);
+                    self.reveal.store(false, Ordering::Release);
+                }
+                update.workspace = snapshot;
             }
             Command::WorkspaceResolved(resolved) => host.report_workspace_resolved(resolved),
         }

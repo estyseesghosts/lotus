@@ -10,6 +10,27 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Instant;
 
+#[derive(Clone, Copy, serde::Serialize)]
+pub(crate) struct PreviewIdentity {
+    pub epoch: u64,
+    pub sequence: u64,
+    pub worker_sequence: u64,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct RenderedTile {
+    pub session: String,
+    pub summary_epoch: u64,
+    pub guest_frames: u64,
+    pub preview: Option<PreviewIdentity>,
+}
+
+#[derive(Clone, serde::Serialize)]
+struct RenderedWorkspace {
+    revision: u64,
+    tiles: Vec<RenderedTile>,
+}
+
 pub struct UiMetrics {
     base: Instant,
     polls_started: AtomicU64,
@@ -21,6 +42,7 @@ pub struct UiMetrics {
     installed_preview_sequence: AtomicU64,
     renders: AtomicU64,
     last_render_us: AtomicU64,
+    rendered_workspace: Mutex<Option<RenderedWorkspace>>,
     activations: AtomicU64,
     deactivations: AtomicU64,
     last_activation_us: AtomicU64,
@@ -39,6 +61,7 @@ impl Default for UiMetrics {
             installed_preview_sequence: AtomicU64::new(0),
             renders: AtomicU64::new(0),
             last_render_us: AtomicU64::new(0),
+            rendered_workspace: Mutex::default(),
             activations: AtomicU64::new(0),
             deactivations: AtomicU64::new(0),
             last_activation_us: AtomicU64::new(0),
@@ -70,13 +93,16 @@ impl UiMetrics {
     pub fn preview_installed(&self, sequence: u64) {
         self.previews_installed.fetch_add(1, Ordering::Relaxed);
         self.installed_preview_sequence
-            .store(sequence, Ordering::Relaxed);
+            .fetch_max(sequence, Ordering::Relaxed);
     }
 
-    pub fn rendered(&self) {
+    pub(crate) fn rendered(&self, revision: u64, tiles: Vec<RenderedTile>) {
         self.renders.fetch_add(1, Ordering::Relaxed);
         self.last_render_us
             .store(self.now_us().max(1), Ordering::Relaxed);
+        if let Ok(mut workspace) = self.rendered_workspace.try_lock() {
+            *workspace = Some(RenderedWorkspace { revision, tiles });
+        }
     }
 
     pub fn activation(&self, active: bool) {
@@ -107,6 +133,11 @@ impl UiMetrics {
     #[must_use]
     pub fn snapshot(&self) -> serde_json::Value {
         let load = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        let rendered_workspace = self
+            .rendered_workspace
+            .try_lock()
+            .ok()
+            .and_then(|workspace| workspace.clone());
         serde_json::json!({
             "polls_started": load(&self.polls_started),
             "polls_completed": load(&self.polls_completed),
@@ -116,6 +147,7 @@ impl UiMetrics {
             "installed_preview_sequence": load(&self.installed_preview_sequence),
             "renders": load(&self.renders),
             "render_age_ms": self.age_ms(&self.last_render_us),
+            "rendered_workspace": rendered_workspace,
             "activations": load(&self.activations),
             "deactivations": load(&self.deactivations),
             "activation_age_ms": self.age_ms(&self.last_activation_us),
@@ -156,11 +188,21 @@ mod tests {
         let metrics = UiMetrics::default();
         assert!(metrics.snapshot()["poll_age_ms"].is_null());
         metrics.poll_started();
-        metrics.rendered();
+        metrics.rendered(0, Vec::new());
         metrics.activation(true);
         let snapshot = metrics.snapshot();
         assert!(snapshot["poll_age_ms"].as_f64().is_some());
         assert_eq!(snapshot["activations"], 1);
         assert_eq!(snapshot["active"], true);
+    }
+
+    #[test]
+    fn installing_previews_in_tile_order_keeps_the_latest_global_sequence() {
+        let metrics = UiMetrics::default();
+        metrics.preview_installed(10);
+        metrics.preview_installed(9);
+        let snapshot = metrics.snapshot();
+        assert_eq!(snapshot["previews_installed"], 2);
+        assert_eq!(snapshot["installed_preview_sequence"], 10);
     }
 }

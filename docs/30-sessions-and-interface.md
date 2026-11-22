@@ -364,6 +364,13 @@ requests leave the state unchanged, removal fallback) and
 `server::tests::workspace_tool_reads_headless_and_refuses_changes_it_cannot_commit`
 (**verified compiled**).
 
+The mounted GPUI test `mounted_source_drag_commits_the_previewed_edge_and_shares_its_revision`
+drags a source-list row to the right edge, verifies the snap preview and
+reads the resulting split through the supervisor shared with MCP. It then
+changes the split as MCP and verifies that the mounted window receives the
+same revision. The mock-worker controller test verifies that a stale desktop
+drop preserves the current selection, inspector target and layout.
+
 ### Two visible sessions (#65)
 
 A split shows both sessions at once, each tile with its own preview, images,
@@ -1145,8 +1152,30 @@ Replaced frames are dropped from GPUI's sprite atlas immediately
   window's selection; crash isolation; crashed secondary discarded with logs
   kept; primary card persists after stop.
 - `tests/test_windowed_mcp.py`: an MCP client launches `lotus-desktop --mcp`
-  and drives primary + secondary concurrently, independently and
-  asynchronously; no desktop or worker process remains afterwards.
+  and requires each tile's worker-sequence and gauge frame count to advance.
+  It verifies horizontal, vertical and auto orientations, swap, stale CAS
+  refusal, stable PIDs after untile, and redisplay of a paused worker after
+  retiling. `--screenshots <directory>` captures just the test window on
+  Windows. Mounted drag tests use mock workers. Native controller pairing and
+  high-DPI screenshots remain unverified in this run.
+
+**Verified emulator, 2026-11-22.** Windows debug desktop with the v0.1.2
+workers, CITnLO (`a3994c1d`) and AZAHAR (`5ecbd982`), software graphics
+(`graphics_api: 0`, `prefer_vulkan: false`), and the build-profile
+`fixture.3dsx`. Both workers were running throughout each measurement.
+At a 250 ms polling interval, the first rendered split was observed at
+259 ms (CITnLO) and 255 ms (AZAHAR).
+
+| Worker | One tile visible, A / B fps | Two tiles visible, A / B fps | B working set, one → two tiles |
+| --- | --- | --- | --- |
+| CITnLO | 58.9 / 58.7 | 58.3 / 62.3 | 361.6 → 363.7 MiB |
+| AZAHAR | 59.0 / 58.9 | 58.4 / 60.1 | 361.2 → 363.1 MiB |
+
+These are point samples of worker telemetry. In the horizontal split, native
+preview sequences advanced by 22 and 26 on CITnLO and by 26 and 27 on AZAHAR.
+Local horizontal, vertical and auto screenshots show the shell and gauge
+placement. The build fixture has black guest screens. Desktop and GPU memory,
+physical controller pairing, and macOS were unverified.
 - Unchanged clients: `native_parity` and `tests/test_mcp_native.py` pass with
   their original create calls (kind defaults to secondary).
 

@@ -424,6 +424,162 @@ mod tests {
             window.draw(cx).clear(cx);
         });
     }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    fn mounted_source_drag_commits_the_previewed_edge_and_shares_its_revision() {
+        use lotus_protocol::envelope::SessionUuid;
+        use lotus_session::telemetry::Actor;
+        use std::time::Instant;
+
+        let worker = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join(format!("lotus-mock-native{}", std::env::consts::EXE_SUFFIX));
+        let directory =
+            std::env::temp_dir().join(format!("lotus-drag-{}", SessionUuid::generate()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let asset = directory.join("drag.3dsx");
+        std::fs::write(&asset, b"3DSX").unwrap();
+        let mut config = HostConfig::new(worker, directory.join("store"));
+        config.allow_control = true;
+        config.assets.insert("demo".into(), asset);
+        let mut app = TestAppContext::single();
+        app.update(|cx| {
+            silvestris::test_support::initialize(
+                silvestris::ThemePreference::explicit(silvestris::ThemeId::GEIST_DARK),
+                cx,
+            )
+        });
+        let (view, cx) = app.add_window_view(|window, cx| {
+            let mut view = LotusWindow::test_preview(window, cx);
+            view.controller = Some(DesktopController::start(config, McpMode::Off).unwrap());
+            view.preferences.values.sessions_open = true;
+            view.preferences.values.sessions_width = 264.;
+            view
+        });
+        let host = cx.update(|_, cx| {
+            let controller = view.read(cx).controller.as_ref().unwrap();
+            controller
+                .commands
+                .send(Command::Create {
+                    kind: SessionKind::Primary { card: "dev".into() },
+                    asset: Some("demo".into()),
+                })
+                .unwrap();
+            controller.host().clone()
+        });
+        let wait = |cx: &mut VisualTestContext, predicate: &dyn Fn(&LotusWindow) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(8);
+            loop {
+                let ready = cx.update(|_, cx| {
+                    view.update(cx, |view, cx| {
+                        view.poll(cx);
+                        cx.notify();
+                        predicate(view)
+                    })
+                });
+                if ready {
+                    draw(cx);
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "workspace did not reach expected state"
+                );
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        };
+        cx.simulate_resize(size(px(1280.), px(880.)));
+        wait(cx, &|view| view.sessions.len() == 1);
+        cx.update(|_, cx| {
+            view.read(cx)
+                .controller
+                .as_ref()
+                .unwrap()
+                .commands
+                .send(Command::Create {
+                    kind: SessionKind::Secondary {
+                        parent: Some("dev".into()),
+                    },
+                    asset: Some("demo".into()),
+                })
+                .unwrap();
+        });
+        wait(cx, &|view| {
+            view.sessions.len() == 2 && !view.workspace.layout.visible().is_empty()
+        });
+        let (primary, copy) = cx.update(|_, cx| {
+            let view = view.read(cx);
+            let id = |primary| {
+                view.sessions
+                    .iter()
+                    .find(|row| matches!(row.info.kind, SessionKind::Primary { .. }) == primary)
+                    .unwrap()
+                    .info
+                    .id
+                    .clone()
+            };
+            (id(true), id(false))
+        });
+        let single = host
+            .update_workspace(
+                &Operation::Single {
+                    session: primary.clone(),
+                },
+                None,
+                Actor::Mcp,
+            )
+            .unwrap();
+        wait(cx, &|view| view.workspace.revision == single.revision);
+        // GPUI accepts a static selector even for dynamically named rows.
+        let selector = format!("source-row-session:{copy}").leak();
+        let source = cx.debug_bounds(selector).unwrap();
+        let start = point(source.left() + px(70.), source.center().y);
+        let stage = cx.debug_bounds("drop-stage").unwrap();
+        let right = point(stage.right() - px(15.), stage.center().y);
+        let mods = Modifiers::default();
+        cx.simulate_mouse_down(start, MouseButton::Left, mods);
+        cx.simulate_mouse_move(point(start.x + px(20.), start.y), MouseButton::Left, mods);
+        draw(cx);
+        cx.simulate_mouse_move(right, MouseButton::Left, mods);
+        draw(cx);
+        cx.update(|_, cx| {
+            assert_eq!(
+                view.read(cx).drop_target,
+                Some((Target::Edge(tiling::Edge::Right), (0.5, 0.0, 0.5, 1.0)))
+            );
+        });
+        cx.simulate_mouse_up(right, MouseButton::Left, mods);
+        wait(cx, &|view| {
+            view.workspace.layout.visible() == [primary.as_str(), copy.as_str()]
+        });
+        let tiled = host.workspace().snapshot;
+        assert_eq!(tiled.revision, single.revision + 1);
+        assert!(matches!(
+            tiled.layout,
+            Layout::Split {
+                axis: Axis::Horizontal,
+                ..
+            }
+        ));
+        let vertical = host
+            .update_workspace(
+                &Operation::SetAxis {
+                    axis: Axis::Vertical,
+                },
+                Some(tiled.revision),
+                Actor::Mcp,
+            )
+            .unwrap();
+        wait(cx, &|view| view.workspace == vertical);
+        assert_eq!(host.workspace().snapshot, vertical);
+        cx.update(|_, cx| view.update(cx, |view, _| drop(view.controller.take())));
+        let _ = std::fs::remove_dir_all(directory);
+    }
     #[test]
     fn mounted_source_list_selects_target_without_guest_keys_or_refresh_feedback() {
         let mut app = TestAppContext::single();
