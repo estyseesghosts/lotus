@@ -171,6 +171,11 @@ def check(backend, server, worker, commit, rom, elf, output):
 
 
 def desktop_smoke(server, azahar, citnlo, rom):
+    parity = {
+        "Session controls and reads": "session_controls_and_reads_match_mcp",
+        "Saved debugger defaults": "saved_debugger_defaults_reach_the_worker_from_both_clients",
+        "Peripheral and system operations": "peripheral_and_system_operations_match_mcp",
+    }
     report = {
         "citnlo": {"CPU stepping and ELF symbols": "untested",
                    "Memory scans and pointer chains": "untested",
@@ -181,6 +186,9 @@ def desktop_smoke(server, azahar, citnlo, rom):
         "azahar": {"GDB and GPU capture levels": "untested",
                    "Memory scans, rewind, CiTrace and thread registers": "untested"},
     }
+    for results in report.values():
+        results.update(dict.fromkeys(parity, "untested"))
+        results["Successful CIA install, HOME Menu boot, DSP firmware load and valid NFC mount"] = "untested"
     smoke = os.environ.get("LOTUS_DESKTOP_SMOKE")
     if not smoke:
         return report
@@ -189,11 +197,8 @@ def desktop_smoke(server, azahar, citnlo, rom):
                LOTUS_FIXTURE=str(Path(rom).resolve()),
                LOTUS_DEBUG_FIXTURE=str(Path(rom).resolve()))
     env["PATH"] = str(Path(server).resolve().parent) + os.pathsep + env["PATH"]
-    for test in ("cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture",
-                 "snapshots_and_movies_use_the_owned_fixture",
-                 "timeline_preserves_event_loss_and_citrace_provenance",
-                 "kernel_explorer_observes_thread_identity_and_native_deadlock",
-                 "gdb_reports_unsupported_on_azahar"):
+
+    def run(test, env):
         capture = subprocess.run([str(Path(smoke).resolve()), "--ignored", "--exact", test],
                                  env=env, capture_output=True, text=True, timeout=120)
         print(capture.stdout, end="")
@@ -201,6 +206,13 @@ def desktop_smoke(server, azahar, citnlo, rom):
         capture.check_returncode()
         if "1 passed" not in capture.stdout:
             raise RuntimeError(f"Expected to run one desktop smoke test: {test}")
+
+    for test in ("cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture",
+                 "snapshots_and_movies_use_the_owned_fixture",
+                 "timeline_preserves_event_loss_and_citrace_provenance",
+                 "kernel_explorer_observes_thread_identity_and_native_deadlock",
+                 "gdb_reports_unsupported_on_azahar"):
+        run(test, env)
     report["citnlo"]["CPU stepping and ELF symbols"] = "passed"
     report["citnlo"]["Memory scans and pointer chains"] = "passed"
     report["citnlo"]["Rewind, checkpoints and movies"] = "passed"
@@ -208,6 +220,14 @@ def desktop_smoke(server, azahar, citnlo, rom):
     report["citnlo"]["Kernel explorer and thread operations"] = "passed"
     report["azahar"]["GDB and GPU capture levels"] = "unsupported verified"
     report["azahar"]["Memory scans, rewind, CiTrace and thread registers"] = "unsupported verified"
+    for backend, worker in (("citnlo", citnlo), ("azahar", azahar)):
+        parity_env = dict(env, LOTUS_NATIVE_WORKER=str(Path(worker).resolve()))
+        for label, test in parity.items():
+            run(test, parity_env)
+            report[backend][label] = "passed"
+    report["azahar"]["Saved debugger defaults"] = "unsupported verified"
+    report["citnlo"]["Peripheral and system operations"] = "passed with fixture refusals"
+    report["azahar"]["Peripheral and system operations"] = "passed with unsupported and fixture refusals"
     return report
 
 

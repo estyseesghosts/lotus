@@ -3915,6 +3915,7 @@ fn session_controls_and_reads_match_mcp() {
     let root = std::env::temp_dir().join(format!("lotus-session-{}", SessionUuid::generate()));
     let mut config = HostConfig::new(worker, &root);
     config.allow_control = true;
+    config.prefer_vulkan = false;
     config.assets.insert("fixture".into(), fixture);
     config.profile.insert(
         "deterministic_async_operations".into(),
@@ -4351,6 +4352,7 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
     let root = std::env::temp_dir().join(format!("lotus-defaults-{}", SessionUuid::generate()));
     let mut config = HostConfig::new(worker, &root);
     config.allow_control = true;
+    config.prefer_vulkan = false;
     config.assets.insert("fixture".into(), fixture);
     config.profile.insert(
         "deterministic_async_operations".into(),
@@ -4619,6 +4621,7 @@ fn peripheral_and_system_operations_match_mcp() {
     let (bmp, wav, nfc) = owned_media(&media);
     let mut config = HostConfig::new(worker, root.join("store"));
     config.allow_control = true;
+    config.prefer_vulkan = false;
     config.max_sessions = 6;
     for (handle, path) in [
         ("fixture", fixture),

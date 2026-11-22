@@ -32,6 +32,11 @@ operations. CIA install, HOME Menu boot and DSP firmware load are exercised
 with inputs or state that require refusal. Successful installation, HOME Menu
 boot, DSP firmware loading and valid NFC mounting remain unverified.
 
+The Windows packaging check runs the session, saved-defaults and peripheral
+parity tests on software rendering with both ZIP workers. The packaged
+acceptance JSON records the result for each backend and keeps the
+success paths for CIA, HOME Menu, DSP firmware and valid NFC marked untested.
+
 The [desktop native tests](../crates/desktop/tests/native_inspector.rs)
 and [mounted debugger test](../crates/desktop/src/lotus_window/breakpoints.rs)
 ran on Windows with the 0.1.2 software-renderer workers from
