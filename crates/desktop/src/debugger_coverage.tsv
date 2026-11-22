@@ -1,10 +1,10 @@
 # v1	surface, operation, desktop route, permission, extra feature, detail, verification
 debug	advance	session controls	control	-	Current desktop controls expose a subset of arguments	Session
-debug	asset_mount	palette	control	-	-	fixture pending
-debug	audio_capture	inspector actions	control	-	-	fixture pending
-debug	audio_focus	inspector actions	control	-	-	fixture pending
+debug	asset_mount	palette	control	-	-	Peripherals (mount and refusal)
+debug	audio_capture	inspector actions	control	-	-	Peripherals
+debug	audio_focus	inspector actions	control	-	-	Peripherals
 debug	backtrace	CPU inspector	read	-	-	CPU
-debug	boot_home_menu	palette	control	-	-	fixture pending
+debug	boot_home_menu	palette	control	-	-	Peripherals (refusal)
 debug	breakpoint_configure	Breakpoint manager	control	-	-	Breakpoints
 debug	breakpoint_remove	Breakpoint manager	control	-	-	Breakpoints
 debug	breakpoint_set	Breakpoint manager	control	-	-	Breakpoints
@@ -22,13 +22,13 @@ debug	citrace_start	Event timeline	control	-	-	Timeline
 debug	citrace_status	Event timeline	read	-	-	Timeline
 debug	citrace_stop	Event timeline	control	-	-	Timeline
 debug	compare_builds	Builds inspector	read	-	Trusted host build profiles	Builds
-debug	content_transform	palette	control	-	-	fixture pending
+debug	content_transform	palette	control	-	-	Peripherals
 debug	continue	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	crash_report	palette	read	-	-	Session
 debug	deadlocks	Kernel explorer	read	-	-	Kernel
 debug	disassemble	CPU inspector	read	-	-	CPU
-debug	dsp_inspect	inspector polling	read	-	-	fixture pending
-debug	dsp_load_firmware	palette	control	-	-	fixture pending
+debug	dsp_inspect	inspector polling	read	-	-	Peripherals
+debug	dsp_load_firmware	palette	control	-	-	Peripherals (refusal)
 debug	events	Event timeline	read	-	-	Timeline
 debug	events_configure	Event timeline	control	event_subscriptions	-	Timeline
 debug	fork	palette	control	-	-	Session
@@ -36,25 +36,25 @@ debug	gpu_configure	GPU capture form	control	gpu_capture_levels when capture is 
 debug	gpu_draw	inspector rows	read	-	-	GPU
 debug	gpu_draws	inspector polling	read	-	-	GPU
 debug	handles	Kernel explorer	read	-	-	Kernel
-debug	hio_forward	palette	control	-	-	fixture pending
-debug	hio_reply	palette	control	-	-	fixture pending
+debug	hio_forward	palette	control	-	-	Peripherals
+debug	hio_reply	palette	control	-	-	Peripherals
 debug	input_state	desktop input	control	-	Local input devices supply state through the input router	Input
 debug	inspect_expression	palette	read	-	-	Variables
 debug	inspect_variable	CPU inspector	read	-	-	Variables
-debug	install_cia	palette	control	-	-	fixture pending
+debug	install_cia	palette	control	-	-	Peripherals (refusal)
 debug	lease_acquire	external only	control	-	Lease ownership belongs to the external controller	external
 debug	lease_release	external only	control	-	Lease ownership belongs to the external controller	external
 debug	load	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	load_state	Snapshots inspector	control	-	-	Snapshots
 debug	load_symbols	palette	control	-	-	Source identity
 debug	logs	inspector polling	read	-	-	Session
-debug	matrix	palette	control	-	-	fixture pending
+debug	matrix	palette	control	-	-	Peripherals
 debug	memory_map	Memory inspector	read	-	-	Memory
 debug	movie_play	Snapshots inspector	control	-	-	Snapshots
 debug	movie_record	Snapshots inspector	control	-	-	Snapshots
 debug	movie_status	Snapshots inspector	read	-	-	Snapshots
 debug	movie_stop	Snapshots inspector	control	-	-	Snapshots
-debug	nfc_remove	palette	control	-	-	fixture pending
+debug	nfc_remove	palette	control	-	-	Peripherals
 debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	perf	palette	read	-	-	Session
 debug	pointer_chain	Memory search	read	-	-	Memory search
@@ -92,10 +92,10 @@ debug	step_out	CPU inspector	control	-	-	CPU
 debug	step_over	CPU inspector	control	-	-	CPU
 debug	stop	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	storage_browse	palette	read	-	-	Guest tools
-debug	surface	inspector rows	control	-	-	fixture pending
+debug	surface	inspector rows	control	-	-	Peripherals
 debug	suspend	Kernel explorer	control	-	-	Kernel
 debug	symbolize	palette	read	-	-	Source identity
-debug	system_regenerate	palette	control	-	-	fixture pending
+debug	system_regenerate	palette	control	-	-	Peripherals
 debug	thread_registers	Kernel explorer	read	-	-	Kernel
 debug	threads	Kernel explorer	read	-	-	Kernel
 debug	titles	palette	read	-	-	Session

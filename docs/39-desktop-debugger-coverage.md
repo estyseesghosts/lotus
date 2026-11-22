@@ -14,11 +14,11 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | Operation | Desktop route | Permission | Extra worker feature | Coverage notes | Verification |
 | --- | --- | --- | --- | --- | --- |
 | `advance` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | [Session](../crates/desktop/tests/native_inspector.rs) |
-| `asset_mount` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `audio_capture` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
-| `audio_focus` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
+| `asset_mount` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals (mount and refusal)](../crates/desktop/tests/native_inspector.rs) |
+| `audio_capture` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
+| `audio_focus` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
 | `backtrace` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
-| `boot_home_menu` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `boot_home_menu` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals (refusal)](../crates/desktop/tests/native_inspector.rs) |
 | `breakpoint_configure` | [Breakpoint manager](../crates/desktop/src/lotus_window/breakpoints.rs) | control | - | - | [Breakpoints](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `breakpoint_remove` | [Breakpoint manager](../crates/desktop/src/lotus_window/breakpoints.rs) | control | - | - | [Breakpoints](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `breakpoint_set` | [Breakpoint manager](../crates/desktop/src/lotus_window/breakpoints.rs) | control | - | - | [Breakpoints](../crates/desktop/src/lotus_window/breakpoints.rs) |
@@ -36,13 +36,13 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `citrace_status` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | read | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `citrace_stop` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `compare_builds` | [Builds inspector](../crates/desktop/src/lotus_window/builds_panel.rs) | read | - | Trusted host build profiles | [Builds](../crates/desktop/tests/native_inspector.rs) |
-| `content_transform` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `content_transform` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
 | `continue` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `crash_report` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `deadlocks` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `disassemble` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
-| `dsp_inspect` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
-| `dsp_load_firmware` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `dsp_inspect` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
+| `dsp_load_firmware` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals (refusal)](../crates/desktop/tests/native_inspector.rs) |
 | `events` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | read | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `events_configure` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | event_subscriptions | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `fork` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Session](../crates/desktop/tests/native_inspector.rs) |
@@ -50,25 +50,25 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `gpu_draw` | [inspector rows](../crates/desktop/src/inspection.rs) | read | - | - | [GPU](../crates/desktop/tests/native_inspector.rs) |
 | `gpu_draws` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [GPU](../crates/desktop/tests/native_inspector.rs) |
 | `handles` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
-| `hio_forward` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `hio_reply` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `hio_forward` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
+| `hio_reply` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
 | `input_state` | [desktop input](../crates/desktop/src/input_routing.rs) | control | - | Local input devices supply state through the input router | [Input](../crates/desktop/tests/input_routing.rs) |
 | `inspect_expression` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Variables](../crates/desktop/tests/native_inspector.rs) |
 | `inspect_variable` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [Variables](../crates/desktop/tests/native_inspector.rs) |
-| `install_cia` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `install_cia` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals (refusal)](../crates/desktop/tests/native_inspector.rs) |
 | `lease_acquire` | external only | control | - | Lease ownership belongs to the external controller | external |
 | `lease_release` | external only | control | - | Lease ownership belongs to the external controller | external |
 | `load` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `load_state` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `load_symbols` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Source identity](../crates/desktop/tests/native_inspector.rs) |
 | `logs` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [Session](../crates/desktop/tests/native_inspector.rs) |
-| `matrix` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `matrix` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
 | `memory_map` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `movie_play` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `movie_record` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `movie_status` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | read | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `movie_stop` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
-| `nfc_remove` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `nfc_remove` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
 | `pause` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `perf` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `pointer_chain` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | read | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
@@ -106,10 +106,10 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `step_over` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `stop` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `storage_browse` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Guest tools](../crates/desktop/src/lotus_window/command_palette.rs) |
-| `surface` | [inspector rows](../crates/desktop/src/inspection.rs) | control | - | - | fixture pending |
+| `surface` | [inspector rows](../crates/desktop/src/inspection.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
 | `suspend` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | control | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `symbolize` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Source identity](../crates/desktop/tests/native_inspector.rs) |
-| `system_regenerate` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `system_regenerate` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Peripherals](../crates/desktop/tests/native_inspector.rs) |
 | `thread_registers` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `threads` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `titles` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Session](../crates/desktop/tests/native_inspector.rs) |

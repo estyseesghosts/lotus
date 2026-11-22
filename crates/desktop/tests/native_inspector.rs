@@ -3878,8 +3878,10 @@ fn same_outcome(
             );
             for (key, value) in expected {
                 let row = rows[key.as_str()];
-                // Register rows are shown in hex (`hex_string`); their presence is compared.
+                // Match the renderer's eight-digit hex for register rows.
                 if key.contains("registers[") || key.ends_with(".cpsr") {
+                    let displayed = value.as_u64().map(|value| format!("{value:08x}"));
+                    assert_eq!(row, displayed.as_deref().unwrap_or("—"), "{key}");
                     continue;
                 }
                 let text = value.to_string();
@@ -4555,4 +4557,403 @@ fn native_tool_call(
         .unwrap_or_else(|_| panic!("MCP {operation} exceeded its deadline"));
     eprintln!("MCP {operation} completed in {:?}", started.elapsed());
     result
+}
+
+/// An owned 8×8 24-bit BMP and a 16-bit stereo PCM WAV of silence; neither comes from a
+/// console or a game.
+fn owned_media(directory: &std::path::Path) -> (PathBuf, PathBuf, PathBuf) {
+    let bmp = directory.join("camera.bmp");
+    let mut image = Vec::new();
+    let pixels = 8 * 8 * 3u32;
+    image.extend_from_slice(b"BM");
+    image.extend_from_slice(&(54 + pixels).to_le_bytes());
+    image.extend_from_slice(&[0; 4]);
+    image.extend_from_slice(&54u32.to_le_bytes());
+    image.extend_from_slice(&40u32.to_le_bytes());
+    image.extend_from_slice(&8i32.to_le_bytes());
+    image.extend_from_slice(&8i32.to_le_bytes());
+    image.extend_from_slice(&1u16.to_le_bytes());
+    image.extend_from_slice(&24u16.to_le_bytes());
+    image.extend_from_slice(&[0; 24]);
+    image.extend((0..pixels).map(|i| (i * 7) as u8));
+    std::fs::write(&bmp, image).unwrap();
+    let wav = directory.join("mic.wav");
+    let samples = 1024u32 * 4;
+    let mut sound = Vec::new();
+    sound.extend_from_slice(b"RIFF");
+    sound.extend_from_slice(&(36 + samples).to_le_bytes());
+    sound.extend_from_slice(b"WAVEfmt ");
+    sound.extend_from_slice(&16u32.to_le_bytes());
+    sound.extend_from_slice(&1u16.to_le_bytes());
+    sound.extend_from_slice(&2u16.to_le_bytes());
+    sound.extend_from_slice(&32728u32.to_le_bytes());
+    sound.extend_from_slice(&(32728u32 * 4).to_le_bytes());
+    sound.extend_from_slice(&4u16.to_le_bytes());
+    sound.extend_from_slice(&16u16.to_le_bytes());
+    sound.extend_from_slice(b"data");
+    sound.extend_from_slice(&samples.to_le_bytes());
+    sound.extend(std::iter::repeat_n(0u8, samples as usize));
+    std::fs::write(&wav, sound).unwrap();
+    // Not an amiibo dump: the worker must refuse it identically in both clients.
+    let nfc = directory.join("nfc.bin");
+    std::fs::write(&nfc, [0u8; 540]).unwrap();
+    (bmp, wav, nfc)
+}
+
+/// Peripheral, audio, DSP, HIO, surface, matrix and system operations (#154): the desktop
+/// drives card `desk` and MCP card `agent`, both booting the owned fixture with
+/// deterministic async operations. Equal operations must give equal non-volatile replies
+/// or the same refusal. Operations that need console or game data (CIA install, HOME
+/// Menu, DSP firmware) are given owned inputs, so only their refusal is compared.
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE with its owned ELF"]
+fn peripheral_and_system_operations_match_mcp() {
+    use lotus_mcp::tool_arguments::{CreateArgs, KindArg, LoadArgs};
+    use lotus_protocol::debug::{AssetKind, MatrixProfile, SettingValue};
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let elf = fixture.with_extension("elf");
+    let root = std::env::temp_dir().join(format!("lotus-peripheral-{}", SessionUuid::generate()));
+    let media = root.join("owned-media");
+    std::fs::create_dir_all(&media).unwrap();
+    let (bmp, wav, nfc) = owned_media(&media);
+    let mut config = HostConfig::new(worker, root.join("store"));
+    config.allow_control = true;
+    config.max_sessions = 6;
+    for (handle, path) in [
+        ("fixture", fixture),
+        ("elf", elf),
+        ("camera", bmp),
+        ("mic", wav),
+        ("nfc", nfc),
+    ] {
+        config.assets.insert(handle.into(), path);
+    }
+    config.profile.insert(
+        "deterministic_async_operations".into(),
+        SettingValue::Boolean(true),
+    );
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let mcp = controller.mcp_server();
+    let call = |result: CallToolResult| {
+        let text = result.content[0].as_text().unwrap().text.clone();
+        if result.is_error == Some(true) {
+            Err(text)
+        } else {
+            Ok(serde_json::from_str::<Value>(&text).unwrap())
+        }
+    };
+    let debug = |session: &str, command| {
+        call(native_tool_call(
+            &runtime,
+            &format!("{session} {command:?}"),
+            mcp.lotus_debug(Parameters(DebugArgs {
+                session: session.into(),
+                command,
+            })),
+        ))
+    };
+    let target = |id: &str| {
+        let update = controller.latest.lock().unwrap();
+        let summary = update.sessions.iter().find(|s| s.info.id == id).unwrap();
+        SessionTarget {
+            id: summary.info.id.clone(),
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        }
+    };
+
+    controller
+        .commands
+        .send(Command::Create {
+            kind: SessionKind::Primary {
+                card: "desk".into(),
+            },
+            asset: None,
+        })
+        .unwrap();
+    wait(&controller, |update| update.sessions.len() == 1);
+    let a = controller.latest.lock().unwrap().sessions[0]
+        .info
+        .id
+        .clone();
+    let b = call(native_tool_call(
+        &runtime,
+        "lotus_create_session",
+        mcp.lotus_create_session(Parameters(CreateArgs {
+            kind: KindArg::Primary,
+            card: Some("agent".into()),
+            asset: None,
+        })),
+    ))
+    .unwrap()["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait(&controller, |update| {
+        update.sessions.iter().any(|s| s.info.id == b)
+    });
+
+    let compare = |panel, command: D, volatile| {
+        let reply = desktop_command(&controller, &target(&a), panel, command.clone());
+        same_outcome(reply, debug(&b, command), volatile)
+    };
+    let both = |panel, command| compare(panel, command, SESSION_VOLATILE);
+
+    let desktop_target = target(&a);
+    let experimental =
+        controller.latest.lock().unwrap().gdb_status[&desktop_target].backend == "CITnLO";
+    // Before content: identity regeneration, a CIA install of a 3DSX (refused by AM) and
+    // a HOME Menu boot without system titles.
+    let regenerated = both(
+        Panel::Result,
+        D::SystemRegenerate {
+            console_id: true,
+            mac: true,
+        },
+    );
+    assert_eq!(regenerated.is_some(), experimental);
+    if let Some(regenerated) = regenerated {
+        assert_eq!(regenerated["session_private"], true);
+        assert_eq!(regenerated["regenerated_console_id"], true);
+        assert_eq!(regenerated["regenerated_mac"], true);
+    }
+    assert!(
+        both(
+            Panel::Result,
+            D::InstallCia {
+                asset: "fixture".into(),
+            }
+        )
+        .is_none()
+    );
+    assert!(both(Panel::Result, D::BootHomeMenu { region: 0 }).is_none());
+    let mic = both(
+        Panel::Result,
+        D::AssetMount {
+            asset: "mic".into(),
+            kind: AssetKind::MicWav,
+        },
+    )
+    .unwrap();
+    assert_eq!(mic["mounted"], "mic_wav");
+
+    for id in [&a, &b] {
+        call(native_tool_call(
+            &runtime,
+            "lotus_load",
+            mcp.lotus_load(Parameters(LoadArgs {
+                session: id.clone(),
+                asset: "fixture".into(),
+            })),
+        ))
+        .unwrap();
+        debug(id, D::Pause).unwrap();
+        debug(id, D::Reset).unwrap();
+    }
+
+    // Loaded and paused at the boot state.
+    let camera = both(
+        Panel::Result,
+        D::AssetMount {
+            asset: "camera".into(),
+            kind: AssetKind::CameraBmp,
+        },
+    )
+    .unwrap();
+    assert_eq!(camera["mounted"], "camera_bmp");
+    assert_eq!(
+        (camera["width"].as_u64(), camera["height"].as_u64()),
+        (Some(8), Some(8))
+    );
+    assert!(
+        both(
+            Panel::Result,
+            D::AssetMount {
+                asset: "nfc".into(),
+                kind: AssetKind::Nfc,
+            }
+        )
+        .is_none()
+    );
+    assert_eq!(
+        both(Panel::Result, D::NfcRemove).unwrap()["session_private"],
+        true
+    );
+    let dsp = both(Panel::Result, D::DspInspect);
+    assert_eq!(dsp.is_some(), experimental);
+    if let Some(dsp) = dsp {
+        assert_eq!(dsp["mode"], "HLE");
+    }
+    assert!(both(Panel::Result, D::DspLoadFirmware).is_none());
+    for enabled in [true, false] {
+        let forwarding = both(Panel::Result, D::HioForward { enabled });
+        assert_eq!(forwarding.is_some(), experimental);
+        if let Some(forwarding) = forwarding {
+            assert_eq!(forwarding["forwarding"], enabled);
+        }
+    }
+    assert!(
+        both(
+            Panel::Result,
+            D::HioReply {
+                value: 0,
+                errno: 0,
+                interrupted: false,
+            }
+        )
+        .is_none()
+    );
+    // The top-screen framebuffer region of VRAM, read the same way on equal guest state.
+    let surface = both(
+        Panel::Gpu,
+        D::Surface {
+            address: 0x1800_0000,
+            width: 64,
+            height: 64,
+            format: 0,
+        },
+    );
+    assert_eq!(surface.is_some(), experimental);
+    if let Some(surface) = surface {
+        assert_eq!(surface["width"], 64);
+        assert_eq!(surface["artifacts"][0]["bytes"], 64 * 64 * 4);
+    }
+    for enabled in [true, false] {
+        let audio = both(Panel::Result, D::AudioCapture { enabled }).unwrap();
+        assert_eq!(audio["sample_format"], "s16le");
+        if !enabled {
+            assert_eq!(audio["artifacts"][0]["mime_type"], "audio/wav");
+        }
+    }
+    // One session holds audio focus at a time (supervisor `audio_focus`); each client
+    // takes it for its own session, then releases it.
+    for enabled in [true, false] {
+        let focus = both(Panel::Result, D::AudioFocus { enabled }).unwrap();
+        assert_eq!(focus["focused"], enabled);
+    }
+    let transformed = both(
+        Panel::Result,
+        D::ContentTransform {
+            asset: "fixture".into(),
+            compress: true,
+        },
+    );
+    assert_eq!(transformed.is_some(), experimental);
+    if let Some(transformed) = transformed {
+        assert_eq!(transformed["compressed"], true);
+    }
+    let matrix = D::Matrix {
+        profiles: ["base", "repeat"]
+            .into_iter()
+            .map(|name| MatrixProfile {
+                name: name.into(),
+                backend: None,
+                settings: BTreeMap::new(),
+            })
+            .collect(),
+        frames: 2,
+        checkpoints: vec![1],
+        repeats: 1,
+    };
+    // Each published report contains its own source session and worker status
+    // counters, so the serialization size and hash differ with that provenance.
+    let matrix_volatile = [
+        SESSION_VOLATILE,
+        &[".artifacts[0].sha256", ".artifacts[0].bytes"],
+    ]
+    .concat();
+    let matrix = compare(Panel::Result, matrix, &matrix_volatile).unwrap();
+    assert_eq!(
+        matrix["report"]["profiles"][0]["runs"][0]["checkpoints"][0]["frame"],
+        1
+    );
+    assert!(matrix["report"]["comparisons"][0]["earliest_sampled_divergence"].is_null());
+    let host = controller.host();
+    let reports = host
+        .artifacts()
+        .into_iter()
+        .filter(|artifact| artifact.screen == "report")
+        .collect::<Vec<_>>();
+    assert_eq!(reports.len(), 2);
+    for id in [&a, &b] {
+        let artifact = reports.iter().find(|entry| &entry.session == id).unwrap();
+        let bytes = host.read_artifact(&artifact.uri).unwrap();
+        let report: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(report["source_session"], id.as_str());
+        let checkpoints = |value: &Value| {
+            value["profiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|profile| profile["runs"][0]["checkpoints"].clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(checkpoints(&report), checkpoints(&matrix["report"]));
+    }
+
+    if experimental {
+        // The fixture's mode 5 submits its own HIO write. Reply through each
+        // client, then read the 16-byte HIO reply record in guest memory.
+        for id in [&a, &b] {
+            debug(
+                id,
+                D::LoadSymbols {
+                    asset: "elf".into(),
+                },
+            )
+            .unwrap();
+        }
+        let symbol = |name: &str| -> u32 {
+            let query = || D::ResolveSymbol { query: name.into() };
+            let left = debug(&a, query()).unwrap();
+            let right = debug(&b, query()).unwrap();
+            assert_eq!(left["addresses"], right["addresses"]);
+            left["addresses"][0].as_u64().unwrap().try_into().unwrap()
+        };
+        let mode = symbol("mode");
+        let hio = symbol("hio");
+        both(Panel::Result, D::HioForward { enabled: true }).unwrap();
+        for id in [&a, &b] {
+            debug(
+                id,
+                D::WriteMemory {
+                    address: mode,
+                    bytes: 5u32.to_le_bytes().to_vec(),
+                },
+            )
+            .unwrap();
+            let stop = debug(id, D::Advance { frames: 1 }).unwrap();
+            assert_eq!(stop["stop"]["reason"], "hio", "{stop}");
+        }
+        let result = both(
+            Panel::Result,
+            D::HioReply {
+                value: 16,
+                errno: 0,
+                interrupted: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(result["completed"], true);
+        let reply = both(
+            Panel::Memory,
+            D::ReadMemory {
+                address: hio + 136,
+                length: 16,
+            },
+        )
+        .unwrap();
+        let mut expected = [0u8; 16];
+        expected[..8].copy_from_slice(&16i64.to_le_bytes());
+        assert_eq!(reply["bytes"], serde_json::json!(expected));
+    }
+    drop(mcp);
+    drop(controller);
+    std::fs::remove_dir_all(&root).unwrap();
 }
