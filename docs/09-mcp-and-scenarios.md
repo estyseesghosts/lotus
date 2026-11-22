@@ -92,3 +92,21 @@ isolated stdio lifecycle.
 ## API versioning and tests
 
 Include tool compatibility matrix (`MCP tool version -> protocol -> worker capability`). Generate tool schemas from shared Rust types. Contract tests must run the *same* command through CLI and MCP and compare normalized result. Add fuzz tests for invalid addresses, malformed tool payloads, huge lists and expired artifact handles.
+
+### Repeated scenario assessment
+
+Run `ctr-cli scenario assess <scenario> <worker> <output> [repeats]` to
+retain two to ten independent attempts, with three by default. The CLI
+writes the result to `<output>/<id>/assessment.json` and prints it as JSON.
+Each completed attempt has a relative path to its full report.
+
+- `PASS` or `FAIL` means every attempt completed with the same verdict and
+  the same frame, screen, and assertion observations.
+- `FLAKY` means completed attempts disagreed in verdict or observations.
+- `INCOMPLETE` means at least one attempt lacked evidence, such as an
+  unavailable fixture, an inconclusive assertion, or a worker deadline.
+
+Only `PASS` returns exit status zero. Host timing and filesystem paths
+are excluded from the comparison. Worker and guest content hashes are
+part of the comparison, so a file change during assessment cannot
+produce a stable verdict.

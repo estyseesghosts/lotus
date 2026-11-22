@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use thiserror::Error;
 pub mod assertions;
+pub mod assessment;
 pub mod execution;
 
 /// Maximum frames a scenario may request.

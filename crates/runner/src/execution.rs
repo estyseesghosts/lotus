@@ -532,6 +532,19 @@ pub async fn run(
     executable: &Path,
     output: &Path,
 ) -> io::Result<RunReport> {
+    let report = run_report(scenario, scenario_directory, executable, output).await?;
+    if let Some(failure) = first_assertion_failure(&report) {
+        return Err(io::Error::other(failure_message(failure)));
+    }
+    Ok(report)
+}
+
+pub(crate) async fn run_report(
+    scenario: &Scenario,
+    scenario_directory: &Path,
+    executable: &Path,
+    output: &Path,
+) -> io::Result<RunReport> {
     use lotus_protocol::debug::DebugCommand;
     validate_execution(scenario)?;
     let content = scenario_directory
@@ -764,8 +777,7 @@ pub async fn run(
     Ok(report)
 }
 
-/// Writes `report.json` and `report.txt`; a report that did not pass also gets `failure.json`
-/// and becomes an error, so no caller can mistake it for a pass.
+/// Retain observations and the first unsuccessful assertion for every completed attempt.
 fn write_report(report: &RunReport, output: &Path) -> io::Result<()> {
     fs::write(
         output.join("report.json"),
@@ -782,23 +794,28 @@ fn write_report(report: &RunReport, output: &Path) -> io::Result<()> {
             assertions::render(&report.assertions)
         ),
     )?;
-    let Some(index) = report.first_failure else {
-        return Ok(());
-    };
-    let failed = report
+    if let Some(failure) = first_assertion_failure(report) {
+        fs::write(
+            output.join("failure.json"),
+            serde_json::json!({"error": failure_message(failure), "assertion": failure})
+                .to_string(),
+        )?;
+    }
+    Ok(())
+}
+
+fn first_assertion_failure(report: &RunReport) -> Option<&AssertionResult> {
+    report
         .assertions
         .iter()
-        .find(|result| result.index == index)
-        .expect("first failure is listed");
-    let message = format!(
-        "assertion {index} ({}) {:?}: expected {} actual {}",
-        failed.kind, failed.outcome, failed.expected, failed.actual
-    );
-    fs::write(
-        output.join("failure.json"),
-        serde_json::json!({"error": message, "assertion": failed}).to_string(),
-    )?;
-    Err(io::Error::other(message))
+        .find(|result| Some(result.index) == report.first_failure)
+}
+
+fn failure_message(failure: &AssertionResult) -> String {
+    format!(
+        "assertion {} ({}) {:?}: expected {} actual {}",
+        failure.index, failure.kind, failure.outcome, failure.expected, failure.actual
+    )
 }
 
 /// Repeat with fresh storage; compare guest pixel hashes, excluding host telemetry.

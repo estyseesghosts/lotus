@@ -65,6 +65,8 @@ Usage:
                                 Validate a scenario file against the execution limits
   ctr-cli scenario run <path> <worker> <artifact-root> [repeat-count]
                                 Execute bounded native runs (default: 3)
+  ctr-cli scenario assess <path> <worker> <artifact-root> [repeat-count]
+                                Retain a repeat assessment and all attempts (default: 3)
 ";
 
 fn main() -> Result<()> {
@@ -234,10 +236,10 @@ fn main() -> Result<()> {
         "scenario" => {
             let sub = args.get(1).map(String::as_str).unwrap_or("help");
             match sub {
-                "run" => {
+                "run" | "assess" => {
                     let path = PathBuf::from(
                         args.get(2)
-                            .context("scenario run requires path, worker and artifact root")?,
+                            .with_context(|| format!("scenario {sub} requires path, worker and artifact root"))?,
                     );
                     let worker = PathBuf::from(args.get(3).context("missing worker executable")?)
                         .canonicalize()?;
@@ -249,11 +251,24 @@ fn main() -> Result<()> {
                         .unwrap_or(3);
                     let scenario = Scenario::load(&path)?;
                     let directory = path.parent().unwrap_or(std::path::Path::new("."));
-                    let reports = tokio::runtime::Runtime::new()?.block_on(
-                        lotus_runner::execution::repeat(
+                    let runtime = tokio::runtime::Runtime::new()?;
+                    if sub == "assess" {
+                        let assessment = runtime.block_on(lotus_runner::assessment::assess(
                             &scenario, directory, &worker, &output, count,
-                        ),
-                    )?;
+                        ))?;
+                        println!("{}", serde_json::to_string_pretty(&assessment)?);
+                        if assessment.status != lotus_runner::assessment::Status::Pass {
+                            bail!(
+                                "scenario assessment {:?}; see {}",
+                                assessment.status,
+                                output.join(assessment.id).join("assessment.json").display()
+                            );
+                        }
+                        return Ok(());
+                    }
+                    let reports = runtime.block_on(lotus_runner::execution::repeat(
+                        &scenario, directory, &worker, &output, count,
+                    ))?;
                     println!("{}", serde_json::to_string_pretty(&reports)?);
                 }
                 "validate" => {
