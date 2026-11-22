@@ -24,6 +24,12 @@ struct Manifest {
     scenarios: Vec<PathBuf>,
 }
 
+pub(crate) struct PreparedSuite {
+    pub(crate) repeats: u8,
+    pub(crate) cases: Vec<(PathBuf, io::Result<(PathBuf, Scenario)>)>,
+    pub(crate) seconds: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Case {
     pub scenario: PathBuf,
@@ -69,11 +75,10 @@ pub async fn run(
     output: &Path,
     revision: &str,
 ) -> io::Result<Report> {
-    if !identifier(revision, &[40, 64]) {
-        return Err(invalid(
-            "suite revision must be a full lowercase Git object ID",
-        ));
-    }
+    run_prepared(&prepare(manifest_path)?, worker, output, revision, None).await
+}
+
+pub(crate) fn prepare(manifest_path: &Path) -> io::Result<PreparedSuite> {
     let manifest: Manifest = serde_yaml::from_slice(&bounded_file(manifest_path, MAX_INPUT_BYTES)?)
         .map_err(io::Error::other)?;
     if manifest.version != 1
@@ -126,26 +131,46 @@ pub async fn run(
             "sum of scenario deadlines exceeds the suite's 1800-second budget",
         ));
     }
+    Ok(PreparedSuite {
+        repeats: manifest.repeats,
+        cases: prepared,
+        seconds,
+    })
+}
+
+pub(crate) async fn run_prepared(
+    suite: &PreparedSuite,
+    worker: &Path,
+    output: &Path,
+    revision: &str,
+    fixture: Option<(&Path, &str)>,
+) -> io::Result<Report> {
+    if !identifier(revision, &[40, 64]) {
+        return Err(invalid(
+            "suite revision must be a full lowercase Git object ID",
+        ));
+    }
     let worker = worker.canonicalize()?;
     let worker_sha256 = execution::file_hash(&worker)?;
     let id = SessionUuid::generate().to_string();
     fs::create_dir_all(output)?;
     let root = output.join(&id);
     fs::create_dir(&root)?;
-    let mut cases = Vec::with_capacity(prepared.len());
-    for (relative, scenario) in prepared {
+    let mut cases = Vec::with_capacity(suite.cases.len());
+    for (relative, scenario) in &suite.cases {
         let assessed = match scenario {
             Ok((path, scenario)) => {
-                assessment::assess(
-                    &scenario,
+                assessment::assess_fixture(
+                    scenario,
                     path.parent().expect("scenario directory"),
                     &worker,
                     &root,
-                    manifest.repeats,
+                    suite.repeats,
+                    fixture,
                 )
                 .await
             }
-            Err(error) => Err(error),
+            Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
         };
         cases.push(match assessed {
             Ok(result) => {
@@ -155,7 +180,7 @@ pub async fn run(
                     .filter_map(|attempt| attempt.worker_sha256.as_deref())
                     .any(|observed| observed != worker_sha256);
                 Case {
-                    scenario: relative,
+                    scenario: relative.clone(),
                     status: if worker_changed {
                         Status::Incomplete
                     } else {
@@ -168,7 +193,7 @@ pub async fn run(
             }
 
             Err(error) => Case {
-                scenario: relative,
+                scenario: relative.clone(),
                 status: Status::Incomplete,
                 assessment: None,
                 error: Some(error.to_string().chars().take(512).collect()),

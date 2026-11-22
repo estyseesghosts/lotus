@@ -19,6 +19,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 pub use crate::artifacts::{Artifact, ArtifactQuota};
 use crate::artifacts::{ArtifactStore, NewArtifact};
 pub use crate::build::{BuildProfile, BuildTool};
+
+/// Hashed .3dsx in the host's temporary build store, valid until the host closes.
+#[cfg(windows)]
+pub struct RegressionFixture {
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+/// Bounded size check for owned Windows regression workspace files.
+#[cfg(windows)]
+pub fn regression_workspace_bytes(root: &Path, max_bytes: u64) -> io::Result<u64> {
+    crate::build::check_build_tree(root, max_bytes)
+}
 use crate::card_store::{CardStore, ScratchEnd};
 use crate::native_session::{Frame, InputState, NativeSession};
 pub use crate::source_debug::SourceRoot;
@@ -761,6 +774,61 @@ impl Supervisor {
     #[must_use]
     pub fn config(&self) -> &HostConfig {
         &self.config
+    }
+
+    /// Build an explicitly approved regression profile with tighter resource limits.
+    #[cfg(windows)]
+    pub async fn build_regression_fixture(&self, name: &str) -> io::Result<RegressionFixture> {
+        self.require_control()?;
+        let profile = self.config.build_profiles.get(name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "no approved regression build profile",
+            )
+        })?;
+        let parallel = match &profile.tool {
+            BuildTool::Make { jobs, .. } => matches!(jobs, Some(1 | 2)),
+            BuildTool::CmakePreset { .. } => matches!(
+                profile
+                    .env
+                    .get("CMAKE_BUILD_PARALLEL_LEVEL")
+                    .map(String::as_str),
+                Some("1" | "2")
+            ),
+        };
+        if !parallel
+            || profile.timeout_secs > 90
+            || profile.elf.is_some()
+            || profile.map.is_some()
+            || !profile
+                .output
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("3dsx"))
+        {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput,
+                "regression profiles require one or two build jobs, a timeout of at most 90 seconds and a 3DSX output",
+            ));
+        }
+        let budget = crate::build::RegressionBuildBudget {
+            cpu_seconds: 45,
+            worktree_bytes: 64 << 20,
+            output_bytes: 8 << 20,
+        };
+        crate::build::check_build_tree(&profile.root, budget.worktree_bytes)?;
+        if profile.root.join(&profile.output).try_exists()? {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists,
+                "regression build output already exists; select a worktree with a fresh output path",
+            ));
+        }
+        let record = self.builds.build_regression(name, budget).await?;
+        let path = self
+            .builds
+            .resolve(&record.output.asset)
+            .ok_or_else(|| io::Error::other("regression fixture expired"))?;
+        Ok(RegressionFixture {
+            path,
+            sha256: record.output.sha256,
+        })
     }
 
     pub fn cards(&self) -> io::Result<Vec<String>> {

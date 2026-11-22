@@ -147,3 +147,51 @@ first failed assertion with its expected and actual values. Comparisons
 align cases by manifest-relative scenario path and compare screen hashes and assertion values
 only when both runs have repeatable observations for the same scenario
 definition. All three interfaces use the same [history reader](../crates/runner/src/history.rs).
+
+### Guarded first-bad search on Windows
+
+Run `ctr-cli suite bisect <host-config> <plan.json>`. The plan identifies
+the inclusive first-parent range and assigns a host-approved build profile
+to each revision. Give each profile its own clean, linked Git worktree
+at that revision. Set `allow_control` in the local host configuration to
+approve execution of those profiles. Lotus reads Git history and worktree
+status without changing the checkout or Git's bisect state.
+
+```json
+{
+  "version": 1,
+  "git": "C:/Program Files/Git/cmd/git.exe",
+  "repository": "C:/dev/homebrew",
+  "suite": "suite.yaml",
+  "good": "<full good commit ID>",
+  "bad": "<full bad commit ID>",
+  "profiles": {
+    "<full good commit ID>": "regression-good",
+    "<full bad commit ID>": "regression-bad"
+  }
+}
+```
+
+The suite path is relative to the plan. Every scenario runs against the
+profile's freshly built and hashed 3DSX. Omit scenario content hashes and
+movies from bisect suites. The approved profile must specify one or two
+Make jobs or set `CMAKE_BUILD_PARALLEL_LEVEL` to 1 or 2, and set a build
+timeout of at most 90 seconds. Its 3DSX output must be absent before
+the build. Keep build outputs ignored by Git.
+
+One search runs at a time per history directory. Limits are eight
+revisions, 64 emulation attempts, 900 seconds wall time, 45 seconds of
+aggregate user-mode CPU time per Windows build job, 64 MiB of monitored
+files per worktree, and 8 MiB per collected 3DSX. Retained suite evidence
+is checked against the host byte quota and preflighted at up to 64 MiB
+per search. Build profiles are trusted local programs. Workspace
+monitoring checks the worktree and collected output, and is not a
+volume quota for files an approved build writes elsewhere.
+
+The command verifies the good and bad endpoints using the suite's
+repeat count, searches the range, and verifies the prefix through the
+first failure. An unresolved prefix, including failed builds, missing
+outputs, timeouts, or flaky runs, yields no first-bad ID. The JSON
+report and suite IDs are retained in
+`<storage_root>/regressions/bisect-<id>.json` whether the search
+identifies a revision or ends unresolved.

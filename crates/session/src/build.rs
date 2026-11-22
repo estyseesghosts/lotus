@@ -30,6 +30,46 @@ const MAX_MAP: u64 = 16 << 20;
 /// Inherited only so Windows tools can run at all; everything else comes from `env`.
 const INHERITED: [&str; 3] = ["SystemRoot", "TEMP", "TMP"];
 
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+pub(crate) struct RegressionBuildBudget {
+    pub(crate) cpu_seconds: u32,
+    pub(crate) worktree_bytes: u64,
+    pub(crate) output_bytes: u64,
+}
+
+#[cfg(windows)]
+pub(crate) fn check_build_tree(root: &Path, max_bytes: u64) -> io::Result<u64> {
+    use std::os::windows::fs::MetadataExt;
+    const REPARSE_POINT: u32 = 0x400;
+    let mut directories = vec![root.to_path_buf()];
+    let mut bytes = 0u64;
+    let mut entries = 0u32;
+    while let Some(directory) = directories.pop() {
+        for entry in std::fs::read_dir(directory)? {
+            let entry = entry?;
+            let metadata = match entry.metadata() {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                result => result?,
+            };
+            entries += 1;
+            bytes = bytes.saturating_add(metadata.len());
+            if entries > 32_768 || bytes > max_bytes {
+                return Err(invalid("regression build worktree exceeds its disk budget"));
+            }
+            if metadata.file_attributes() & REPARSE_POINT != 0 {
+                return Err(invalid(
+                    "regression build worktree contains a reparse point",
+                ));
+            }
+            if metadata.is_dir() {
+                directories.push(entry.path());
+            }
+        }
+    }
+    Ok(bytes)
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
@@ -442,6 +482,39 @@ impl Builds {
 
     /// Start a build. Successful artifacts remain available for the lifetime of the host.
     pub(crate) fn start(self: &Arc<Self>, name: &str) -> io::Result<Value> {
+        Ok(self
+            .start_job(
+                name,
+                #[cfg(windows)]
+                None,
+            )?
+            .summary())
+    }
+
+    #[cfg(windows)]
+    pub(crate) async fn build_regression(
+        self: &Arc<Self>,
+        name: &str,
+        budget: RegressionBuildBudget,
+    ) -> io::Result<BuildRecord> {
+        let job = self.start_job(name, Some(budget))?;
+        let finished = job.finished.notified();
+        if matches!(*lock(&job.state), State::Running) {
+            finished.await;
+        }
+        let state = lock(&job.state);
+        match &*state {
+            State::Succeeded(record) => Ok(*record.clone()),
+            State::Failed { reason, .. } => Err(io::Error::other(reason.clone())),
+            _ => Err(io::Error::other(format!("build {}", state.name()))),
+        }
+    }
+
+    fn start_job(
+        self: &Arc<Self>,
+        name: &str,
+        #[cfg(windows)] budget: Option<RegressionBuildBudget>,
+    ) -> io::Result<Arc<Job>> {
         let profile = self.profiles.get(name).cloned().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -514,7 +587,13 @@ impl Builds {
                     .enable_all()
                     .build()
                 {
-                    Ok(runtime) => runtime.block_on(builds.run(&task_job, &profile, started)),
+                    Ok(runtime) => runtime.block_on(builds.run(
+                        &task_job,
+                        &profile,
+                        started,
+                        #[cfg(windows)]
+                        budget,
+                    )),
                     Err(error) => State::Failed {
                         reason: format!("could not create a build runtime: {error}"),
                         exit_code: None,
@@ -537,10 +616,16 @@ impl Builds {
             job.finished.notify_waiters();
             return Err(error);
         }
-        Ok(job.summary())
+        Ok(job)
     }
 
-    async fn run(&self, job: &Arc<Job>, profile: &BuildProfile, started: Instant) -> State {
+    async fn run(
+        &self,
+        job: &Arc<Job>,
+        profile: &BuildProfile,
+        started: Instant,
+        #[cfg(windows)] budget: Option<RegressionBuildBudget>,
+    ) -> State {
         let mut cancelled = job.cancel.subscribe();
         if *cancelled.borrow() {
             return State::Cancelled;
@@ -579,7 +664,10 @@ impl Builds {
         };
         let pid = child.id().expect("new child has not been reaped");
         #[cfg(windows)]
-        let containment = match crate::process_job::ProcessJob::attach_and_resume(pid) {
+        let containment = match crate::process_job::ProcessJob::attach(
+            pid,
+            budget.map(|limit| limit.cpu_seconds),
+        ) {
             Ok(containment) => containment,
             Err(error) => {
                 let _ = child.kill().await;
@@ -596,10 +684,32 @@ impl Builds {
             child.stderr.take().map(|err| pump(job, "stderr", err)),
         ];
         let timeout = tokio::time::sleep(Duration::from_secs(profile.timeout_secs));
+        #[cfg(windows)]
+        let disk = async {
+            let Some(limit) = budget else {
+                return std::future::pending().await;
+            };
+            loop {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let root = profile.root.clone();
+                let check = tokio::task::spawn_blocking(move || {
+                    check_build_tree(&root, limit.worktree_bytes)
+                })
+                .await;
+                match check {
+                    Ok(Ok(_)) => (),
+                    Ok(Err(error)) => return error.to_string(),
+                    Err(error) => return error.to_string(),
+                }
+            }
+        };
+        #[cfg(not(windows))]
+        let disk = std::future::pending::<String>();
         let outcome = tokio::select! {
             status = child.wait() => Ok(status),
             _ = cancelled.wait_for(|cancel| *cancel) => Err(State::Cancelled),
             () = timeout => Err(State::TimedOut),
+            reason = disk => Err(State::Failed { reason, exit_code: None }),
         };
         #[cfg(windows)]
         containment.terminate();
@@ -640,8 +750,19 @@ impl Builds {
         let profile = profile.clone();
         let (id, name) = (job.id, job.profile.clone());
         let duration = started.elapsed().as_millis() as u64;
-        match tokio::task::spawn_blocking(move || collect(&profile, &store, id, &name, duration))
-            .await
+        match tokio::task::spawn_blocking(move || {
+            #[cfg(windows)]
+            let max_output = if let Some(limit) = budget {
+                check_build_tree(&profile.root, limit.worktree_bytes)?;
+                limit.output_bytes
+            } else {
+                MAX_OUTPUT
+            };
+            #[cfg(not(windows))]
+            let max_output = MAX_OUTPUT;
+            collect(&profile, &store, id, &name, duration, max_output)
+        })
+        .await
         {
             Ok(Ok(record)) => State::Succeeded(Box::new(record)),
             Ok(Err(error)) => State::Failed {
@@ -838,6 +959,7 @@ fn collect(
     job: u64,
     name: &str,
     duration_ms: u64,
+    max_output: u64,
 ) -> io::Result<BuildRecord> {
     let inside = |relative: &Path| -> io::Result<PathBuf> {
         let path = profile
@@ -872,7 +994,7 @@ fn collect(
         .extension()
         .map(|e| e.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let (sha256, bytes, data) = copy_hashed(&output, &store.join(&file), MAX_OUTPUT)?;
+    let (sha256, bytes, data) = copy_hashed(&output, &store.join(&file), max_output)?;
     if kind == "3dsx" && (data.len() < 32 || !data.starts_with(b"3DSX")) {
         return Err(invalid("build output is missing its 3DSX header"));
     }

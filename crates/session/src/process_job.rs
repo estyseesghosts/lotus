@@ -8,7 +8,7 @@ use windows_sys::Win32::Foundation::{INVALID_HANDLE_VALUE, TRUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{self, TH32CS_SNAPTHREAD, THREADENTRY32};
 use windows_sys::Win32::System::JobObjects::{
     self, JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOB_OBJECT_LIMIT_JOB_TIME, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
     self, PROCESS_SET_QUOTA, PROCESS_TERMINATE, THREAD_SUSPEND_RESUME,
@@ -21,6 +21,10 @@ pub(crate) struct ProcessJob {
 
 impl ProcessJob {
     pub(crate) fn attach_and_resume(pid: u32) -> io::Result<Self> {
+        Self::attach(pid, None)
+    }
+
+    pub(crate) fn attach(pid: u32, cpu_seconds: Option<u32>) -> io::Result<Self> {
         // SAFETY: Windows returns owned handles. Each successful handle is wrapped
         // immediately, and all pointers refer to correctly sized live structures.
         unsafe {
@@ -33,6 +37,11 @@ impl ProcessJob {
             };
             let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = mem::zeroed();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if let Some(seconds) = cpu_seconds {
+                limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_TIME;
+                // The kernel measures aggregate job user-mode CPU time in 100 ns units.
+                limits.BasicLimitInformation.PerJobUserTimeLimit = i64::from(seconds) * 10_000_000;
+            }
             if JobObjects::SetInformationJobObject(
                 raw,
                 JobObjectExtendedLimitInformation,

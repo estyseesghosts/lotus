@@ -72,6 +72,7 @@ Usage:
   ctr-cli suite list <artifact-root>
   ctr-cli suite detail <artifact-root> <suite-id>
   ctr-cli suite compare <artifact-root> <baseline-id> <candidate-id>
+  ctr-cli suite bisect <host-config> <plan.json> (Windows)
 ";
 
 fn main() -> Result<()> {
@@ -306,6 +307,23 @@ fn main() -> Result<()> {
 fn suite(args: &[String]) -> Result<()> {
     use lotus_runner::{assessment::Status, history, suite};
     let report = match args {
+        #[cfg(windows)]
+        [command, config, plan] if command == "bisect" => {
+            use lotus_session::supervisor::{HostConfig, Supervisor};
+            use std::{path::Path, sync::Arc};
+            let config: HostConfig = serde_json::from_slice(&std::fs::read(config)?)?;
+            let host = Arc::new(Supervisor::new(config)?);
+            let report = tokio::runtime::Runtime::new()?.block_on(async {
+                let result = lotus_runner::bisect::run(&host, Path::new(plan)).await;
+                host.close().await;
+                result
+            })?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            if let Some(reason) = report.reason {
+                bail!("bisect {} unresolved: {reason}", report.id);
+            }
+            return Ok(());
+        }
         [command, manifest, worker, output, revision] if command == "run" => {
             let report = tokio::runtime::Runtime::new()?.block_on(suite::run(
                 std::path::Path::new(manifest),
@@ -347,7 +365,9 @@ fn suite(args: &[String]) -> Result<()> {
             );
             return Ok(());
         }
-        _ => bail!("usage: ctr-cli suite <run|show|list|detail|compare>; see ctr-cli --help"),
+        _ => {
+            bail!("usage: ctr-cli suite <run|show|list|detail|compare|bisect>; see ctr-cli --help")
+        }
     };
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

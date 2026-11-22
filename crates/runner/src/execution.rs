@@ -532,7 +532,7 @@ pub async fn run(
     executable: &Path,
     output: &Path,
 ) -> io::Result<RunReport> {
-    let report = run_report(scenario, scenario_directory, executable, output).await?;
+    let report = run_report(scenario, scenario_directory, executable, output, None).await?;
     if let Some(failure) = first_assertion_failure(&report) {
         return Err(io::Error::other(failure_message(failure)));
     }
@@ -544,18 +544,23 @@ pub(crate) async fn run_report(
     scenario_directory: &Path,
     executable: &Path,
     output: &Path,
+    fixture: Option<(&Path, &str)>,
 ) -> io::Result<RunReport> {
     use lotus_protocol::debug::DebugCommand;
     validate_execution(scenario)?;
-    let content = scenario_directory
-        .join(&scenario.content.path_handle)
-        .canonicalize()?;
+    let content = match fixture {
+        Some((path, _)) => path.canonicalize()?,
+        None => scenario_directory
+            .join(&scenario.content.path_handle)
+            .canonicalize()?,
+    };
     let content_hash = file_hash(&content)?;
-    if scenario
-        .content
-        .sha256
-        .as_ref()
-        .is_some_and(|expected| expected.to_ascii_lowercase() != content_hash)
+    if fixture.is_some_and(|(_, expected)| expected != content_hash)
+        || scenario
+            .content
+            .sha256
+            .as_ref()
+            .is_some_and(|expected| expected.to_ascii_lowercase() != content_hash)
     {
         return Err(invalid("fixture SHA-256 mismatch"));
     }

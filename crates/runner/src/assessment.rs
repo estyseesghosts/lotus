@@ -121,6 +121,17 @@ pub async fn assess(
     output: &Path,
     repeats: u8,
 ) -> io::Result<Assessment> {
+    assess_fixture(scenario, directory, worker, output, repeats, None).await
+}
+
+pub(crate) async fn assess_fixture(
+    scenario: &Scenario,
+    directory: &Path,
+    worker: &Path,
+    output: &Path,
+    repeats: u8,
+    fixture: Option<(&Path, &str)>,
+) -> io::Result<Assessment> {
     if !(2..=10).contains(&repeats) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -136,7 +147,9 @@ pub async fn assess(
     for number in 1..=repeats {
         let folder = format!("attempt-{number:02}");
         let attempt =
-            match execution::run_report(scenario, directory, worker, &root.join(&folder)).await {
+            match execution::run_report(scenario, directory, worker, &root.join(&folder), fixture)
+                .await
+            {
                 Ok(report) => Attempt {
                     number,
                     status: outcome(&report),

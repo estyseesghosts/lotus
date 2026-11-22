@@ -11,6 +11,8 @@ use std::path::Path;
 use thiserror::Error;
 pub mod assertions;
 pub mod assessment;
+#[cfg(windows)]
+pub mod bisect;
 pub mod execution;
 pub mod history;
 pub mod suite;
