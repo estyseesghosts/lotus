@@ -91,6 +91,13 @@ def until(what, check, seconds=5):
     raise AssertionError(what)
 
 
+def window_origin(hwnd):
+    rect = wt.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        raise ctypes.WinError()
+    return rect.left, rect.top
+
+
 def saved_bounds(preferences):
     try:
         return json.loads(preferences.read_text()).get("settings_bounds")
@@ -109,7 +116,15 @@ def run(client, preferences):
         time.sleep(0.5)
         assert len(settings(pid)) == 1, f"{len(settings(pid))} Settings windows"
     print("Ctrl+, x3: one Settings window")
-    foreground(settings(pid)[0])
+    settings_hwnd = settings(pid)[0]
+    start_x, start_y = window_origin(settings_hwnd)
+    moved = (start_x + 73, start_y + 41)
+    # NOSIZE | NOZORDER | NOACTIVATE
+    if not user32.SetWindowPos(settings_hwnd, None, *moved, 0, 0, 0x15):
+        raise ctypes.WinError()
+    until("Settings moved away from its default placement",
+          lambda: window_origin(settings_hwnd) == moved)
+    foreground(settings_hwnd)
     key(0x1B); key(0x1B, True)
     until("Esc closes Settings", lambda: not settings(pid))
     until("Esc saves bounds", lambda: saved_bounds(preferences))
@@ -119,11 +134,15 @@ def run(client, preferences):
     foreground(main_hwnd)
     ctrl_comma()
     until("reopened", lambda: len(settings(pid)) == 1)
-    print("Ctrl+, again: reopened")
+    until("reopen restores the moved Settings origin",
+          lambda: all(abs(a - b) <= 2 for a, b in zip(window_origin(settings(pid)[0]), moved)))
+    print("Ctrl+, again: restored the moved origin", window_origin(settings(pid)[0]))
     user32.PostMessageW(main_hwnd, 0x10, 0, 0)
     until("main window close takes Settings with it", lambda: not windows(pid), 10)
     until("main window close saves bounds", lambda: saved_bounds(preferences))
-    print("main window closed: no window left, bounds", saved_bounds(preferences))
+    final = saved_bounds(preferences)
+    assert final[:2] == first[:2], (first, final)
+    print("main window closed: no window left, bounds", final)
     assert saved_bounds(preferences) == first, "reopened Settings moved: saved bounds drift"
 
 

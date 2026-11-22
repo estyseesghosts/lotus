@@ -46,6 +46,7 @@ mod shared;
 
 #[cfg(not(feature = "silvestris-ui"))]
 const DEFAULT_SIZE: (f32, f32) = (860.0, 620.0);
+#[cfg(not(feature = "silvestris-ui"))]
 const MIN_SIZE: (f32, f32) = (640.0, 420.0);
 
 /// What the window edits.
@@ -205,8 +206,19 @@ fn bounds_from(value: &Value) -> Option<Bounds<gpui::Pixels>> {
     let list = value.as_array()?;
     let [x, y, w, h] = [0, 1, 2, 3].map(|i| list.get(i).and_then(Value::as_f64));
     let (x, y, w, h) = (x? as f32, y? as f32, w? as f32, h? as f32);
-    (w >= MIN_SIZE.0 && h >= MIN_SIZE.1)
-        .then(|| Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(w), px(h))))
+    if ![x, y, w, h].into_iter().all(f32::is_finite) || w <= 0.0 || h <= 0.0 {
+        return None;
+    }
+    // The fixed Settings window restores only its origin; pane sizing can
+    // legitimately produce bounds smaller than the legacy window minimum.
+    #[cfg(not(feature = "silvestris-ui"))]
+    if w < MIN_SIZE.0 || h < MIN_SIZE.1 {
+        return None;
+    }
+    Some(Bounds::new(
+        gpui::point(px(x), px(y)),
+        gpui::size(px(w), px(h)),
+    ))
 }
 
 pub struct SettingsWindow {
@@ -1437,9 +1449,14 @@ mod tests {
     }
 
     #[test]
-    fn saved_bounds_need_the_minimum_size() {
+    fn saved_bounds_accept_the_fixed_overview_and_reject_invalid_geometry() {
         assert!(bounds_from(&serde_json::json!([10.0, 20.0, 900.0, 640.0])).is_some());
-        assert!(bounds_from(&serde_json::json!([10.0, 20.0, 100.0, 640.0])).is_none());
+        assert_eq!(
+            bounds_from(&serde_json::json!([10.0, 20.0, 668.0, 368.0])).is_some(),
+            cfg!(feature = "silvestris-ui"),
+        );
+        assert!(bounds_from(&serde_json::json!([10.0, 20.0, 100.0, 0.0])).is_none());
+        assert!(bounds_from(&serde_json::json!([1e100, 20.0, 900.0, 640.0])).is_none());
         assert!(bounds_from(&serde_json::json!(null)).is_none());
     }
 }

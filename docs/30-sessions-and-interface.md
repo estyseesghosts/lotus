@@ -1012,8 +1012,8 @@ The registry drives the Settings window ([below](#settings-window-53)).
 
 ## Settings window (#53)
 
-`desktop::settings_window`: one separate, resizable, non-modal window per
-process ("LOTUS Settings", 860 × 620, minimum 640 × 420). The sidebar gear,
+`desktop::settings_window`: one separate, non-modal window per process.
+The default renderer fits the window to the pane. The sidebar gear,
 Ctrl+, and a card row's gear (offline cards and running primaries) open it, or
 focus it and switch its target if it is open. It replaces the preferences
 popover.
@@ -1022,9 +1022,8 @@ popover.
   scope `primary`), whether or not the primary runs. A live secondary exposes
   temporary input settings only. Those changes expire when it stops.
 - **Rows.** The toolbar selects the target and the overview picks a registry
-  group. Groups with
-  no row at that scope are hidden. Each row shows the label, description, value
-  and source badge (`default`, `global`, `card`, `managed`, `desktop.json`,
+  group. Groups with no row at that scope are hidden. Each row shows the
+  label, description, value and source badge (`default`, `global`, `card`, `managed`, `desktop.json`,
   `host.json`). Worker and input values come from `Supervisor::settings` and
   are written with `Supervisor::set_setting` (`Actor::Desktop`); a save error
   is shown in the header.
@@ -1047,15 +1046,16 @@ popover.
   the same process) and on activation (edits saved by `ctr-cli` meanwhile).
 - **Window state.** Closing it any way (title bar, Esc, the main window
   closing) saves `gpui::Window::window_bounds` to `settings_bounds`; it reopens
-  there if the saved size is at least the minimum, otherwise centred. The main
-  window closes it. Keys typed in it never reach a guest: it has its own focus,
-  and the main window maps keys only while its screens are focused.
+  at the saved origin and fits the overview. The legacy renderer restores the
+  saved size when it meets its window minimum. The main window closes
+  Settings. The main window maps guest keys only while its screens are
+  focused.
 
 `tests/test_settings_window.py` (**verified emulator**, mock worker, real key
-events, 2026-11-18): Ctrl+, three times leaves one Settings window, Esc closes
-it and saves bounds, it reopens at the same bounds, and closing the main
-window closes it. Unit tests cover the steps, every target having rows, and
-the bounds minimum. The reload on revision change and on activation is
+events): Ctrl+, three times leaves one Settings window. The test moves it,
+closes it with Esc, verifies the new position on reopen and checks that
+closing the main window also closes Settings. Unit tests cover control
+steps, scope eligibility and saved geometry. The reload on revision change and on activation is
 **source inspected** only. macOS and Linux are not built or run. `--mcp`
 mode keeps the process alive after its window closes, with or without
 Settings; that predates #53.
