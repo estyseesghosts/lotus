@@ -7,7 +7,7 @@ Linked desktop routes may expose a subset of arguments. The [command palette](..
 
 Route coverage is independent of native acceptance. The host checks [command requirements](../crates/protocol/src/debug.rs) against the selected worker's negotiated features and forwards the worker's own refusal. A dash in the feature column means the shared command declares no additional feature gate. It carries no backend support guarantee.
 
-Verification links to the corresponding desktop test family. GPU and GDB exercises include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. Source identity binds clang and devkitARM builds of that fixture and checks refusals of other builds. Workspace and Input use mock workers. Fixture pending means the route still needs mapped desktop acceptance. This inventory records test coverage independently of the outcome of any release run.
+Verification links to the corresponding desktop test family. GPU and GDB exercises include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. Source identity binds clang and devkitARM builds of that fixture and checks refusals of other builds. Source debugging sets line breakpoints and steps lines on clang and devkitARM builds of a C++ fixture, checked against llvm-addr2line and llvm-objdump. Workspace and Input use mock workers. Fixture pending means the route still needs mapped desktop acceptance. This inventory records test coverage independently of the outcome of any release run.
 
 ## Shared debugger commands
 
@@ -86,6 +86,11 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `settings_list` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
 | `settings_set` | [inspector rows](../crates/desktop/src/inspection.rs) | control | deterministic_async for deterministic_async_operations | - | fixture pending |
 | `shader_trace` | [inspector rows](../crates/desktop/src/inspection.rs) | control | - | - | [GPU](../crates/desktop/tests/native_inspector.rs) |
+| `source_breakpoint_remove` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [Source debugging](../crates/desktop/tests/native_inspector.rs) |
+| `source_breakpoint_set` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [Source debugging](../crates/desktop/tests/native_inspector.rs) |
+| `source_breakpoints` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [Source debugging](../crates/desktop/tests/native_inspector.rs) |
+| `source_excerpt` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [Source debugging](../crates/desktop/tests/native_inspector.rs) |
+| `source_step` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [Source debugging](../crates/desktop/tests/native_inspector.rs) |
 | `state_hash` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control if dump is set | state_hash | - | fixture pending |
 | `states` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | read | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `status` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Cached session summaries and gauges | fixture pending |

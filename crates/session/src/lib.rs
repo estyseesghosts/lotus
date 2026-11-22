@@ -21,6 +21,7 @@ mod process_memory;
 mod root_lock;
 pub mod settings_store;
 mod shader_seed;
+mod source_debug;
 pub mod storage;
 pub mod supervisor;
 pub mod telemetry;

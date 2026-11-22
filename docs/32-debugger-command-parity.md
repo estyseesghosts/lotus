@@ -79,6 +79,11 @@ This table records reachability, not native-backend acceptance.
 | `settings_list` | `ctr-cli debug`: `settings_list` | `lotus_debug`: `settings_list` |
 | `settings_set` | `ctr-cli debug`: `settings_set` | `lotus_debug`: `settings_set` |
 | `shader_trace` | `ctr-cli debug`: `shader_trace` | `lotus_debug`: `shader_trace` |
+| `source_breakpoint_remove` | `ctr-cli debug`: `source_breakpoint_remove` | `lotus_debug`: `source_breakpoint_remove` |
+| `source_breakpoint_set` | `ctr-cli debug`: `source_breakpoint_set` | `lotus_debug`: `source_breakpoint_set` |
+| `source_breakpoints` | `ctr-cli debug`: `source_breakpoints` | `lotus_debug`: `source_breakpoints` |
+| `source_excerpt` | `ctr-cli debug`: `source_excerpt` | `lotus_debug`: `source_excerpt` |
+| `source_step` | `ctr-cli debug`: `source_step` | `lotus_debug`: `source_step` |
 | `state_hash` | `ctr-cli debug`: `state_hash` | `lotus_debug`: `state_hash` |
 | `states` | `ctr-cli debug`: `states` | `lotus_debug`: `states` |
 | `status` | `ctr-cli debug`: `status` | `lotus_debug`: `status` |

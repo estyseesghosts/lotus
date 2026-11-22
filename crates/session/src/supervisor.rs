@@ -20,6 +20,7 @@ pub use crate::artifacts::{Artifact, ArtifactQuota};
 use crate::artifacts::{ArtifactStore, NewArtifact};
 use crate::card_store::{CardStore, ScratchEnd};
 use crate::native_session::{Frame, InputState, NativeSession};
+pub use crate::source_debug::SourceRoot;
 use crate::telemetry::{Actor, Telemetry};
 use crate::SessionState;
 use lotus_protocol::envelope::SessionUuid;
@@ -159,6 +160,9 @@ pub struct HostConfig {
     /// Approved directories: every `.3dsx` directly inside is `<handle>/<file>`.
     #[serde(default)]
     pub asset_directories: BTreeMap<String, PathBuf>,
+    /// Local directories `source_excerpt` may read, keyed by handle (lotus#77).
+    #[serde(default)]
+    pub source_roots: BTreeMap<String, SourceRoot>,
     #[serde(default)]
     pub allow_control: bool,
     #[serde(default = "default_max_sessions")]
@@ -204,6 +208,7 @@ impl HostConfig {
             storage_root: storage_root.into(),
             assets: BTreeMap::new(),
             asset_directories: BTreeMap::new(),
+            source_roots: BTreeMap::new(),
             allow_control: false,
             max_sessions: DEFAULT_MAX_SESSIONS,
             profile: BTreeMap::new(),
@@ -355,6 +360,8 @@ struct SessionHandle {
     symbols: Mutex<crate::debug_image::SymbolSlot>,
     /// Counts ELF bindings so replies identify which one produced them.
     symbol_generation: AtomicU64,
+    /// Host-kept `file:line` breakpoints re-armed for each binding.
+    source_breakpoints: Mutex<crate::source_debug::SourceBreakpoints>,
     /// (epoch, frames) of the last preview served while paused; see [`Supervisor::preview`].
     previewed: Mutex<Option<(u64, u64)>>,
     /// Set once when the session starts stopping; ends its tasks.
@@ -845,6 +852,7 @@ impl Supervisor {
             lease: Mutex::new(None),
             symbols: Mutex::default(),
             symbol_generation: AtomicU64::new(0),
+            source_breakpoints: Mutex::default(),
             previewed: Mutex::new(None),
             closed: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
@@ -876,6 +884,7 @@ impl Supervisor {
         handle.cancel_input(true);
         native.load(&content).await?;
         handle.telemetry().epoch = native.epoch();
+        self.rebind_source_breakpoints(&handle, &mut native).await;
         self.budgets.clear_recordings(id);
         lock(&handle.info).asset = Some(asset.to_string());
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
@@ -2212,32 +2221,8 @@ impl Supervisor {
         }
         if let DebugCommand::LoadSymbols { asset } = command {
             check_lease(&handle, client)?;
-            let path = self.resolve_asset(asset)?;
-            if fs::metadata(&path)?.len() > 128 << 20 {
-                return Err(io::Error::other("ELF exceeds budget"));
-            }
-            let bytes = fs::read(path)?;
-            let symbols = lotus_debugger::symbols::Symbols::parse(&bytes)?;
-            let count = symbols.count();
-            let sha256 = format!("{:x}", Sha256::digest(bytes));
-            let generation = handle.symbol_generation.fetch_add(1, Ordering::AcqRel) + 1;
             let check = || scope.cancellation.map_or(Ok(()), DebugCancellation::check);
-            // A failed verification keeps the previous binding.
-            let image = crate::debug_image::DebugImage::bind(
-                &mut native,
-                asset,
-                symbols,
-                sha256,
-                generation,
-                &check,
-            )
-            .await?;
-            let mut result = image.describe();
-            result["symbols"] = count.into();
-            result["sections"] =
-                serde_json::to_value(image.index.sections()).map_err(io::Error::other)?;
-            lock(&handle.symbols).bind(image);
-            return Ok(result);
+            return self.bind_symbols(&handle, &mut native, asset, &check).await;
         }
         if let DebugCommand::Symbolize { addresses } = command {
             crate::debug_image::validate(&handle.symbols, &mut native).await?;
@@ -2251,6 +2236,67 @@ impl Supervisor {
                 serde_json::json!({"locations":locations?, "elf_sha256":image.elf_sha256,
                 "epoch":native.epoch(), "image":image.describe()}),
             );
+        }
+        let check = || scope.cancellation.map_or(Ok(()), DebugCancellation::check);
+        match command {
+            DebugCommand::SourceBreakpointSet { file, line } => {
+                check_lease(&handle, client)?;
+                handle.set_playing(false);
+                pause_if_running(&mut native).await?;
+                return crate::source_debug::set(
+                    &handle.symbols,
+                    &handle.source_breakpoints,
+                    &mut native,
+                    file,
+                    *line,
+                )
+                .await;
+            }
+            DebugCommand::SourceBreakpointRemove { id } => {
+                check_lease(&handle, client)?;
+                handle.set_playing(false);
+                pause_if_running(&mut native).await?;
+                return crate::source_debug::remove(&handle.source_breakpoints, &mut native, *id)
+                    .await;
+            }
+            DebugCommand::SourceBreakpoints => {
+                return crate::source_debug::list(&handle.source_breakpoints, &mut native).await;
+            }
+            DebugCommand::SourceStep {
+                core,
+                mode,
+                max_instructions,
+            } => {
+                check_lease(&handle, client)?;
+                handle.set_playing(false);
+                pause_if_running(&mut native).await?;
+                handle.record(Actor::Host, client);
+                return crate::source_debug::step(
+                    &handle.symbols,
+                    &mut native,
+                    *core,
+                    *mode,
+                    *max_instructions,
+                    &check,
+                )
+                .await;
+            }
+            DebugCommand::SourceExcerpt {
+                file,
+                line,
+                context,
+            } => {
+                return crate::source_debug::excerpt(
+                    &handle.symbols,
+                    &mut native,
+                    &self.config.source_roots,
+                    file,
+                    *line,
+                    *context,
+                )
+                .await;
+            }
+            _ => {}
         }
         if let DebugCommand::ResolveSymbol { query } = command {
             crate::debug_image::validate(&handle.symbols, &mut native).await?;
@@ -2345,7 +2391,8 @@ impl Supervisor {
                 lock(&handle.mailbox).forget();
             }
         }
-        match command {
+        let epoch_before = native.epoch();
+        let result = match command {
             DebugCommand::Status => native.status().await,
             DebugCommand::Reset => {
                 let result = native.reset().await?;
@@ -2446,7 +2493,82 @@ impl Supervisor {
                 }
                 Ok(result)
             }
+        };
+        if native.epoch() == epoch_before {
+            return result;
         }
+        let rebind = self.rebind_source_breakpoints(&handle, &mut native).await;
+        let mut result = result?;
+        if let (Some(rebind), Some(object)) = (rebind, result.as_object_mut()) {
+            object.insert("source_breakpoints".into(), rebind);
+        }
+        Ok(result)
+    }
+
+    /// Bind ELF `asset` after verifying it against guest memory (lotus#76), then re-arm
+    /// source breakpoints at its addresses (lotus#77). The file is read again on every
+    /// call, so a rebuilt ELF is picked up. A failed verification keeps the old binding.
+    async fn bind_symbols(
+        &self,
+        handle: &SessionHandle,
+        native: &mut NativeSession,
+        asset: &str,
+        check: &(dyn Fn() -> io::Result<()> + Sync),
+    ) -> io::Result<serde_json::Value> {
+        let path = self.resolve_asset(asset)?;
+        if fs::metadata(&path)?.len() > 128 << 20 {
+            return Err(io::Error::other("ELF exceeds budget"));
+        }
+        let bytes = fs::read(path)?;
+        let symbols = lotus_debugger::symbols::Symbols::parse(&bytes)?;
+        let count = symbols.count();
+        let sha256 = format!("{:x}", Sha256::digest(bytes));
+        let generation = handle.symbol_generation.fetch_add(1, Ordering::AcqRel) + 1;
+        let image =
+            crate::debug_image::DebugImage::bind(native, asset, symbols, sha256, generation, check)
+                .await?;
+        let mut result = image.describe();
+        result["symbols"] = count.into();
+        result["sections"] =
+            serde_json::to_value(image.index.sections()).map_err(io::Error::other)?;
+        lock(&handle.symbols).bind(image);
+        if !lock(&handle.source_breakpoints).is_empty() {
+            // The worker sets breakpoints only while paused (`debug.h`, "mutation requires
+            // paused execution"), like other mutations.
+            handle.set_playing(false);
+            pause_if_running(native).await?;
+            result["source_breakpoints"] =
+                crate::source_debug::rearm(&handle.symbols, &handle.source_breakpoints, native)
+                    .await;
+        }
+        Ok(result)
+    }
+
+    /// After a guest epoch change (load, reset, state load, replay, reverse execution):
+    /// remove the old build's source-breakpoint addresses, then re-bind the last ELF asset
+    /// and re-arm them, so they survive restarts and rebuilds without a stale address.
+    /// Returns what happened, or `None` when there are no source breakpoints.
+    async fn rebind_source_breakpoints(
+        &self,
+        handle: &SessionHandle,
+        native: &mut NativeSession,
+    ) -> Option<serde_json::Value> {
+        crate::source_debug::retire(&handle.source_breakpoints, native).await;
+        if lock(&handle.source_breakpoints).is_empty() {
+            return None;
+        }
+        let asset = lock(&handle.symbols).asset()?.to_string();
+        Some(
+            match self.bind_symbols(handle, native, &asset, &|| Ok(())).await {
+                Ok(bound) => serde_json::json!({"rebound": asset, "image": bound}),
+                Err(error) => {
+                    let reason =
+                        format!("re-binding {asset} after the epoch change failed: {error}");
+                    crate::source_debug::defer(&handle.source_breakpoints, &reason);
+                    serde_json::json!({"rebind_failed": reason})
+                }
+            },
+        )
     }
 
     /// Publish files a debug command wrote below the session root (`gpu/`, `audio/`,

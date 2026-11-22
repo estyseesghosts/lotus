@@ -234,4 +234,5 @@ mod tests {
     }
 }
 
+pub mod lines;
 pub mod symbols;

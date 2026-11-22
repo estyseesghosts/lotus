@@ -7,7 +7,7 @@ use lotus_desktop::{
 };
 use lotus_mcp::tool_arguments::{DebugArgs, GdbArgs, GdbOperation, ReleaseArtifactsArgs};
 use lotus_protocol::{
-    debug::{DebugCommand as D, GpuCapture},
+    debug::{DebugCommand as D, GpuCapture, SourceStepMode},
     envelope::SessionUuid,
 };
 use lotus_session::supervisor::{HostConfig, SessionKind};
@@ -2326,6 +2326,26 @@ fn addr2line(elf: &std::path::Path, address: u32) -> (String, u32) {
     (file.replace('\\', "/"), line)
 }
 
+/// `llvm-addr2line -i` lines for an address, innermost frame first; each outer entry is
+/// the call site of the frame before it.
+fn inline_frames(elf: &std::path::Path, address: u32) -> Vec<u32> {
+    let output = std::process::Command::new("llvm-addr2line")
+        .arg("-i")
+        .arg("-e")
+        .arg(elf)
+        .arg(format!("{address:#x}"))
+        .output()
+        .unwrap();
+    String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let line = line.rsplit_once(':').unwrap().1;
+            line.split_whitespace().next().unwrap().parse().unwrap()
+        })
+        .collect()
+}
+
 /// Result-panel rows under `prefix`, decoded from their JSON text.
 fn result_rows(view: &Inspection, prefix: &str) -> BTreeMap<String, Value> {
     view.rows
@@ -2579,4 +2599,593 @@ fn source_identity_binds_only_the_loaded_build() {
         exited.contains("no longer maps the bound ELF sections"),
         "{exited}"
     );
+    for target in [&a, &b] {
+        send(Command::Stop(target.id.clone()));
+    }
+    wait(&controller, |update| update.sessions.is_empty());
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Line of the `// @name` marker in the owned C++ source fixture.
+fn marker(name: &str) -> u32 {
+    let source =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/source/fixture.cpp");
+    let text = std::fs::read_to_string(source).unwrap();
+    let tag = format!("// @{name}");
+    text.lines()
+        .position(|line| line.trim_end().ends_with(&tag))
+        .unwrap_or_else(|| panic!("marker {name} missing")) as u32
+        + 1
+}
+
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER, LOTUS_SOURCE_FIXTURE(_GCC, _SHIFTED) and LOTUS_DEBUG_FIXTURE builds with adjacent ELFs"]
+fn source_breakpoints_and_steps_follow_the_bound_build() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let clang = PathBuf::from(std::env::var_os("LOTUS_SOURCE_FIXTURE").unwrap());
+    let gcc = PathBuf::from(std::env::var_os("LOTUS_SOURCE_FIXTURE_GCC").unwrap());
+    let shifted = PathBuf::from(std::env::var_os("LOTUS_SOURCE_FIXTURE_SHIFTED").unwrap());
+    let c_fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let (clang_elf, gcc_elf, shifted_elf, c_elf) = (
+        clang.with_extension("elf"),
+        gcc.with_extension("elf"),
+        shifted.with_extension("elf"),
+        c_fixture.with_extension("elf"),
+    );
+    let root = std::env::temp_dir().join(format!("lotus-source-step-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    // The worker re-reads content on reset and the host re-reads the ELF asset when it
+    // re-binds, so overwriting both files is a rebuild.
+    let (app, app_elf) = (root.join("app.3dsx"), root.join("app.elf"));
+    std::fs::copy(&clang, &app).unwrap();
+    std::fs::copy(&clang_elf, &app_elf).unwrap();
+    let stripped = root.join("stripped.elf");
+    let status = std::process::Command::new("llvm-objcopy")
+        .arg("--strip-debug")
+        .arg(&clang_elf)
+        .arg(&stripped)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    // Both compilers record the same DWARF directory for the fixture.
+    let first = |elf: &std::path::Path| {
+        let (start, _) = sites_of(elf, marker("frame_first"));
+        addr2line(elf, start).0
+    };
+    let dwarf_file = first(&clang_elf);
+    assert_eq!(dwarf_file, first(&gcc_elf));
+    let dwarf_dir = dwarf_file.rsplit_once('/').unwrap().0.to_string();
+
+    let mut config = HostConfig::new(worker, root.join("host"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([
+        ("app".into(), app.clone()),
+        ("gcc".into(), gcc.clone()),
+        ("c".into(), c_fixture.clone()),
+        ("app_elf".into(), app_elf.clone()),
+        ("gcc_elf".into(), gcc_elf.clone()),
+        ("c_elf".into(), c_elf.clone()),
+        ("stripped_elf".into(), stripped.clone()),
+    ]);
+    config.source_roots = BTreeMap::from([(
+        "fixture".into(),
+        lotus_session::supervisor::SourceRoot {
+            path: root.join("src"),
+            from: Some(dwarf_dir),
+        },
+    )]);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let send = |command| controller.commands.send(command).unwrap();
+    let create = |asset: &str, known: &[String]| {
+        send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some(asset.into()),
+        });
+        wait(&controller, |update| {
+            !known.contains(&update.selected)
+                && update
+                    .sessions
+                    .iter()
+                    .any(|summary| summary.info.id == update.selected)
+        });
+        let target = selected_target(&controller);
+        send(Command::Pause(target.id.clone()));
+        wait(&controller, |update| {
+            target.resolve(&update.sessions).is_some_and(|summary| {
+                !summary.telemetry.playing
+                    && summary.telemetry.state == lotus_session::SessionState::Paused
+            })
+        });
+        target
+    };
+    let a = create("app", &[]);
+    let b = create("gcc", std::slice::from_ref(&a.id));
+    let c = create("c", &[a.id.clone(), b.id.clone()]);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let call = |target: &SessionTarget, command| {
+        runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: target.id.clone(),
+            command,
+        })))
+    };
+    let ok = |target: &SessionTarget, command| tool_json(call(target, command));
+    let load = |target: &SessionTarget, asset: &str| {
+        ok(
+            target,
+            D::LoadSymbols {
+                asset: asset.into(),
+            },
+        )
+    };
+    let set = |target: &SessionTarget, file: &str, line: u32| {
+        ok(
+            target,
+            D::SourceBreakpointSet {
+                file: file.into(),
+                line,
+            },
+        )
+    };
+    let step = |target: &SessionTarget, mode: SourceStepMode| {
+        ok(
+            target,
+            D::SourceStep {
+                core: 0,
+                mode,
+                max_instructions: 10_000,
+            },
+        )
+    };
+    let site_ids = |breakpoint: &Value| -> Vec<Value> {
+        breakpoint["sites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|site| site["breakpoint"].clone())
+            .collect()
+    };
+    // Resume and wait for one of `ids` to stop the guest; returns the PC.
+    let run_to_hit = |target: &SessionTarget, ids: &[Value]| -> u32 {
+        ok(target, D::Continue);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let status = ok(target, D::Status);
+            if status["paused"] == true
+                && status["stop"]["reason"] == "breakpoint"
+                && ids.contains(&status["stop"]["breakpoint"])
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no source breakpoint hit: {status}"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        ok(target, D::Registers { core: 0 })["registers"][15]
+            .as_u64()
+            .unwrap() as u32
+    };
+    let cpp = "fixture.cpp";
+
+    // Without a binding, and with a binding that has no DWARF, source requests refuse.
+    let unbound = tool_error(call(
+        &a,
+        D::SourceBreakpointSet {
+            file: cpp.into(),
+            line: marker("frame_first"),
+        },
+    ));
+    assert!(unbound.contains("load an approved ELF"), "{unbound}");
+    load(&a, "stripped_elf");
+    let no_lines = tool_error(call(
+        &a,
+        D::SourceBreakpointSet {
+            file: cpp.into(),
+            line: marker("frame_first"),
+        },
+    ));
+    assert!(no_lines.contains("no DWARF line table"), "{no_lines}");
+    let no_step = tool_error(call(
+        &a,
+        D::SourceStep {
+            core: 0,
+            mode: SourceStepMode::Over,
+            max_instructions: 100,
+        },
+    ));
+    assert!(no_step.contains("no DWARF line information"), "{no_step}");
+
+    load(&a, "app_elf");
+    load(&b, "gcc_elf");
+    // A line can be ambiguous across files; `fixture.cpp` names exactly one here.
+    for (target, elf) in [(&a, &clang_elf), (&b, &gcc_elf)] {
+        let label = elf.display().to_string();
+        let expect = |result: &Value, marker_name: &str| {
+            let location = &result["location"];
+            let pc = location["pc"].as_u64().unwrap() as u32;
+            // Entering an inlined frame from its call site executes nothing.
+            match result["reason"].as_str().unwrap() {
+                "statement" => {}
+                "entered_inline" => assert_eq!(result["instructions"], 0),
+                other => panic!("{label}: {other}: {result}"),
+            }
+            assert_eq!(location["line"], marker(marker_name), "{label}: {result}");
+            // At an inlined subroutine's entry the stop shows its call site in the caller.
+            let hidden = location["hidden_inline_frames"].as_u64().unwrap() as usize;
+            let certainty = if hidden > 0 {
+                "inline_call_site"
+            } else {
+                "statement_start"
+            };
+            assert_eq!(location["certainty"], certainty, "{label}: {result}");
+            assert_eq!(
+                inline_frames(elf, pc)[hidden],
+                marker(marker_name),
+                "{label}"
+            );
+            assert_eq!(
+                ok(target, D::Registers { core: 0 })["registers"][15],
+                pc,
+                "{label}"
+            );
+        };
+        let first = set(target, cpp, marker("frame_first"));
+        assert_eq!(first["state"], "armed");
+        let (address, _) = sites_of(elf, marker("frame_first"));
+        assert_eq!(first["sites"][0]["address"], address, "{label}");
+        assert_eq!(first["sites"].as_array().unwrap().len(), 1);
+        let listed = ok(target, D::SourceBreakpoints);
+        let desktop = completed(desktop_command(
+            &controller,
+            target,
+            Panel::Result,
+            D::SourceBreakpoints,
+        ));
+        assert_eq!(
+            result_rows(&desktop, ".source_breakpoints"),
+            flattened(&listed["source_breakpoints"], ".source_breakpoints")
+        );
+        assert_eq!(run_to_hit(target, &site_ids(&first)), address, "{label}");
+
+        let over = step(target, SourceStepMode::Over);
+        expect(&over, "frame_call_thumb");
+        assert_eq!(over["epoch"], ok(target, D::Status)["epoch"]);
+        assert!(over["thread"].as_u64().unwrap() > 0);
+        // ARM calling Thumb: clang emits BLX, GCC's linker routes through a veneer.
+        let over = step(target, SourceStepMode::Over);
+        expect(&over, "frame_call_method");
+        assert_eq!(over["calls_stepped_over"], 1, "{label}: {over}");
+        let into = step(target, SourceStepMode::Into);
+        expect(&into, "method_body");
+        assert!(into["location"]["function"]
+            .as_str()
+            .unwrap()
+            .contains("Accumulator3add"));
+        let out = step(target, SourceStepMode::Out);
+        assert_eq!(out["reason"], "returned", "{label}: {out}");
+        assert_eq!(out["location"]["line"], marker("frame_call_method"));
+        expect(&step(target, SourceStepMode::Over), "frame_inline");
+        let inlined = step(target, SourceStepMode::Into);
+        expect(&inlined, "inline_body");
+        assert_eq!(inlined["location"]["inline_depth"], 1, "{label}: {inlined}");
+        let inner = step(target, SourceStepMode::Over);
+        assert_eq!(inner["location"]["line"], marker("inline_body") + 1);
+        assert_eq!(inner["location"]["inline_depth"], 1);
+        let back = step(target, SourceStepMode::Over);
+        expect(&back, "frame_inline");
+        assert_eq!(back["location"]["inline_depth"], 0);
+        // Through the desktop request path the reply is the same typed result.
+        let desktop = completed(desktop_command(
+            &controller,
+            target,
+            Panel::Result,
+            D::SourceStep {
+                core: 0,
+                mode: SourceStepMode::Over,
+                max_instructions: 10_000,
+            },
+        ));
+        let line = result_rows(&desktop, ".location.line")
+            .remove(".location.line")
+            .unwrap();
+        assert_eq!(line, marker("frame_store"));
+
+        // Over from the inlined call skips the inlined body.
+        ok(
+            target,
+            D::SourceBreakpointRemove {
+                id: first["id"].as_u64().unwrap(),
+            },
+        );
+        // GCC emits no row for this line before the inlined body; the site is the inline
+        // entry, shown at its call site.
+        let inline_line = set(target, cpp, marker("frame_inline"));
+        assert_eq!(
+            inline_line["sites"].as_array().unwrap().len(),
+            1,
+            "{label}: {inline_line}"
+        );
+        let ids = site_ids(&inline_line);
+        run_to_hit(target, &ids);
+        let skipped = step(target, SourceStepMode::Over);
+        expect(&skipped, "frame_store");
+        assert_eq!(skipped["location"]["inline_depth"], 0);
+        // Into the inlined body, then out of it to the rest of its call line.
+        run_to_hit(target, &ids);
+        let entered = step(target, SourceStepMode::Into);
+        assert_eq!(
+            entered["location"]["line"],
+            marker("inline_body"),
+            "{label}: {entered}"
+        );
+        assert_eq!(entered["location"]["inline_depth"], 1);
+        let left = step(target, SourceStepMode::Out);
+        assert_eq!(left["reason"], "returned", "{label}: {left}");
+        assert_eq!(left["location"]["inline_depth"], 0);
+        assert_eq!(
+            left["location"]["line"],
+            marker("frame_inline"),
+            "{label}: {left}"
+        );
+        expect(&step(target, SourceStepMode::Over), "frame_store");
+        ok(
+            target,
+            D::SourceBreakpointRemove {
+                id: inline_line["id"].as_u64().unwrap(),
+            },
+        );
+
+        // Into the Thumb callee stops after its prologue, in Thumb state.
+        let call_line = set(target, cpp, marker("frame_call_thumb"));
+        run_to_hit(target, &site_ids(&call_line));
+        let thumb = step(target, SourceStepMode::Into);
+        expect(&thumb, "thumb_body");
+        assert_eq!(thumb["location"]["thumb"], true);
+        let cpsr = ok(target, D::Registers { core: 0 })["cpsr"]
+            .as_u64()
+            .unwrap();
+        assert_ne!(cpsr & 0x20, 0, "{label}: CPSR T bit");
+        let out = step(target, SourceStepMode::Out);
+        assert_eq!(out["reason"], "returned", "{label}: {out}");
+        assert_eq!(out["location"]["line"], marker("frame_call_thumb"));
+        // The return address comes from `.debug_frame`, not a frame-pointer walk.
+        assert_eq!(out["unwind"], "debug_frame", "{label}: {out}");
+        assert_eq!(out["location"]["certainty"], "inside_statement");
+
+        // An exhausted budget reports where it stopped, not a guessed line. `frame_first`
+        // spans several instructions in both builds.
+        ok(
+            target,
+            D::SourceBreakpointRemove {
+                id: call_line["id"].as_u64().unwrap(),
+            },
+        );
+        let first = set(target, cpp, marker("frame_first"));
+        run_to_hit(target, &site_ids(&first));
+        let budget = ok(
+            target,
+            D::SourceStep {
+                core: 0,
+                mode: SourceStepMode::Over,
+                max_instructions: 1,
+            },
+        );
+        assert_eq!(budget["reason"], "budget", "{label}: {budget}");
+        assert_eq!(budget["instructions"], 1);
+        assert_eq!(budget["location"]["certainty"], "inside_statement");
+        assert_eq!(budget["location"]["line"], marker("frame_first"));
+        ok(
+            target,
+            D::SourceBreakpointRemove {
+                id: first["id"].as_u64().unwrap(),
+            },
+        );
+    }
+
+    // Excerpts only from a configured root, checked against the DWARF 5 MD5 when present.
+    let excerpt = D::SourceExcerpt {
+        file: cpp.into(),
+        line: marker("frame_inline"),
+        context: 2,
+    };
+    let denied = tool_error(call(&a, excerpt.clone()));
+    assert!(
+        denied.contains("not below a configured source root"),
+        "{denied}"
+    );
+    let local = root.join("src/fixture.cpp");
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/source/fixture.cpp"),
+        &local,
+    )
+    .unwrap();
+    let text = ok(&a, excerpt.clone());
+    assert_eq!(text["checksum"], "md5_verified");
+    assert_eq!(text["lines"].as_array().unwrap().len(), 5);
+    assert!(text["lines"][2]["text"]
+        .as_str()
+        .unwrap()
+        .contains("// @frame_inline"));
+    let desktop = completed(desktop_command(
+        &controller,
+        &a,
+        Panel::Result,
+        excerpt.clone(),
+    ));
+    assert_eq!(
+        result_rows(&desktop, ".lines"),
+        flattened(&text["lines"], ".lines")
+    );
+    // The CPU inspector shows the source of the PC's line; its row toggles a breakpoint.
+    send(Command::Select(a.id.clone()));
+    *controller.inspection_selection.lock().unwrap() = InspectionSelection::first_page(Panel::Cpu);
+    controller.inspector.store(true, Ordering::Release);
+    let pc_now = ok(&a, D::Registers { core: 0 })["registers"][15]
+        .as_u64()
+        .unwrap() as u32;
+    let pc_line = addr2line(&clang_elf, pc_now).1;
+    let line_row = |marked: Option<bool>| {
+        let mut row = None;
+        wait(&controller, |update| {
+            row = update
+                .inspection
+                .as_ref()
+                .filter(|snapshot| {
+                    snapshot.panel == Panel::Cpu && snapshot.target.as_ref() == Some(&a)
+                })
+                .and_then(|snapshot| snapshot.view.rows.iter().find(|row| row.lane == "Line"))
+                .filter(|row| marked.is_none_or(|marked| row.key.starts_with("● ") == marked))
+                .cloned();
+            row.is_some()
+        });
+        let row = row.unwrap();
+        assert_eq!(
+            row.key.trim_start_matches("● "),
+            pc_line.to_string(),
+            "{row:?}"
+        );
+        row
+    };
+    let before = line_row(None);
+    let marked = before.key.starts_with("● ");
+    for expected in [!marked, marked] {
+        let row = line_row(Some(!expected));
+        let action = row.action.clone().unwrap();
+        assert!(matches!(
+            (&action, expected),
+            (D::SourceBreakpointSet { .. }, true) | (D::SourceBreakpointRemove { .. }, false)
+        ));
+        completed(desktop_command(&controller, &a, Panel::Cpu, action));
+        line_row(Some(expected));
+    }
+    controller.inspector.store(false, Ordering::Release);
+    // GCC's line table records no checksum; the excerpt says so instead of claiming one.
+    assert_eq!(ok(&b, excerpt.clone())["checksum"], "not_recorded");
+    let mut edited = std::fs::read(&local).unwrap();
+    edited.extend_from_slice(b"// edited after the build\n");
+    std::fs::write(&local, edited).unwrap();
+    let changed = tool_error(call(&a, excerpt));
+    assert!(changed.contains("MD5 differs"), "{changed}");
+
+    // Restart: reset re-binds the same ELF and re-arms at the same address.
+    let armed = set(&a, cpp, marker("frame_inline"));
+    let (clang_address, _) = sites_of(&clang_elf, marker("frame_inline"));
+    assert_eq!(armed["sites"][0]["address"], clang_address);
+    // Clang resumes this line after the inlined call with a second statement row in the
+    // same scope; it is one breakpoint location, not two.
+    assert_eq!(armed["sites"].as_array().unwrap().len(), 1, "{armed}");
+    let reset = ok(&a, D::Reset);
+    let rebound = &reset["source_breakpoints"];
+    assert_eq!(rebound["rebound"], "app_elf", "{reset}");
+    let entry = &rebound["image"]["source_breakpoints"][0];
+    assert_eq!(entry["state"], "armed", "{reset}");
+    assert_eq!(entry["sites"][0]["address"], clang_address);
+    assert_ne!(
+        entry["sites"][0]["breakpoint"],
+        armed["sites"][0]["breakpoint"]
+    );
+    assert_eq!(run_to_hit(&a, &site_ids(entry)), clang_address);
+
+    // Rebuild with a changed layout: the old address is not kept armed anywhere.
+    std::fs::copy(&shifted, &app).unwrap();
+    std::fs::copy(&shifted_elf, &app_elf).unwrap();
+    let reset = ok(&a, D::Reset);
+    let entry = reset["source_breakpoints"]["image"]["source_breakpoints"][0].clone();
+    let (shifted_address, _) = sites_of(&shifted_elf, marker("frame_inline"));
+    assert_ne!(shifted_address, clang_address);
+    assert_eq!(entry["sites"][0]["address"], shifted_address, "{reset}");
+    let worker = ok(&a, D::Breakpoints);
+    let addresses: Vec<&Value> = worker["breakpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|bp| &bp["address"])
+        .collect();
+    assert!(
+        !addresses.contains(&&Value::from(clang_address)),
+        "{worker}"
+    );
+    assert_eq!(run_to_hit(&a, &site_ids(&entry)), shifted_address);
+    assert_eq!(
+        addr2line(&shifted_elf, shifted_address).1,
+        marker("frame_inline")
+    );
+
+    // An ELF that no longer matches leaves the breakpoint pending with the reason.
+    std::fs::copy(&gcc_elf, &app_elf).unwrap();
+    let reset = ok(&a, D::Reset);
+    let failed = reset["source_breakpoints"]["rebind_failed"]
+        .as_str()
+        .unwrap();
+    assert!(failed.contains("differs from guest memory"), "{reset}");
+    let listed = ok(&a, D::SourceBreakpoints);
+    assert_eq!(listed["source_breakpoints"][0]["state"], "pending");
+    assert!(ok(&a, D::Breakpoints)["breakpoints"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // The same commands on the -O1 C fixture: the ARM call into Thumb code.
+    load(&c, "c_elf");
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/debugger/fixture.c"),
+    )
+    .unwrap();
+    let thumb_line = source
+        .lines()
+        .position(|line| line.contains("thumb_counter = thumb_counter * 3 + 1;"))
+        .unwrap() as u32
+        + 1;
+    let c_bp = set(&c, "fixture.c", thumb_line);
+    let pc = run_to_hit(&c, &site_ids(&c_bp));
+    assert_eq!(c_bp["sites"][0]["thumb"], true);
+    assert_eq!(addr2line(&c_elf, pc).1, thumb_line);
+    let c_step = step(&c, SourceStepMode::Over);
+    let c_pc = c_step["location"]["pc"].as_u64().unwrap() as u32;
+    assert_eq!(c_step["reason"], "statement", "{c_step}");
+    assert_eq!(addr2line(&c_elf, c_pc).1, c_step["location"]["line"]);
+
+    for target in [&a, &b, &c] {
+        send(Command::Stop(target.id.clone()));
+    }
+    wait(&controller, |update| update.sessions.is_empty());
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// Statement-start addresses of `line` in `elf` from `llvm-objdump --line-numbers`
+/// (independent of Lotus's line table): the first address after each `fixture.cpp:line`
+/// annotation. Returns the first one and how many there are.
+fn sites_of(elf: &std::path::Path, line: u32) -> (u32, usize) {
+    let output = std::process::Command::new("llvm-objdump")
+        .arg("-d")
+        .arg("--line-numbers")
+        .arg(elf)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    let suffix = format!(":{line}");
+    let mut sites = Vec::new();
+    let mut lines = text.lines().peekable();
+    while let Some(current) = lines.next() {
+        let annotation = current.trim().trim_start_matches("; ");
+        if annotation.ends_with(&suffix) && annotation.contains("fixture.c") {
+            if let Some(address) = lines
+                .peek()
+                .and_then(|next| next.trim().split_once(':'))
+                .and_then(|(address, _)| u32::from_str_radix(address, 16).ok())
+            {
+                sites.push(address);
+            }
+        }
+    }
+    (sites[0], sites.len())
 }

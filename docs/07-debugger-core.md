@@ -84,12 +84,66 @@ size and SHA-256 (hashed after each load or reset, up to 64 MiB), process, epoch
 per-session generation. `symbolize`, `resolve_symbol`, `disassemble`, `backtrace` and
 `crash_report` revalidate it under the native lock: a new epoch (load, reset, state load,
 replay, reverse step) or a process that no longer maps the sections drops it, and later
-requests report why. Replies carry the evidence as `image`. Addresses outside the ELF's
+requests report why. When source breakpoints exist, the host binds the same asset again
+after the epoch change (below). Replies carry the evidence as `image`. Addresses outside the ELF's
 allocated sections return no symbol or line; only executable sections return lines.
 
 Not covered: relocated CRO modules stay raw addresses, sessions forked with `fork` start
 unbound, and an external GDB client symbolizes with whatever ELF it loads itself. ELF
 suggestion from a build manifest belongs to the build workflow (lotus#79).
+
+### Source breakpoints and line stepping (lotus#77)
+
+The [line table](../crates/debugger/src/lines.rs) keeps every DWARF 4/5 row with its
+column, discriminator, `is_stmt` and `prologue_end` flags, and DWARF 5 MD5 file checksums.
+Paths are joined exactly as addr2line 0.27.1 `path_push` joins them, so line-table and
+`addr2line` paths compare equal. A stripped ELF refuses source requests instead of guessing.
+
+`source_breakpoint_set` keeps `file:line` on the host and arms a worker execute breakpoint at
+each site of that line in the bound ELF: each statement start, plus the entry of each
+subroutine inlined from the line (`DW_AT_call_line`; the entry is `DW_AT_entry_pc`, else the
+lowest range address, DWARF 5 2.18 and 3.3.8.3). GCC may emit no row for the call line
+before the inlined body. One site is kept per function and inline scope, as gdb's
+`linespec.c` keeps one location per block, so a line that clang resumes after an inlined call
+stops once. Execute breakpoints stay on the JIT path: the worker single-steps only for
+non-execute breakpoints or PC and memory predicates (`debug.h`, `NeedsInstructionStep`).
+
+After an epoch change the host removes the old build's worker breakpoints, re-reads the ELF
+asset, repeats the identity check above and re-arms at the new addresses. If the ELF no
+longer matches the guest, every source breakpoint stays pending with the reason, and no old
+address stays armed. The debug reply that changed the epoch reports the outcome as
+`source_breakpoints`.
+
+`source_step` (`into`, `over`, `out`) runs within `max_instructions`:
+
+- A stop at the entry of inlined subroutines is shown at their call site, and `into` from it
+  enters the inlined frame without executing, as gdb's `skip_inline_frames` and
+  `step_into_inline_frame` do.
+- `into` stops after the callee's prologue: the first `prologue_end` row, else the next
+  statement of another line, as gdb's `skip_prologue_using_sal` does. Callees without line
+  information run to their return, matching gdb's `step`. A GNU ld ARM/Thumb veneer of up
+  to 8 instructions that leaves SP and LR unchanged is followed to its target.
+- Calls are run to their return address and accepted only when SP equals the SP at the
+  call, since `BL`/`BLX` do not change SP (ARM ARM A4.1.10, A4.1.12). Recursion therefore
+  does not stop early.
+- `out` of a concrete function runs to the return address that the `.debug_frame` row gives
+  (DWARF 5 6.4) once SP equals the CFA. Unspecified return-address rules are treated as
+  unchanged, as in gdb's `dwarf2-frame.c`. Without CFI it falls back to the worker's
+  backtrace `step_out` and reports `unwind: worker_backtrace`. `out` of an inlined frame
+  steps until the inline depth drops.
+
+Replies carry the raw PC, ARM/Thumb state, file, line, column, discriminator, row range,
+function, inline depth, thread, core, epoch and `certainty` (`statement_start`,
+`inline_call_site`, `inside_statement` or `no_line_information`). A breakpoint hit, thread
+switch or exhausted budget ends the step at the actual PC with that reason.
+
+`source_excerpt` reads only below a configured source root. It compares the file with the
+line table's DWARF 5 MD5 when present, and reports `not_recorded` when the producer gave
+none (devkitARM GCC). The CPU inspector shows the excerpt around the disassembled address,
+toggles a source breakpoint when a line is clicked, and adds Step line, Over line and Out
+line with a 10,000-instruction budget. These behaviours are verified natively on CITnLO with
+clang and GCC builds of [the C++ fixture](../fixtures/source/fixture.cpp), checked against
+`llvm-addr2line -i` and `llvm-objdump --line-numbers`.
 
 ## Trace design
 

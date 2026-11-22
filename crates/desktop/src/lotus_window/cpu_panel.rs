@@ -1,5 +1,6 @@
 use super::*;
 use breakpoints::Input;
+use lotus_protocol::debug::SourceStepMode;
 use silvestris::controls::{ControlSize, PopUpButton};
 
 pub(in crate::lotus_window) enum CpuForm {
@@ -385,6 +386,21 @@ impl LotusWindow {
             ("Out", D::StepOut { core }, executable),
             ("Back", D::ReverseStep { core }, executable),
         ];
+        // Source-line steps (#77) need a bound ELF, which the ELF symbol row shows.
+        let symbols =
+            cpu_view.is_some_and(|snap| snap.view.rows.iter().any(|row| row.key == "ELF symbol"));
+        for (label, mode) in [
+            ("Step line", SourceStepMode::Into),
+            ("Over line", SourceStepMode::Over),
+            ("Out line", SourceStepMode::Out),
+        ] {
+            let command = D::SourceStep {
+                core,
+                mode,
+                max_instructions: 10_000,
+            };
+            commands.push((label, command, executable && symbols));
+        }
         if let Some((address, address_thumb)) = query.address {
             commands.push((
                 "Run to address",

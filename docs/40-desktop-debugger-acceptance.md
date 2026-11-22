@@ -17,6 +17,7 @@ maps protocol and MCP operations to desktop routes and verification.
 | #147, #148, #152 | Resolved locally | The packaged CITnLO worker accepts equivalent desktop and MCP capture settings, releases capture on disable, refuses over-budget captures without preventing sibling inspection, and returns captured draw comparisons, textures and a selected shader-trace vertex. Desktop and MCP share a GDB listener and lease. AZAHAR refuses GDB and advanced capture in both clients. |
 | #153 | Resolved locally | The mounted palette test adds, lists, enables and removes a cheat, cancels a destructive action, and browses guest storage. Forms use approved handles for host assets. CIA installation, system regeneration, and specialist peripheral operations still lack an owned native fixture in this test family. |
 | #76 | Resolved locally | Clang and devkitARM GCC builds of the owned fixture bind only to the guest that loaded them. Desktop and MCP return the same refusal for the other compiler's ELF and for a rebuild with shifted layout, and the same symbolized locations, which match `llvm-nm` and `llvm-addr2line`. Two sessions resolve `thumb_tick` to their own builds. Overwriting the content and resetting drops the binding, refuses the old ELF and accepts the rebuilt one with its new content hash. `svcExitProcess` drops the binding in the same epoch. `ctr-cli debug` repeats the refusal, binding, lookup and reset checks. |
+| #77 | Resolved locally | Clang and devkitARM GCC builds of the owned C++ fixture stop at source breakpoints and step into, over and out through ARM to Thumb calls, a linker veneer, a method and an inlined function, matching `llvm-addr2line -i` and `llvm-objdump --line-numbers`. Breakpoints re-arm after reset and after a rebuild with shifted layout, and stay pending for an ELF that no longer matches. A stripped ELF is refused. Excerpts are refused outside source roots or with a changed MD5. The CPU inspector toggles a breakpoint from a source row. `ctr-cli debug` repeats the breakpoint and step checks. Only CITnLO was tested. |
 | #154 | In progress | Per-operation classifications, Windows mock coverage, packaged debugger smoke, and native desktop/MCP effect and refusal comparisons are mapped. Full release acceptance still needs the fixture coverage marked pending in the inventory. |
 
 The [desktop native tests](../crates/desktop/tests/native_inspector.rs)
@@ -26,8 +27,8 @@ ran on Windows with the 0.1.2 software-renderer workers from
 [the owned ARM/Thumb ELF and 3DSX](../fixtures/debugger/fixture.c) built by
 [build-debug-fixture.py](../tools/build-debug-fixture.py). The mounted and
 native GPU tests also use the local `t03.3dsx` fixture. Absolute ELF labels
-are tied to the epoch and the selected ELF hash. Verified relocation and
-source navigation remain tracked in #76 and #77. Memory reads use the active
+are tied to the epoch and the selected ELF hash. Source navigation is
+covered by #76 and #77; relocated CRO modules stay raw addresses. Memory reads use the active
 guest process. The GPU resource inspector shows captured physical addresses,
 which are distinct from the virtual addresses used by the memory editor.
 

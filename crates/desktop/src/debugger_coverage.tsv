@@ -72,6 +72,11 @@ debug	settings_get	palette	read	-	-	fixture pending
 debug	settings_list	inspector polling	read	-	-	fixture pending
 debug	settings_set	inspector rows	control	deterministic_async for deterministic_async_operations	-	fixture pending
 debug	shader_trace	inspector rows	control	-	-	GPU
+debug	source_breakpoint_remove	CPU inspector	control	-	-	Source debugging
+debug	source_breakpoint_set	CPU inspector	control	-	-	Source debugging
+debug	source_breakpoints	CPU inspector	read	-	-	Source debugging
+debug	source_excerpt	CPU inspector	read	-	-	Source debugging
+debug	source_step	CPU inspector	control	-	-	Source debugging
 debug	state_hash	palette	control if dump is set	state_hash	-	fixture pending
 debug	states	Snapshots inspector	read	-	-	Snapshots
 debug	status	session status	read	-	Cached session summaries and gauges	fixture pending

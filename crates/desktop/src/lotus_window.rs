@@ -4556,9 +4556,10 @@ impl LotusWindow {
                                     .text_xs()
                             };
                             let line = with_tooltip(
-                                line.when(current == Panel::Cpu && row.lane == "PC", |line| {
-                                    line.bg(theme.surface_active)
-                                })
+                                line.when(
+                                    current == Panel::Cpu && matches!(row.lane, "PC" | "Line"),
+                                    |line| line.bg(theme.surface_active),
+                                )
                                 .when(show_lane, |line| {
                                     line.child(
                                         div()

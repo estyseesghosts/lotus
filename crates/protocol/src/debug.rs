@@ -118,6 +118,28 @@ pub enum DebugCommand {
     ResolveSymbol {
         query: String,
     },
+    /// Execute breakpoints at every statement start of `file:line` in the bound ELF.
+    /// The host keeps the source location and re-resolves it for each new binding.
+    SourceBreakpointSet {
+        file: String,
+        line: u32,
+    },
+    SourceBreakpointRemove {
+        id: u64,
+    },
+    SourceBreakpoints,
+    /// Step to the next statement start of a different line, within an instruction budget.
+    SourceStep {
+        core: u32,
+        mode: SourceStepMode,
+        max_instructions: u32,
+    },
+    /// Lines of a bound ELF's source file, read only below a configured source root.
+    SourceExcerpt {
+        file: String,
+        line: u32,
+        context: u32,
+    },
     Deadlocks,
     CrashReport {
         core: u32,
@@ -376,6 +398,17 @@ pub enum GpuCapture {
     Draws,
     /// Every draw snapshotted with its resources.
     Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceStepMode {
+    /// Stop at the next statement, entering calls that have line information.
+    Into,
+    /// Stop at the next statement in this frame or a caller; calls run to their return.
+    Over,
+    /// Run to the caller, then report its location.
+    Out,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -709,6 +742,19 @@ impl DebugCommand {
                 Err("invalid texture surface")
             }
             Self::Symbolize { addresses } if addresses.len() > 128 => Err("symbolize cap 128"),
+            Self::SourceBreakpointSet { file, line } | Self::SourceExcerpt { file, line, .. }
+                if file.is_empty() || file.len() > 1024 || *line == 0 =>
+            {
+                Err("source file 1..1024 bytes and line from 1")
+            }
+            Self::SourceExcerpt { context, .. } if *context > 32 => Err("excerpt context 0..32"),
+            Self::SourceStep {
+                core,
+                max_instructions,
+                ..
+            } if *core > 3 || !(1..=100_000).contains(max_instructions) => {
+                Err("source step core 0..3, max_instructions 1..100000")
+            }
             Self::ResolveSymbol { query } if query.len() > 1024 => {
                 Err("symbol query exceeds budget")
             }
@@ -845,6 +891,9 @@ impl DebugCommand {
                 | Self::ShaderTrace { .. }
                 | Self::Surface { .. }
                 | Self::LoadSymbols { .. }
+                | Self::SourceBreakpointSet { .. }
+                | Self::SourceBreakpointRemove { .. }
+                | Self::SourceStep { .. }
                 | Self::RunTo { .. }
                 | Self::StepOver { .. }
                 | Self::StepOut { .. }

@@ -1101,6 +1101,33 @@ impl Loops {
             } else {
                 value["disassembly_error"] = "The worker did not return a program counter".into();
             }
+            // The source around the shown code's DWARF line (#77), with the source
+            // breakpoints so the inspector can mark and toggle lines.
+            let source = &value["disassembly"]["source"];
+            let location = source["file"].as_str().map(str::to_owned).zip(
+                source["line"]
+                    .as_u64()
+                    .and_then(|line| u32::try_from(line).ok()),
+            );
+            if let Some((file, line)) = location {
+                let excerpt = DebugCommand::SourceExcerpt {
+                    file,
+                    line,
+                    context: 6,
+                };
+                for (key, command) in [
+                    ("source_excerpt", excerpt),
+                    ("source_breakpoints", DebugCommand::SourceBreakpoints),
+                ] {
+                    match self.dispatch_debug(target, &command).await {
+                        Ok(reply) if target.accepts_reply(&reply) => value[key] = reply,
+                        Ok(_) => {
+                            return Err(io::Error::new(io::ErrorKind::Interrupted, "Guest changed"))
+                        }
+                        Err(error) => value[format!("{key}_error")] = error.to_string().into(),
+                    }
+                }
+            }
         }
         if panel == Panel::Memory {
             if let Some(address) = inspection::memory_address(offset) {
@@ -1529,6 +1556,7 @@ impl Loops {
                             DebugCommand::Step { .. }
                                 | DebugCommand::StepOver { .. }
                                 | DebugCommand::StepOut { .. }
+                                | DebugCommand::SourceStep { .. }
                                 | DebugCommand::RunTo { .. }
                                 | DebugCommand::ReverseStep { .. }
                                 | DebugCommand::WriteRegister { .. }

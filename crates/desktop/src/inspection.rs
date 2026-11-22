@@ -595,6 +595,89 @@ fn clipped(text: &str, limit: usize) -> String {
     format!("{}…", &text[..end])
 }
 
+/// Whether a source breakpoint names `path`: its resolved path when armed, else the
+/// file it was set with, matched as a path suffix like the host's `matching_files`.
+fn names_file(breakpoint: &Value, path: &str) -> bool {
+    let path = path.replace('\\', "/");
+    let named = breakpoint["path"]
+        .as_str()
+        .or_else(|| breakpoint["file"].as_str())
+        .map(|file| file.replace('\\', "/"));
+    named.is_some_and(|file| {
+        path == file
+            || path
+                .strip_suffix(&file)
+                .is_some_and(|prefix| prefix.ends_with('/'))
+    })
+}
+
+/// CPU rows for the source around the shown code (#77). "Line" marks the line of the
+/// disassembled address, "● " a line with a source breakpoint; a row toggles it.
+fn source_rows(value: &Value, rows: &mut Vec<Row>) {
+    if let Some(error) = value["source_excerpt_error"].as_str() {
+        rows.push(Row {
+            lane: "Source",
+            key: "Source unavailable".into(),
+            value: clipped(error, 300),
+            action: None,
+        });
+    }
+    if let Some(error) = value["source_breakpoints_error"].as_str() {
+        rows.push(Row {
+            lane: "Source",
+            key: "Breakpoints unavailable".into(),
+            value: clipped(error, 300),
+            action: None,
+        });
+    }
+    let excerpt = &value["source_excerpt"];
+    let (Some(path), Some(lines)) = (excerpt["file"].as_str(), excerpt["lines"].as_array()) else {
+        return;
+    };
+    let current = excerpt["line"].as_u64();
+    let breakpoints: Vec<&Value> = value["source_breakpoints"]["source_breakpoints"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|breakpoint| names_file(breakpoint, path))
+        .collect();
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    rows.push(Row {
+        lane: "Source",
+        key: clipped(name, 120),
+        value: match excerpt["checksum"].as_str() {
+            Some("md5_verified") => "Matches the ELF's DWARF MD5".into(),
+            _ => "The ELF records no MD5 for this file; contents are unverified".into(),
+        },
+        action: None,
+    });
+    for entry in lines.iter().take(65) {
+        let Some(line) = entry["line"].as_u64().and_then(|l| u32::try_from(l).ok()) else {
+            continue;
+        };
+        let set = breakpoints
+            .iter()
+            .find(|breakpoint| breakpoint["line"].as_u64() == Some(u64::from(line)))
+            .and_then(|breakpoint| breakpoint["id"].as_u64());
+        rows.push(Row {
+            lane: if Some(u64::from(line)) == current {
+                "Line"
+            } else {
+                "Source"
+            },
+            key: format!("{}{line}", if set.is_some() { "● " } else { "" }),
+            value: clipped(entry["text"].as_str().unwrap_or(""), 512),
+            action: Some(match set {
+                Some(id) => D::SourceBreakpointRemove { id },
+                None => D::SourceBreakpointSet {
+                    file: path.to_owned(),
+                    line,
+                },
+            }),
+        });
+    }
+}
+
 pub(crate) fn json_preview(value: &Value, limit: usize) -> String {
     // The slice writer stops serialization at the display limit, including
     // nested data in a capture. A whole artifact need not be encoded again.
@@ -744,6 +827,7 @@ impl Inspection {
                     action: None,
                 });
             }
+            source_rows(value, &mut rows);
             if let Some(assembly) = value["disassembly"]["assembly"].as_str() {
                 let pc = value["registers"][15].as_u64();
                 for line in assembly

@@ -109,6 +109,10 @@ impl DebugImage {
         })
     }
 
+    pub(crate) fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Why this binding no longer describes the guest, if it doesn't.
     pub(crate) fn stale(&self, epoch: u64, regions: &Value) -> Option<String> {
         if epoch != self.epoch {
@@ -144,14 +148,24 @@ impl DebugImage {
 /// A session's binding, plus why the last one was dropped.
 #[derive(Default)]
 pub(crate) struct SymbolSlot {
-    pub image: Option<DebugImage>,
+    pub image: Option<std::sync::Arc<DebugImage>>,
     dropped: Option<String>,
+    /// The last bound ELF asset, kept after a drop so source breakpoints can re-bind it.
+    asset: Option<String>,
+    /// The inline view of the last source step's stop (lotus#77).
+    pub(crate) presented: Option<crate::source_debug::Presented>,
 }
 
 impl SymbolSlot {
     pub(crate) fn bind(&mut self, image: DebugImage) {
-        self.image = Some(image);
+        self.asset = Some(image.elf_asset.clone());
+        self.image = Some(std::sync::Arc::new(image));
         self.dropped = None;
+        self.presented = None;
+    }
+
+    pub(crate) fn asset(&self) -> Option<&str> {
+        self.asset.as_deref()
     }
 
     /// Why no binding is available, including why the last one was dropped.

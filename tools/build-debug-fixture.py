@@ -12,7 +12,7 @@ import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument("output", type=Path)
-parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence"],default="debugger")
+parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence","source"],default="debugger")
 parser.add_argument("--gcc", help="devkitARM arm-none-eabi-gcc executable (uses matching objcopy)")
 parser.add_argument("--define", action="append", default=[], help="preprocessor macro for a fixture variant")
 args = parser.parse_args()
@@ -28,10 +28,14 @@ elf = out / (args.fixture+".elf")
 command = [compiler, "-mcpu=mpcore", "-marm", "-mfloat-abi=soft", "-O1", "-g", "-gdwarf-4",
            "-ffreestanding", "-fno-builtin", "-fno-omit-frame-pointer", "-fno-unwind-tables",
            "-fno-asynchronous-unwind-tables", "-nostdlib", "-Wl,--build-id=none",
-           "-Wl,-T,"+str(fixtures / "debugger/link.ld"), str(source / "fixture.c"), "-o", str(elf)]
+           "-Wl,-T,"+str(fixtures / "debugger/link.ld"), str(next(source.glob("fixture.c*"))), "-o", str(elf)]
 if args.fixture == "divergence":  # VFP probes; other fixtures keep their soft-float builds
     command[command.index("-mfloat-abi=soft")] = "-mfloat-abi=softfp"
     command.insert(1, "-mfpu=vfpv2")
+if args.fixture == "source":  # lotus#77: C++, one row per statement, DWARF 5 file MD5s
+    command[command.index("-O1")] = "-O0"
+    command[command.index("-gdwarf-4")] = "-gdwarf-5"
+    command[1:1] = ["-fno-exceptions", "-fno-rtti"]
 command[1:1] = ["-D"+name for name in args.define]
 if args.gcc:  # devkitARM defaults to -mtp=cp15, which GCC rejects for 16-bit Thumb; fixtures use no TLS
     command.insert(1, "-mtp=soft")

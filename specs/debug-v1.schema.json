@@ -442,6 +442,25 @@
         }
       ]
     },
+    "SourceStepMode": {
+      "oneOf": [
+        {
+          "const": "into",
+          "description": "Stop at the next statement, entering calls that have line information.",
+          "type": "string"
+        },
+        {
+          "const": "over",
+          "description": "Stop at the next statement in this frame or a caller; calls run to their return.",
+          "type": "string"
+        },
+        {
+          "const": "out",
+          "description": "Run to the caller, then report its location.",
+          "type": "string"
+        }
+      ]
+    },
     "StorageArea": {
       "enum": [
         "nand",
@@ -1085,6 +1104,122 @@
       "required": [
         "operation",
         "query"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Execute breakpoints at every statement start of `file:line` in the bound ELF.\nThe host keeps the source location and re-resolves it for each new binding.",
+      "properties": {
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "source_breakpoint_set",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "file",
+        "line"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "source_breakpoint_remove",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "id"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "operation": {
+          "const": "source_breakpoints",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Step to the next statement start of a different line, within an instruction budget.",
+      "properties": {
+        "core": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_instructions": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/$defs/SourceStepMode"
+        },
+        "operation": {
+          "const": "source_step",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "core",
+        "mode",
+        "max_instructions"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Lines of a bound ELF's source file, read only below a configured source root.",
+      "properties": {
+        "context": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "file": {
+          "type": "string"
+        },
+        "line": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "operation": {
+          "const": "source_excerpt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation",
+        "file",
+        "line",
+        "context"
       ],
       "type": "object"
     },
