@@ -65,20 +65,23 @@ pub fn export(
         {
             return Err(invalid("only native screen captures can be included"));
         }
-        let mut native = match host.read_artifact(uri) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                observations
-                    .push(json!({"uri": uri, "confidence": "unknown", "status": "missing"}));
-                continue;
-            }
-            Err(error) => return Err(error),
-        };
-        if artifact.sha256 != reference.sha256 || hash(&native) != reference.sha256 {
+        if artifact.sha256 != reference.sha256 {
             observations
                 .push(json!({"uri": uri, "confidence": "unknown", "status": "hash_mismatch"}));
             continue;
         }
+        let mut native = match host.read_artifact(uri) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let status = match error.kind() {
+                    io::ErrorKind::NotFound => "missing",
+                    io::ErrorKind::InvalidData => "hash_mismatch",
+                    _ => return Err(error),
+                };
+                observations.push(json!({"uri": uri, "confidence": "unknown", "status": status}));
+                continue;
+            }
+        };
         let png = crate::screenshot::encode_png(&mut native, artifact.width, artifact.height)?;
         images.push(json!({
             "uri": uri, "confidence": "measured", "screen": artifact.screen,

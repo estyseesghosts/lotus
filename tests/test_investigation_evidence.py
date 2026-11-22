@@ -59,6 +59,16 @@ def run(server, worker, fixture, output):
         assert exported["bytes"] < 1024 * 1024
         assert investigation(original, "export", **capture) == exported
         bundle = exported["bundle"]
+        rejected = refs[1]["uri"]
+        artifact = storage / "artifacts" / (rejected.split("/")[-1] + ".bgra")
+        with artifact.open("ab") as file:
+            file.write(b"unexpected trailing bytes")
+        corrupt = investigation(original, "export", **dict(capture, screenshots=[rejected]))
+        observed = investigation(original, "bundle", bundle=corrupt["uri"])
+        assert not observed["images"]
+        assert observed["screenshot_observations"] == [
+            {"uri": rejected, "confidence": "unknown", "status": "hash_mismatch"},
+        ]
     finally:
         original.close()
 

@@ -3150,16 +3150,22 @@ impl Supervisor {
     /// evicted or released URI fails with `NotFound` and says so.
     pub fn read_artifact(&self, uri: &str) -> io::Result<Vec<u8>> {
         let (artifact, path) = lock(&self.artifacts).open_artifact(uri)?;
-        let data = fs::read(path).map_err(|error| {
+        let file = fs::File::open(path).map_err(|error| {
             if error.kind() == io::ErrorKind::NotFound {
                 io::Error::new(io::ErrorKind::NotFound, "artifact expired while being read")
             } else {
                 error
             }
         })?;
+        let mut data = Vec::new();
+        file.take(artifact.bytes as u64 + 1)
+            .read_to_end(&mut data)?;
         if data.len() != artifact.bytes || format!("{:x}", Sha256::digest(&data)) != artifact.sha256
         {
-            return Err(io::Error::other("artifact identity mismatch"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "artifact identity mismatch",
+            ));
         }
         Ok(data)
     }
