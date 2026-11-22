@@ -377,6 +377,39 @@ pub struct Inspection {
     pub draws: Option<Arc<Vec<DrawHeader>>>,
     pub draw_artifact: Option<DrawArtifact>,
     pub(crate) draw_textures: Vec<DrawTexture>,
+    #[cfg(feature = "silvestris-ui")]
+    pub(crate) breakpoints: Option<Arc<BreakpointList>>,
+    #[cfg(feature = "silvestris-ui")]
+    pub(crate) instruction_width: Option<u32>,
+}
+
+#[cfg(feature = "silvestris-ui")]
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct BreakpointList {
+    pub(crate) breakpoints: Vec<BreakpointEntry>,
+    pub(crate) execution_mode: Option<String>,
+    pub(crate) watchpoints: Option<String>,
+    pub(crate) maximum: Option<usize>,
+}
+
+#[cfg(feature = "silvestris-ui")]
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct BreakpointEntry {
+    pub(crate) id: u64,
+    pub(crate) address: u32,
+    pub(crate) length: u32,
+    pub(crate) kind: lotus_protocol::debug::BreakpointKind,
+    pub(crate) hits: Option<u64>,
+    pub(crate) host_configuration: Option<BreakpointSettings>,
+}
+
+#[cfg(feature = "silvestris-ui")]
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct BreakpointSettings {
+    pub(crate) process: Option<u32>,
+    pub(crate) hit_after: u64,
+    pub(crate) condition: Option<lotus_protocol::debug::Condition>,
+    pub(crate) log: Option<String>,
 }
 
 /// An immutable artifact from a completed GpuDraw request.
@@ -563,6 +596,16 @@ impl Inspection {
                 }
             }
         }
+        #[cfg(feature = "silvestris-ui")]
+        let breakpoints = (panel == Panel::Breakpoints)
+            .then(|| {
+                let entries = value["breakpoints"].as_array()?;
+                if entries.len() > 64 {
+                    return None;
+                }
+                BreakpointList::deserialize(value).ok().map(Arc::new)
+            })
+            .flatten();
         if matches!(panel, Panel::Timeline | Panel::Logs | Panel::Ipc) {
             if let Some(events) = value["events"].as_array() {
                 for event in events.iter().take(EVENT_PAGE_SIZE) {
@@ -765,6 +808,16 @@ impl Inspection {
             draws: draw_headers,
             draw_artifact: None,
             draw_textures,
+            #[cfg(feature = "silvestris-ui")]
+            breakpoints,
+            #[cfg(feature = "silvestris-ui")]
+            instruction_width: value["disassembly"]["thumb"].as_bool().map(|thumb| {
+                if thumb {
+                    2
+                } else {
+                    4
+                }
+            }),
         }
     }
 
@@ -779,6 +832,10 @@ impl Inspection {
             draws: None,
             draw_artifact: None,
             draw_textures: Vec::new(),
+            #[cfg(feature = "silvestris-ui")]
+            breakpoints: None,
+            #[cfg(feature = "silvestris-ui")]
+            instruction_width: None,
         }
     }
     pub(crate) fn compare_draws(first: &Value, second: &Value, epoch: u64) -> Self {
@@ -814,6 +871,10 @@ impl Inspection {
             draws: None,
             draw_artifact: None,
             draw_textures: Vec::new(),
+            #[cfg(feature = "silvestris-ui")]
+            breakpoints: None,
+            #[cfg(feature = "silvestris-ui")]
+            instruction_width: None,
         }
     }
     pub fn draw_diff(before: &Value, after: &Value) -> Vec<String> {
@@ -925,6 +986,10 @@ impl Inspection {
             draws: None,
             draw_artifact: None,
             draw_textures: Vec::new(),
+            #[cfg(feature = "silvestris-ui")]
+            breakpoints: None,
+            #[cfg(feature = "silvestris-ui")]
+            instruction_width: None,
         })
     }
 }

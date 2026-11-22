@@ -163,6 +163,20 @@ returns raw BGRA as `lotus://artifact/...` links, including for clients without 
 size/hash. MCP uses stdio. The GDB tool below opens a separate loopback
 debugger listener on request.
 
+### Breakpoint configuration
+
+CITnLO's `breakpoints` reply lists IDs, locations, kinds and hit counts. Lotus adds
+`host_configuration` to entries whose creation or configuration this host
+observed in the current guest epoch. It contains the acknowledged `process`,
+`hit_after`, `condition` and `log` values. An absent field means the settings
+are unavailable. The native request schema is unchanged.
+
+In the desktop CPU inspector, click a disassembled instruction to open
+Breakpoints at that address. Select a listed breakpoint to configure or remove
+it. Changes require host control and respect the debugger lease. A guest epoch
+change clears pending edits. CITnLO uses instruction stepping while a memory
+watchpoint is armed.
+
 ### GDB listener (#152)
 
 On a loaded CITnLO session, open **Debug → GDB** to start a listener, copy its

@@ -119,6 +119,75 @@ pub struct NativeSession {
     run_target: Option<u64>,
     /// Live preview counters for telemetry.
     preview_metrics: crate::telemetry::PreviewMetrics,
+    breakpoint_configuration: BreakpointConfiguration,
+}
+
+/// The pinned worker lists breakpoint identity and hits, but omits settings
+/// sent via BreakpointConfigure. Track acknowledgments in the same worker lock.
+#[derive(Debug, Default)]
+struct BreakpointConfiguration {
+    epoch: u64,
+    entries: BTreeMap<u64, Value>,
+}
+
+impl BreakpointConfiguration {
+    fn observe(
+        &mut self,
+        epoch: u64,
+        command: &lotus_protocol::debug::DebugCommand,
+        result: &mut Value,
+    ) {
+        use lotus_protocol::debug::DebugCommand as D;
+        if self.epoch != epoch {
+            self.epoch = epoch;
+            self.entries.clear();
+        }
+        match command {
+            D::BreakpointSet { .. } if self.entries.len() < 64 => {
+                if let Some(id) = result["id"].as_u64() {
+                    self.entries.insert(
+                        id,
+                        serde_json::json!({
+                            "process": null, "hit_after": 0, "condition": null, "log": null,
+                        }),
+                    );
+                }
+            }
+            D::BreakpointConfigure {
+                id,
+                process,
+                hit_after,
+                condition,
+                log,
+            } if result["configured"].as_u64() == Some(*id) => {
+                if self.entries.len() < 64 || self.entries.contains_key(id) {
+                    self.entries.insert(*id, serde_json::json!({
+                        "process": process, "hit_after": hit_after, "condition": condition, "log": log,
+                    }));
+                }
+            }
+            D::BreakpointRemove { id } => {
+                self.entries.remove(id);
+            }
+            D::Breakpoints => {
+                if let Some(entries) = result["breakpoints"].as_array_mut() {
+                    self.entries.retain(|id, _| {
+                        entries
+                            .iter()
+                            .any(|entry| entry["id"].as_u64() == Some(*id))
+                    });
+                    for entry in entries {
+                        if let Some(settings) =
+                            entry["id"].as_u64().and_then(|id| self.entries.get(&id))
+                        {
+                            entry["host_configuration"] = settings.clone();
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Frames one `run` advances before the worker pauses itself (`run` accepts 1-600,
@@ -173,6 +242,7 @@ impl NativeSession {
             kill: std::sync::Arc::default(),
             run_target: None,
             preview_metrics: crate::telemetry::PreviewMetrics::default(),
+            breakpoint_configuration: BreakpointConfiguration::default(),
         };
         *session
             .kill
@@ -236,6 +306,8 @@ impl NativeSession {
             self.refresh_profile().await?;
         }
         result["profile_hash"] = self.profile_hash.clone().into();
+        self.breakpoint_configuration
+            .observe(self.worker.epoch(), command, &mut result);
         Ok(result)
     }
 

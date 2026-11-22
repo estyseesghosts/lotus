@@ -63,7 +63,7 @@ impl Field {
     }
 }
 
-fn parse_integer(text: &str, signed: bool) -> Result<Value, String> {
+pub(crate) fn parse_integer(text: &str, signed: bool) -> Result<Value, String> {
     let error = || "Expected an in-range decimal or 0x hexadecimal integer".to_string();
     let (negative, digits) = text.strip_prefix('-').map_or((false, text), |n| (true, n));
     let (radix, digits) = digits

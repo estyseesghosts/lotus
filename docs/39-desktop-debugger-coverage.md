@@ -17,10 +17,10 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `audio_focus` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - |
 | `backtrace` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
 | `boot_home_menu` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
-| `breakpoint_configure` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
-| `breakpoint_remove` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
-| `breakpoint_set` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
-| `breakpoints` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - |
+| `breakpoint_configure` | [Breakpoint manager](../crates/desktop/src/lotus_window/breakpoints.rs) | control | - | - |
+| `breakpoint_remove` | [Breakpoint manager](../crates/desktop/src/lotus_window/breakpoints.rs) | control | - | - |
+| `breakpoint_set` | [Breakpoint manager](../crates/desktop/src/lotus_window/breakpoints.rs) | control | - | - |
+| `breakpoints` | [Breakpoint manager](../crates/desktop/src/lotus_window/breakpoints.rs) | read | - | Settings shown when acknowledged by this host in the current guest epoch. |
 | `capture_scaled` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
 | `cheat_add` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
 | `cheat_enable` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |

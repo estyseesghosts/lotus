@@ -40,6 +40,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "palette" => Some("lotus_window/command_palette.rs"),
             "GDB inspector" => Some("lotus_window/gdb_panel.rs"),
             "GPU capture form" => Some("lotus_window/gpu_capture.rs"),
+            "Breakpoint manager" => Some("lotus_window/breakpoints.rs"),
             "external only" | "unavailable" if *detail != "-" => None,
             _ => {
                 return Err(format!(

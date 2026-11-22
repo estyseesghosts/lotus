@@ -50,6 +50,8 @@ use crate::tiling::{self, DividerDrag, SessionDrag, Source, Target};
 use lotus_protocol::debug::{DebugCommand as D, GpuCapture};
 
 #[cfg(feature = "silvestris-ui")]
+mod breakpoints;
+#[cfg(feature = "silvestris-ui")]
 mod command_palette;
 #[cfg(feature = "silvestris-ui")]
 mod gdb_panel;
@@ -246,6 +248,8 @@ pub struct LotusWindow {
     toggled_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
     inspector_state: InspectorState,
+    #[cfg(feature = "silvestris-ui")]
+    breakpoint_panels: BTreeMap<SessionTarget, breakpoints::BreakpointPanel>,
     surface_image: Option<Arc<RenderImage>>,
     surface_target: Option<SessionTarget>,
     error: String,
@@ -413,6 +417,8 @@ impl LotusWindow {
             registers: None,
             inspection: None,
             inspector_state: InspectorState::default(),
+            #[cfg(feature = "silvestris-ui")]
+            breakpoint_panels: BTreeMap::new(),
             debug_request: None,
             toggled_debug_details: BTreeSet::new(),
             inspection_panel: {
@@ -794,6 +800,9 @@ impl LotusWindow {
         }
         self.retain_current_inspection(cx);
         self.inspector_state.retain(&self.sessions);
+        #[cfg(feature = "silvestris-ui")]
+        self.breakpoint_panels
+            .retain(|target, _| target.resolve(&self.sessions).is_some());
         #[cfg(feature = "silvestris-ui")]
         self.command_palettes
             .retain(|target, _| target.resolve(&self.sessions).is_some());
@@ -3539,7 +3548,7 @@ impl LotusWindow {
     fn debug_details_visible(&self, request: &DebugRequest) -> bool {
         let show_by_default = !matches!(
             (request.panel, request.native_command()),
-            (Panel::Gpu, Some(D::GpuConfigure { .. }))
+            (Panel::Gpu, Some(D::GpuConfigure { .. })) | (Panel::Breakpoints, _)
         );
         show_by_default != self.toggled_debug_details.contains(&request.id)
     }
@@ -4237,6 +4246,15 @@ impl LotusWindow {
                 panel = panel.children(self.render_saved_textures(&snap.view, cx));
             }
         }
+        #[cfg(feature = "silvestris-ui")]
+        if let Some(target) = target.as_ref().filter(|_| current == Panel::Breakpoints) {
+            if let Some(manager) = snapshot
+                .and_then(|snapshot| snapshot.view.breakpoints.as_deref())
+                .map(|list| self.render_breakpoint_manager(target, list, cx))
+            {
+                return panel.child(manager);
+            }
+        }
         if let Some(target) = target.as_ref().filter(|_| {
             current != Panel::Result && snapshot.is_none_or(|snapshot| snapshot.offset.is_some())
         }) {
@@ -4369,6 +4387,8 @@ impl LotusWindow {
         let show_lane = width >= 360.0;
         let key_width = (width * 0.36).clamp(90.0, 220.0);
         let rows = view.rows.clone();
+        #[cfg(feature = "silvestris-ui")]
+        let instruction_width = view.instruction_width;
         let weak = cx.entity().downgrade();
         let control = self.control;
         #[cfg(not(feature = "silvestris-ui"))]
@@ -4389,6 +4409,13 @@ impl LotusWindow {
                                 .filter(|command| control || !command.mutates());
                             let tooltip = format!("{}\n{}", row.key, row.value);
                             #[cfg(feature = "silvestris-ui")]
+                            let jump = (current == Panel::Cpu && row.key == "instruction")
+                                .then(|| {
+                                    breakpoints::instruction_address(&row.value)
+                                        .zip(instruction_width)
+                                })
+                                .flatten();
+                            #[cfg(feature = "silvestris-ui")]
                             let line = silvestris::controls::table::code_row(
                                 ("inspection-row", index),
                                 28.0,
@@ -4408,7 +4435,7 @@ impl LotusWindow {
                                     .font_family(theme.mono)
                                     .text_xs()
                             };
-                            with_tooltip(
+                            let line = with_tooltip(
                                 line.when(show_lane, |line| {
                                     line.child(
                                         div()
@@ -4429,8 +4456,23 @@ impl LotusWindow {
                                     div().flex_1().min_w_0().truncate().child(row.value.clone()),
                                 ),
                                 tooltip,
-                            )
-                            .when_some(action, |element, command| {
+                            );
+                            #[cfg(feature = "silvestris-ui")]
+                            if let (Some((address, length)), Some(target)) = (jump, target.as_ref())
+                            {
+                                let target = target.clone();
+                                return line
+                                    .debug_selector(move || format!("instruction-{address:08x}"))
+                                    .cursor_pointer()
+                                    .hover(|style| style.bg(theme.surface_hover))
+                                    .on_click(move |_, _, cx| {
+                                        let _ = weak.update(cx, |view, cx| {
+                                            view.jump_to_breakpoint(&target, address, length);
+                                            cx.notify();
+                                        });
+                                    });
+                            }
+                            line.when_some(action, |element, command| {
                                 element
                                     .cursor_pointer()
                                     .hover(|style| style.bg(theme.surface_hover))

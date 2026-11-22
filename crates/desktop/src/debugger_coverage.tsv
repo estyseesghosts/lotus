@@ -5,10 +5,10 @@ debug	audio_capture	inspector actions	control	-	-
 debug	audio_focus	inspector actions	control	-	-
 debug	backtrace	palette	read	-	-
 debug	boot_home_menu	palette	control	-	-
-debug	breakpoint_configure	palette	control	-	-
-debug	breakpoint_remove	palette	control	-	-
-debug	breakpoint_set	palette	control	-	-
-debug	breakpoints	inspector polling	read	-	-
+debug	breakpoint_configure	Breakpoint manager	control	-	-
+debug	breakpoint_remove	Breakpoint manager	control	-	-
+debug	breakpoint_set	Breakpoint manager	control	-	-
+debug	breakpoints	Breakpoint manager	read	-	Settings shown when acknowledged by this host in the current guest epoch.
 debug	capture_scaled	palette	read	-	-
 debug	cheat_add	palette	control	-	-
 debug	cheat_enable	palette	control	-	-
