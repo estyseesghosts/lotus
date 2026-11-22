@@ -770,6 +770,7 @@ mod tests {
                     target: target.clone(),
                     panel: Panel::Result,
                     offset: None,
+                    cpu: Default::default(),
                     view: Arc::new(inspection::Inspection::from_value(
                         &serde_json::json!({"old": 1}),
                         Panel::Result,
@@ -789,6 +790,7 @@ mod tests {
                     target: target.clone(),
                     panel: Panel::Result,
                     offset: None,
+                    cpu: Default::default(),
                     view: Arc::new(inspection::Inspection::from_value(
                         &serde_json::json!({"new": 2}),
                         Panel::Result,

@@ -27,13 +27,18 @@ pub(super) struct BreakpointPanel {
     form: Option<Form>,
 }
 
-struct Input {
+pub(super) struct Input {
     field: Entity<TextField>,
     _subscription: Subscription,
 }
 
 impl Input {
-    fn new(window: &mut Window, cx: &mut Context<LotusWindow>, label: &str, text: String) -> Self {
+    pub(super) fn new(
+        window: &mut Window,
+        cx: &mut Context<LotusWindow>,
+        label: &str,
+        text: String,
+    ) -> Self {
         let field = command_palette::field(window, cx, label, "", false);
         field.update(cx, |field, cx| field.set_text(text, cx));
         let subscription = cx.subscribe(&field, |_, _, _, cx| cx.notify());
@@ -43,11 +48,11 @@ impl Input {
         }
     }
 
-    fn text<'a>(&self, cx: &'a App) -> &'a str {
+    pub(super) fn text<'a>(&self, cx: &'a App) -> &'a str {
         self.field.read(cx).text()
     }
 
-    fn number<T: TryFrom<u64>>(&self, label: &str, cx: &App) -> Result<T, String> {
+    pub(super) fn number<T: TryFrom<u64>>(&self, label: &str, cx: &App) -> Result<T, String> {
         crate::debugger_palette::parse_integer(self.text(cx).trim(), false)
             .ok()
             .and_then(|result| result.as_u64())
@@ -57,7 +62,7 @@ impl Input {
             })
     }
 
-    fn render(&self, label: &str, cx: &App) -> Div {
+    pub(super) fn render(&self, label: &str, cx: &App) -> Div {
         div()
             .flex()
             .flex_col()
@@ -807,6 +812,77 @@ mod tests {
                 })
                 .unwrap();
             (view.inspection_target().unwrap(), address)
+        });
+        click(cx, "cpu-open-address");
+        cx.update(|_, cx| {
+            let view = entity.read(cx);
+            let super::cpu_panel::CpuForm::Address { input, .. } = &view.cpu_forms[&target] else {
+                panic!("address form was not open");
+            };
+            let field = input.field.clone();
+            field.update(cx, |field, cx| {
+                field.set_text(format!("0x{address:08x}"), cx)
+            });
+        });
+        click(cx, "cpu-form-submit");
+        wait(cx, "address navigation", &|view, _| {
+            view.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .cpu
+                    .address
+                    .is_some_and(|(selected, _)| selected == address)
+                    && snapshot.view.rows.iter().any(|row| {
+                        row.key == "instruction"
+                            && inspection::instruction_address(&row.value) == Some(address)
+                    })
+            })
+        });
+
+        click(cx, "cpu-core");
+        click(cx, "popup-item-1");
+        wait(cx, "core 1 registers", &|view, _| {
+            view.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.cpu.core == 1 && snapshot.view.rows.iter().any(|row| row.key == "r0")
+            })
+        });
+        click(cx, "cpu-register-0");
+        cx.update(|_, cx| {
+            let view = entity.read(cx);
+            let super::cpu_panel::CpuForm::Register {
+                input,
+                core,
+                register,
+            } = &view.cpu_forms[&target]
+            else {
+                panic!("register form was not open");
+            };
+            assert_eq!((*core, *register), (1, 0));
+            let field = input.field.clone();
+            field.update(cx, |field, cx| field.set_text("0x12345678".to_owned(), cx));
+        });
+        click(cx, "cpu-form-submit");
+        wait(cx, "core 1 r0 readback", &|view, _| {
+            view.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.cpu.core == 1
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|row| row.key == "r0" && row.value == "12345678")
+            })
+        });
+        click(cx, "cpu-core");
+        click(cx, "popup-item-0");
+        click(cx, "cpu-follow-pc");
+        wait(cx, "core 0 PC", &|view, _| {
+            view.inspection.as_ref().is_some_and(|snapshot| {
+                snapshot.cpu == inspection::CpuQuery::default()
+                    && snapshot
+                        .view
+                        .rows
+                        .iter()
+                        .any(|row| row.key == "instruction" && row.lane == "PC")
+            })
         });
         click(
             cx,

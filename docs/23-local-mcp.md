@@ -163,6 +163,15 @@ returns raw BGRA as `lotus://artifact/...` links, including for clients without 
 size/hash. MCP uses stdio. The GDB tool below opens a separate loopback
 debugger listener on request.
 
+### CPU inspector
+
+Choose a core in the CPU inspector. Follow its PC or enter an aligned guest
+address and choose ARM or Thumb. Each preview reads at most 64 bytes within
+the current guest page. Click a general-purpose register to edit it while the
+guest is paused. The host checks the guest epoch, pause state and debugger
+lease before dispatching a register edit or execution control. Run to Address
+uses the selected core's current instruction mode.
+
 ### Breakpoint configuration
 
 CITnLO's `breakpoints` reply lists IDs, locations, kinds and hit counts. Lotus adds

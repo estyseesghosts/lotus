@@ -73,7 +73,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `reverse_step` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - |
 | `rewind_configure` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | rewind_compression_queue when compression_queue is set | - |
 | `rewind_status` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
-| `run_to` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
+| `run_to` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - |
 | `run_until` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
 | `save_state` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - |
 | `scan` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
@@ -101,7 +101,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `titles` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - |
 | `trace` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - |
 | `write_memory` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
-| `write_register` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
+| `write_register` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - |
 | `write_thread_register` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - |
 
 ## MCP debugger tools
@@ -113,7 +113,7 @@ Route coverage is independent of native acceptance. The host checks [command req
 | `lotus_debug` | debug bridge | per operation | - | See the shared command inventory |
 | `lotus_gdb` | [GDB inspector](../crates/desktop/src/lotus_window/gdb_panel.rs) | control to start or stop | - | Shares the listener and client lease with the desktop (#152). CITnLO only. |
 | `lotus_read_memory` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | Dedicated viewer planned in #145 |
-| `lotus_registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | CPU inspector currently reads core 0 |
+| `lotus_registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | CPU core is selectable |
 
 ## MCP host tools
 

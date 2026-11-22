@@ -61,6 +61,7 @@ pub struct InspectionSnapshot {
     /// Present only for background polls. Explicit results have their own request ID.
     pub offset: Option<u64>,
     pub view: Arc<Inspection>,
+    pub(crate) cpu: CpuQuery,
 }
 
 pub fn snapshot_current(
@@ -285,22 +286,48 @@ impl Panel {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CpuQuery {
+    pub core: u32,
+    pub address: Option<(u32, bool)>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InspectionSelection {
     pub panel: Panel,
     page: Option<(SessionTarget, u64)>,
+    cpu: Option<(SessionTarget, CpuQuery)>,
 }
 
 impl InspectionSelection {
     pub fn first_page(panel: Panel) -> Self {
-        Self { panel, page: None }
+        Self {
+            panel,
+            page: None,
+            cpu: None,
+        }
     }
 
     pub fn with_offset(panel: Panel, target: &SessionTarget, offset: u64) -> Self {
         Self {
             panel,
             page: (offset != 0).then(|| (target.clone(), offset)),
+            cpu: None,
         }
+    }
+
+    pub(crate) fn with_cpu(mut self, target: &SessionTarget, query: CpuQuery) -> Self {
+        if self.panel == Panel::Cpu && query != CpuQuery::default() {
+            self.cpu = Some((target.clone(), query));
+        }
+        self
+    }
+
+    pub(crate) fn cpu_for(&self, target: &SessionTarget) -> CpuQuery {
+        self.cpu
+            .as_ref()
+            .filter(|(owner, _)| owner == target)
+            .map_or_else(CpuQuery::default, |(_, cpu)| *cpu)
     }
 
     pub(crate) fn offset_for(&self, target: &SessionTarget) -> u64 {
@@ -315,6 +342,7 @@ impl InspectionSelection {
 pub(crate) struct PanelState {
     offset: u64,
     back: VecDeque<u64>,
+    pub(crate) cpu: CpuQuery,
     pub(crate) selected_draw: Option<u64>,
     pub(crate) draw_a: Option<DrawArtifact>,
 }

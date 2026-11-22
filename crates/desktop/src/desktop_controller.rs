@@ -21,7 +21,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::inspection::{
-    self, DrawArtifact, Inspection, InspectionSelection, InspectionSnapshot, Panel, SessionTarget,
+    self, CpuQuery, DrawArtifact, Inspection, InspectionSelection, InspectionSnapshot, Panel,
+    SessionTarget,
 };
 use crate::presence::{self, Presence};
 use crate::ui_metrics::UiMetrics;
@@ -369,7 +370,7 @@ pub struct PendingOperation {
 /// Inspector refresh state, updated by the requests' own tasks.
 struct InspectorKeys {
     registers: Option<(SessionTarget, u64)>,
-    inspection: Option<(SessionTarget, Panel, u64, u64)>,
+    inspection: Option<(SessionTarget, InspectionSelection, u64)>,
     inspected_at: Instant,
 }
 
@@ -893,17 +894,18 @@ impl Loops {
             let selection = lock(&self.inspection_selection).clone();
             let panel = selection.panel;
             let offset = selection.offset_for(&target);
-            let view_key = (target.clone(), panel, offset, telemetry.frames);
+            let cpu = selection.cpu_for(&target);
+            let view_key = (target.clone(), selection, telemetry.frames);
             let due = {
                 let keys = lock(&state);
                 match &keys.inspection {
                     None => true,
-                    Some((old_target, old_panel, old_offset, frame)) => {
-                        (old_target, old_panel, old_offset) != (&target, &panel, &offset)
+                    Some((old_target, old_selection, frame)) => {
+                        (old_target, old_selection) != (&target, &view_key.1)
                             || if panel.live() {
                                 keys.inspected_at.elapsed() >= INSPECT_PERIOD
                             } else {
-                                paused && *frame != view_key.3
+                                paused && *frame != view_key.2
                             }
                     }
                 }
@@ -911,7 +913,12 @@ impl Loops {
             if !due {
                 continue;
             }
-            let Some(command) = panel.command(offset) else {
+            let command = if panel == Panel::Cpu {
+                Some(DebugCommand::Registers { core: cpu.core })
+            } else {
+                panel.command(offset)
+            };
+            let Some(command) = command else {
                 lock(&state).inspection = Some(view_key);
                 continue;
             };
@@ -924,7 +931,7 @@ impl Loops {
                     .timed(
                         "inspection",
                         &selected,
-                        loops.inspect(&target, panel, &command),
+                        loops.inspect(&target, panel, cpu, &command),
                     )
                     .await;
                 lock(&state).inspected_at = Instant::now();
@@ -940,10 +947,12 @@ impl Loops {
                 if loops.current(&target, generation)
                     && current.panel == panel
                     && current.offset_for(&target) == offset
+                    && current.cpu_for(&target) == cpu
                     && update.publish_inspection(InspectionSnapshot {
                         target: Some(target),
                         panel,
                         offset: Some(offset),
+                        cpu,
                         view: Arc::new(view),
                     })
                 {
@@ -957,26 +966,30 @@ impl Loops {
         &self,
         target: &SessionTarget,
         panel: Panel,
+        cpu: CpuQuery,
         command: &DebugCommand,
     ) -> io::Result<Value> {
         let mut value = self.dispatch_debug(target, command).await?;
         if panel == Panel::Cpu {
-            if let Some(pc) = value["registers"][15]
+            let pc = value["registers"][15]
                 .as_u64()
-                .and_then(|pc| u32::try_from(pc).ok())
-            {
+                .and_then(|pc| u32::try_from(pc).ok());
+            let location = cpu
+                .address
+                .or_else(|| pc.map(|pc| (pc, value["cpsr"].as_u64().unwrap_or(0) & 32 != 0)));
+            if let Some((address, thumb)) = location {
                 // Keep the automatic preview inside the guest page containing
                 // the PC. The neighboring page may not be mapped.
                 const PAGE_SIZE: u32 = 4096;
                 let command = DebugCommand::Disassemble {
-                    address: pc,
-                    length: 64.min(PAGE_SIZE - pc % PAGE_SIZE),
-                    thumb: value["cpsr"].as_u64().unwrap_or(0) & 32 != 0,
+                    address,
+                    length: 64.min(PAGE_SIZE - address % PAGE_SIZE),
+                    thumb,
                 };
                 match self.dispatch_debug(target, &command).await {
                     Ok(assembly) => value["disassembly"] = assembly,
                     Err(error) => {
-                        value["disassembly_error"] = format!("0x{pc:08x} · {error}").into();
+                        value["disassembly_error"] = format!("0x{address:08x} · {error}").into();
                     }
                 }
             } else {
@@ -1260,7 +1273,7 @@ impl Loops {
         drop(update);
         let loops = self.clone();
         tokio::spawn(async move {
-            let status = loops.run_debug(&target, action, cancellation).await;
+            let status = loops.run_debug(&target, panel, action, cancellation).await;
             let mut update = lock(&loops.published);
             if let Some(request) = update
                 .debug_requests
@@ -1316,6 +1329,7 @@ impl Loops {
     async fn run_debug(
         &self,
         target: &SessionTarget,
+        panel: Panel,
         action: Arc<DebugAction>,
         cancellation: DebugCancellation,
     ) -> DebugStatus {
@@ -1331,6 +1345,18 @@ impl Loops {
                         command,
                         Actor::Desktop,
                         &cancellation,
+                        matches!(
+                            (panel, command),
+                            (
+                                Panel::Cpu,
+                                DebugCommand::Step { .. }
+                                    | DebugCommand::StepOver { .. }
+                                    | DebugCommand::StepOut { .. }
+                                    | DebugCommand::RunTo { .. }
+                                    | DebugCommand::ReverseStep { .. }
+                                    | DebugCommand::WriteRegister { .. }
+                            ) | (Panel::Memory, DebugCommand::WriteMemory { .. })
+                        ),
                     )
                     .await
             }
@@ -1536,6 +1562,7 @@ impl Loops {
                         target: None,
                         panel: Panel::Result,
                         offset: None,
+                        cpu: Default::default(),
                         view: Arc::new(view.map_err(io::Error::other)??),
                     });
                 }
@@ -1655,6 +1682,7 @@ mod tests {
             target: Some(target.clone()),
             panel: Panel::Memory,
             offset: Some(0),
+            cpu: Default::default(),
             view: Arc::new(Inspection::from_value(
                 &serde_json::json!({"old_guest": 1}),
                 Panel::Memory,
@@ -1732,6 +1760,7 @@ mod tests {
             target: None,
             panel: Panel::Result,
             offset: None,
+            cpu: Default::default(),
             view: Arc::new(trace),
         }));
         update.debug_requests.push_back(surface_request(&target));

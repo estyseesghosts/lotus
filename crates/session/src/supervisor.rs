@@ -101,6 +101,7 @@ fn debug_cancelled() -> io::Error {
 struct DebugScope<'a> {
     target: Option<(u64, u64)>,
     cancellation: Option<&'a DebugCancellation>,
+    require_paused: bool,
 }
 
 impl DebugScope<'_> {
@@ -1793,6 +1794,7 @@ impl Supervisor {
             DebugScope {
                 target: Some((created_unix_ms, epoch)),
                 cancellation: None,
+                require_paused: false,
             },
         )
         .await
@@ -1807,10 +1809,12 @@ impl Supervisor {
         command: &lotus_protocol::debug::DebugCommand,
         actor: Actor,
         cancellation: &DebugCancellation,
+        require_paused: bool,
     ) -> io::Result<serde_json::Value> {
         let scope = DebugScope {
             target: Some(expected),
             cancellation: Some(cancellation),
+            require_paused,
         };
         let mut phase = cancellation.0.subscribe();
         tokio::select! {
@@ -1853,6 +1857,7 @@ impl Supervisor {
             DebugScope {
                 target: Some(expected),
                 cancellation: None,
+                require_paused: false,
             },
         )
         .await
@@ -2009,6 +2014,14 @@ impl Supervisor {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "debug session is stopping",
+            ));
+        }
+        if scope.require_paused
+            && (handle.playing.load(Ordering::Acquire) || native.state() != SessionState::Paused)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "Pause the guest before using this inspector action",
             ));
         }
         if let Some(feature) = command.required_feature() {

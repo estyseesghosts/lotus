@@ -61,7 +61,7 @@ debug	reverse_continue	inspector actions	control	-	-
 debug	reverse_step	inspector actions	control	-	-
 debug	rewind_configure	inspector actions	control	rewind_compression_queue when compression_queue is set	-
 debug	rewind_status	palette	read	-	-
-debug	run_to	palette	control	-	-
+debug	run_to	CPU inspector	control	-	-
 debug	run_until	palette	control	-	-
 debug	save_state	inspector actions	control	-	-
 debug	scan	palette	control	-	-
@@ -89,7 +89,7 @@ debug	threads	inspector polling	read	-	-
 debug	titles	palette	read	-	-
 debug	trace	inspector actions	control	-	-
 debug	write_memory	palette	control	-	-
-debug	write_register	palette	control	-	-
+debug	write_register	CPU inspector	control	-	-
 debug	write_thread_register	palette	control	-	-
 mcp-debug	lotus_capture	external only	read	-	Raw artifacts are exposed to external clients
 mcp-debug	lotus_capture_image	external only	read	-	Inline images are an MCP response format
@@ -105,7 +105,7 @@ mcp	lotus_list_sessions	session status	read	-	Session sidebar
 mcp	lotus_load	session controls	control	-	Asset picker
 mcp	lotus_pin_artifact	external only	control	-	External artifact retention
 mcp-debug	lotus_read_memory	palette	read	-	Dedicated viewer planned in #145
-mcp-debug	lotus_registers	inspector polling	read	-	CPU inspector currently reads core 0
+mcp-debug	lotus_registers	inspector polling	read	-	CPU core is selectable
 mcp	lotus_release_artifacts	external only	control	-	External artifact retention
 mcp	lotus_run_until	session controls	control	-	Only single-frame advance in the desktop
 mcp	lotus_session_status	session status	read	-	Cached session summaries and gauges

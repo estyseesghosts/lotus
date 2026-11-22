@@ -54,6 +54,8 @@ mod breakpoints;
 #[cfg(feature = "silvestris-ui")]
 mod command_palette;
 #[cfg(feature = "silvestris-ui")]
+mod cpu_panel;
+#[cfg(feature = "silvestris-ui")]
 mod gdb_panel;
 #[cfg(feature = "silvestris-ui")]
 mod gpu_capture;
@@ -249,6 +251,8 @@ pub struct LotusWindow {
     inspection_panel: Panel,
     inspector_state: InspectorState,
     #[cfg(feature = "silvestris-ui")]
+    cpu_forms: BTreeMap<SessionTarget, cpu_panel::CpuForm>,
+    #[cfg(feature = "silvestris-ui")]
     breakpoint_panels: BTreeMap<SessionTarget, breakpoints::BreakpointPanel>,
     surface_image: Option<Arc<RenderImage>>,
     surface_target: Option<SessionTarget>,
@@ -417,6 +421,8 @@ impl LotusWindow {
             registers: None,
             inspection: None,
             inspector_state: InspectorState::default(),
+            #[cfg(feature = "silvestris-ui")]
+            cpu_forms: BTreeMap::new(),
             #[cfg(feature = "silvestris-ui")]
             breakpoint_panels: BTreeMap::new(),
             debug_request: None,
@@ -772,6 +778,7 @@ impl LotusWindow {
                         target: Some(request.target.clone()),
                         panel: request.panel,
                         offset: None,
+                        cpu: Default::default(),
                         view: view.clone(),
                     },
                     image.clone(),
@@ -800,6 +807,9 @@ impl LotusWindow {
         }
         self.retain_current_inspection(cx);
         self.inspector_state.retain(&self.sessions);
+        #[cfg(feature = "silvestris-ui")]
+        self.cpu_forms
+            .retain(|target, _| target.resolve(&self.sessions).is_some());
         #[cfg(feature = "silvestris-ui")]
         self.breakpoint_panels
             .retain(|target, _| target.resolve(&self.sessions).is_some());
@@ -3548,7 +3558,7 @@ impl LotusWindow {
     fn debug_details_visible(&self, request: &DebugRequest) -> bool {
         let show_by_default = !matches!(
             (request.panel, request.native_command()),
-            (Panel::Gpu, Some(D::GpuConfigure { .. })) | (Panel::Breakpoints, _)
+            (Panel::Gpu, Some(D::GpuConfigure { .. })) | (Panel::Breakpoints | Panel::Cpu, _)
         );
         show_by_default != self.toggled_debug_details.contains(&request.id)
     }
@@ -3569,6 +3579,12 @@ impl LotusWindow {
             .map_or(0, PanelState::offset)
     }
 
+    fn cpu_query(&self, target: &SessionTarget) -> inspection::CpuQuery {
+        self.inspector_state
+            .panel(target, Panel::Cpu)
+            .map_or_else(inspection::CpuQuery::default, |panel| panel.cpu)
+    }
+
     fn sync_inspection_selection(&self) {
         if let Some(controller) = &self.controller {
             let panel = self.inspection_panel;
@@ -3581,6 +3597,7 @@ impl LotusWindow {
                         target,
                         self.inspection_offset(Some(target), panel),
                     )
+                    .with_cpu(target, self.cpu_query(target))
                 },
             );
             *controller.inspection_selection.lock().unwrap() = selection;
@@ -3932,6 +3949,7 @@ impl LotusWindow {
             resources: None,
         };
         match panel {
+            #[cfg(not(feature = "silvestris-ui"))]
             Panel::Cpu => vec![
                 ("Step", D::Step { core: 0, count: 1 }, false),
                 ("Over", D::StepOver { core: 0 }, false),
@@ -4235,7 +4253,16 @@ impl LotusWindow {
                     .as_ref()
                     .is_none_or(|owner| Some(owner) == target.as_ref())
                 && snapshot.offset.is_none_or(|page| page == offset)
+                && (current != Panel::Cpu
+                    || snapshot.offset.is_none()
+                    || target
+                        .as_ref()
+                        .is_some_and(|target| snapshot.cpu == self.cpu_query(target)))
         });
+        #[cfg(feature = "silvestris-ui")]
+        if let Some(target) = target.as_ref().filter(|_| current == Panel::Cpu) {
+            panel = panel.child(self.render_cpu_controls(target, snapshot, cx));
+        }
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Gpu) {
             panel = panel.children(self.render_draw_comparison_controls(
                 target,
@@ -4389,6 +4416,10 @@ impl LotusWindow {
         let rows = view.rows.clone();
         #[cfg(feature = "silvestris-ui")]
         let instruction_width = view.instruction_width;
+        #[cfg(feature = "silvestris-ui")]
+        let cpu_core = snapshot
+            .filter(|snapshot| snapshot.offset.is_some())
+            .map(|snapshot| snapshot.cpu.core);
         let weak = cx.entity().downgrade();
         let control = self.control;
         #[cfg(not(feature = "silvestris-ui"))]
@@ -4472,6 +4503,32 @@ impl LotusWindow {
                                         let _ = weak.update(cx, |view, cx| {
                                             view.jump_to_breakpoint(&target, address, length);
                                             cx.notify();
+                                        });
+                                    });
+                            }
+                            #[cfg(feature = "silvestris-ui")]
+                            if let (Some(target), Some(core), Some(register)) = (
+                                target.as_ref(),
+                                cpu_core.filter(|_| current == Panel::Cpu && row.lane == "CPU"),
+                                row.key
+                                    .strip_prefix('r')
+                                    .and_then(|index| index.parse::<u32>().ok())
+                                    .filter(|_| u32::from_str_radix(&row.value, 16).is_ok()),
+                            ) {
+                                let (target, text) = (target.clone(), row.value.clone());
+                                return line
+                                    .debug_selector(move || format!("cpu-register-{register}"))
+                                    .cursor_pointer()
+                                    .on_click(move |_, window, cx| {
+                                        let _ = weak.update(cx, |view, cx| {
+                                            view.open_cpu_register(
+                                                &target,
+                                                core,
+                                                register,
+                                                text.clone(),
+                                                window,
+                                                cx,
+                                            );
                                         });
                                     });
                             }
@@ -5881,6 +5938,7 @@ mod tests {
                 target: Some(target),
                 panel: Panel::Gpu,
                 offset: Some(0),
+                cpu: Default::default(),
                 view: Arc::new(inspection::Inspection::from_value(
                     &serde_json::json!({"draws": headers}),
                     Panel::Gpu,
