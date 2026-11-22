@@ -601,8 +601,8 @@ mod tests {
             view.preferences.values.sessions_open = true;
             view.preferences.values.sessions_width = 264.;
             view.control = true;
-            view.cards = vec!["dev".into(), "saved".into()];
-            view.sessions = vec![
+            view.cards = Arc::new(vec!["dev".into(), "saved".into()]);
+            view.sessions = Arc::new(vec![
                 summary("primary", SessionKind::Primary { card: "dev".into() }),
                 summary(
                     "copy",
@@ -610,7 +610,7 @@ mod tests {
                         parent: Some("dev".into()),
                     },
                 ),
-            ];
+            ]);
             view.selected = "primary".into();
             view.sync_shared_sources(cx);
             view
@@ -739,7 +739,10 @@ mod tests {
             let mut view = LotusWindow::new(None, McpMode::Off, window, cx);
             view.preferences.path = None;
             view.control = true;
-            view.sessions = vec![summary("copy", SessionKind::Secondary { parent: None })];
+            view.sessions = Arc::new(vec![summary(
+                "copy",
+                SessionKind::Secondary { parent: None },
+            )]);
             view.sync_shared_sources(cx);
             view
         });
@@ -751,7 +754,7 @@ mod tests {
                 view.control = false;
                 assert!(!view.source_action_current(&expected));
                 view.control = true;
-                view.sessions[0].telemetry.epoch += 1;
+                Arc::make_mut(&mut view.sessions)[0].telemetry.epoch += 1;
                 assert!(!view.source_action_current(&expected));
                 view.sync_shared_sources(cx);
                 assert!(view.source_action_current(view.source_session("session:copy").unwrap()));

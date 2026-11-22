@@ -754,7 +754,7 @@ mod tests {
             telemetry.state = SessionState::Paused;
             telemetry.epoch = 2;
             telemetry.backend_name = "CITnLO".into();
-            view.sessions = vec![SessionSummary {
+            view.sessions = Arc::new(vec![SessionSummary {
                 info: SessionInfo {
                     id: "fixture".into(),
                     kind: SessionKind::Secondary { parent: None },
@@ -762,7 +762,7 @@ mod tests {
                     created_unix_ms: 1,
                 },
                 telemetry,
-            }];
+            }]);
             view.selected = "fixture".into();
             view.inspected = "fixture".into();
             view.invoke_global(shared_commands::GlobalCommand::DebuggerCommands, window, cx);
@@ -876,15 +876,18 @@ mod tests {
                     .palette_block(&old_target, ready)
                     .unwrap()
                     .contains("gpu_capture_levels"));
-                view.sessions[0].telemetry.worker_features =
-                    Arc::new(BTreeSet::from(["gpu_capture_levels".into()]));
+                Arc::make_mut(&mut view.sessions)[0]
+                    .telemetry
+                    .worker_features = Arc::new(BTreeSet::from(["gpu_capture_levels".into()]));
                 assert!(view.palette_block(&old_target, ready).is_none());
-                view.sessions[0].telemetry.desktop_debug_lease_blocked = true;
+                Arc::make_mut(&mut view.sessions)[0]
+                    .telemetry
+                    .desktop_debug_lease_blocked = true;
                 assert!(view
                     .palette_block(&old_target, ready)
                     .unwrap()
                     .contains("lease"));
-                view.sessions[0].telemetry.epoch += 1;
+                Arc::make_mut(&mut view.sessions)[0].telemetry.epoch += 1;
                 view.ensure_command_palette(window, cx);
                 let current = view.inspection_target().unwrap();
                 assert!(view.command_palettes[&current].selected.is_none());

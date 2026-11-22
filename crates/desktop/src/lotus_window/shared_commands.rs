@@ -815,7 +815,7 @@ impl LotusWindow {
             },
             cx,
         ));
-        for (index, card) in cards.into_iter().enumerate() {
+        for (index, card) in cards.iter().cloned().enumerate() {
             entries.push(self.popup_action(
                 CommandDescriptor::action(&format!("new.copy.{index}"), &format!("Copy of {card}")),
                 move |view, _, _| {
@@ -1112,7 +1112,7 @@ mod tests {
             });
             let (view, cx) = app.add_window_view(|window, cx| {
                 let mut view = LotusWindow::test_preview(window, cx);
-                view.sessions = vec![session("a", 1)];
+                view.sessions = Arc::new(vec![session("a", 1)]);
                 view.selected = "a".into();
                 view.control = true;
                 view
@@ -1145,7 +1145,7 @@ mod tests {
             // A guest reset (new epoch) replaces the target the menu was opened for.
             cx.update(|_, cx| {
                 view.update(cx, |view, cx| {
-                    view.sessions = vec![session("a", 2)];
+                    view.sessions = Arc::new(vec![session("a", 2)]);
                     cx.notify();
                 })
             });
@@ -1171,7 +1171,7 @@ mod tests {
         });
         let (view, cx) = app.add_window_view(|window, cx| {
             let mut view = LotusWindow::test_preview(window, cx);
-            view.sessions = vec![session("a", 1)];
+            view.sessions = Arc::new(vec![session("a", 1)]);
             view.selected = "a".into();
             view.control = true;
             view
@@ -1217,10 +1217,10 @@ mod tests {
         });
         let (view, cx) = app.add_window_view(|window, cx| {
             let mut view = LotusWindow::test_preview(window, cx);
-            view.sessions = vec![session("a", 1)];
+            view.sessions = Arc::new(vec![session("a", 1)]);
             view.selected = "a".into();
             view.control = true;
-            view.assets = vec!["one.3ds".into(), "two.3ds".into()];
+            view.assets = Arc::new(vec!["one.3ds".into(), "two.3ds".into()]);
             view
         });
         cx.simulate_resize(gpui::size(px(1280.), px(880.)));
@@ -1258,7 +1258,7 @@ mod tests {
         // A reset replaces the target; its asset commands disappear with it.
         cx.update(|_, cx| {
             view.update(cx, |view, cx| {
-                view.sessions = vec![session("a", 2)];
+                view.sessions = Arc::new(vec![session("a", 2)]);
                 cx.notify();
             })
         });

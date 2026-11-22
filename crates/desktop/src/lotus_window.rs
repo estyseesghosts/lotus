@@ -228,9 +228,9 @@ pub struct LotusWindow {
     source_context: (u64, bool, String),
     controller: Option<DesktopController>,
     startup_error: String,
-    sessions: Vec<SessionSummary>,
-    cards: Vec<String>,
-    assets: Vec<String>,
+    sessions: Arc<Vec<SessionSummary>>,
+    cards: Arc<Vec<String>>,
+    assets: Arc<Vec<String>>,
     max_sessions: usize,
     control: bool,
     selected: String,
@@ -255,11 +255,10 @@ pub struct LotusWindow {
     split_held: Cell<Option<SplitPlan>>,
     /// Last resolved layout handed to the supervisor, to report only changes.
     resolved_sent: Cell<Option<workspace::Resolved>>,
-    registers: Option<(SessionTarget, Value)>,
+    registers: Option<(SessionTarget, Arc<Value>)>,
     inspection: Option<InspectionSnapshot>,
     debug_request: Option<DebugRequest>,
-    #[cfg(feature = "silvestris-ui")]
-    debug_history: Vec<DebugRequest>,
+    debug_history: Arc<std::collections::VecDeque<DebugRequest>>,
     #[cfg(feature = "silvestris-ui")]
     snapshot_forms: std::collections::BTreeMap<SessionTarget, snapshots_panel::SnapshotForm>,
     #[cfg(feature = "silvestris-ui")]
@@ -340,34 +339,24 @@ impl LotusWindow {
         });
         cx.on_blur(&focus, window, |view, _, _| view.release_input())
             .detach();
-        cx.observe_window_activation(window, |view, window, _| {
+        cx.observe_window_activation(window, |view, window, cx| {
             if let Some(controller) = &view.controller {
                 controller.ui.activation(window.is_window_active());
             }
             if !window.is_window_active() {
                 view.release_input();
                 view.end_drag();
+                cx.notify();
             }
         })
         .detach();
-        cx.observe_window_visibility(window, |view, visibility, _, _| {
+        cx.observe_window_visibility(window, |view, visibility, _, cx| {
             if let Some(controller) = &view.controller {
                 controller.set_preview_visible(visibility.is_visible());
             }
-        })
-        .detach();
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(33))
-                .await;
-            if this
-                .update(cx, |view, cx| {
-                    view.poll(cx);
-                    cx.notify();
-                })
-                .is_err()
-            {
-                break;
+            if visibility.is_visible() {
+                view.poll(cx);
+                cx.notify();
             }
         })
         .detach();
@@ -378,6 +367,33 @@ impl LotusWindow {
             Ok(controller) => (controller, String::new()),
             Err(error) => (None, error.to_string()),
         };
+        if let Some(controller) = &controller {
+            let mut updates = controller.window_updates.clone();
+            cx.spawn(async move |this, cx| {
+                let mut last_poll = None::<std::time::Instant>;
+                loop {
+                    // The heartbeat samples device assignments and keeps focus diagnostics live.
+                    // Controller publications wake the view promptly for frames and controls.
+                    tokio::select! {
+                        change = updates.changed() => if change.is_err() { break; },
+                        () = cx.background_executor().timer(Duration::from_millis(150)) => {}
+                    }
+                    // Multiple tiles and status updates can arrive in the same display interval.
+                    // One poll consumes the newest of each, including updates during the wait.
+                    if let Some(remaining) =
+                        last_poll.and_then(|at| Duration::from_millis(16).checked_sub(at.elapsed()))
+                    {
+                        cx.background_executor().timer(remaining).await;
+                    }
+                    updates.borrow_and_update();
+                    last_poll = Some(std::time::Instant::now());
+                    if this.update(cx, Self::poll).is_err() {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
         #[allow(unused_mut)]
         let mut preferences = Store::load(preferences::default_path());
         #[cfg(feature = "silvestris-ui")]
@@ -433,9 +449,9 @@ impl LotusWindow {
             source_context: (0, false, String::new()),
             controller,
             startup_error,
-            sessions: Vec::new(),
-            cards: Vec::new(),
-            assets: Vec::new(),
+            sessions: Arc::default(),
+            cards: Arc::default(),
+            assets: Arc::default(),
             max_sessions: 0,
             control: false,
             selected: String::new(),
@@ -459,8 +475,7 @@ impl LotusWindow {
             #[cfg(feature = "silvestris-ui")]
             breakpoint_panels: BTreeMap::new(),
             debug_request: None,
-            #[cfg(feature = "silvestris-ui")]
-            debug_history: Vec::new(),
+            debug_history: Arc::default(),
             #[cfg(feature = "silvestris-ui")]
             snapshot_forms: Default::default(),
             #[cfg(feature = "silvestris-ui")]
@@ -737,15 +752,83 @@ impl LotusWindow {
         let latest = controller.latest.clone();
         let preview_visible = controller.preview_visible();
         ui.poll_started();
+        let mut changed = false;
         let controllers = controller.input().controllers();
         if controllers != self.controllers {
+            changed = true;
             self.controllers = controllers;
             #[cfg(feature = "silvestris-ui")]
             self.shared_sources.update(cx, |_, cx| cx.notify());
         }
         let target = self.keyboard_target();
-        let (previews, selected, snapshot, surface, save_preferences) = {
+        let (
+            previews,
+            selected,
+            snapshot,
+            surface,
+            save_preferences,
+            _navigation_changed,
+            targets_changed,
+        ) = {
             let mut update = ui.lock_update(&latest);
+            let cards_changed = !Arc::ptr_eq(&self.cards, &update.cards);
+            let workspace_changed = self.workspace != update.workspace;
+            let sessions_changed = !Arc::ptr_eq(&self.sessions, &update.sessions);
+            let structure_changed = sessions_changed
+                && (self.sessions.len() != update.sessions.len()
+                    || self
+                        .sessions
+                        .iter()
+                        .zip(update.sessions.iter())
+                        .any(|(old, new)| !gauges::same_session_controls(old, new)));
+            let navigation_changed = structure_changed
+                || cards_changed
+                || workspace_changed
+                || self.control != update.control
+                || self.selected != update.selected
+                || (sessions_changed
+                    && self
+                        .sessions
+                        .iter()
+                        .zip(update.sessions.iter())
+                        .any(|(old, new)| {
+                            let displayed_fps = |row: &SessionSummary| {
+                                (row.telemetry.fps * f64::from(state_name(row) == "running"))
+                                    .round_ties_even()
+                            };
+                            displayed_fps(old) != displayed_fps(new)
+                                || (state_name(new) == "running"
+                                    && (old.telemetry.fps > 0.0) != (new.telemetry.fps > 0.0))
+                        }));
+            changed |= navigation_changed
+                || !Arc::ptr_eq(&self.assets, &update.assets)
+                || self.max_sessions != update.max_sessions
+                || self.mcp != update.mcp
+                || (self.pending > 0) != (update.pending > 0)
+                || self.waiting != update.waiting
+                || self.artifacts != update.artifacts
+                || self.inspected != update.inspected
+                || self.error != update.error
+                || !Arc::ptr_eq(&self.debug_history, &update.debug_requests);
+            if sessions_changed && !structure_changed {
+                let shown = self.workspace.layout.visible();
+                changed |= self
+                    .sessions
+                    .iter()
+                    .zip(update.sessions.iter())
+                    .any(|(old, new)| {
+                        let id = old.info.id.as_str();
+                        let displayed =
+                            shown.contains(&id) || (!self.split() && id == self.selected);
+                        let details = self.split()
+                            || self.gauges_expanded
+                            || !cfg!(feature = "silvestris-ui");
+                        displayed
+                            && (!gauges::same_primary_gauges(&old.telemetry, &new.telemetry)
+                                || details
+                                    && !gauges::same_detail_gauges(&old.telemetry, &new.telemetry))
+                    });
+            }
             self.sessions = update.sessions.clone();
             self.cards = update.cards.clone();
             self.assets = update.assets.clone();
@@ -757,7 +840,9 @@ impl LotusWindow {
             self.artifacts.clone_from(&update.artifacts);
             self.registers = update.registers.clone();
             #[cfg(feature = "silvestris-ui")]
-            self.gdb_panel.refresh(&update);
+            {
+                changed |= self.gdb_panel.refresh(&update);
+            }
             #[cfg(feature = "silvestris-ui")]
             self.gpu_capture.refresh(&update);
 
@@ -777,6 +862,7 @@ impl LotusWindow {
                     || !requested.is_some_and(|tile| shown.contains(&tile.as_str()))
                 {
                     self.inspect_tile = None;
+                    changed = true;
                 }
             }
             if let Some(controller) = &self.controller {
@@ -821,10 +907,7 @@ impl LotusWindow {
             self.toggled_debug_details
                 .retain(|id| update.debug_requests().any(|request| request.id == *id));
             self.debug_request = update.debug_result(self.inspection_panel).cloned();
-            #[cfg(feature = "silvestris-ui")]
-            {
-                self.debug_history = update.debug_requests().cloned().collect();
-            }
+            self.debug_history = update.debug_requests.clone();
             let details = self.debug_request.as_ref().and_then(|request| {
                 if !self.debug_details_visible(request) {
                     return None;
@@ -859,11 +942,15 @@ impl LotusWindow {
                 snapshot,
                 surface,
                 save_preferences,
+                navigation_changed,
+                structure_changed,
             )
         };
         if save_preferences {
             self.preferences.save();
         }
+        changed |= self.inspection.as_ref().map(|item| Arc::as_ptr(&item.view))
+            != snapshot.as_ref().map(|item| Arc::as_ptr(&item.view));
         self.set_inspection(snapshot, cx);
         if selected != self.selected {
             self.selected = selected;
@@ -874,28 +961,30 @@ impl LotusWindow {
             self.release_input();
         }
         self.retain_current_inspection(cx);
-        self.inspector_state.retain(&self.sessions);
-        #[cfg(feature = "silvestris-ui")]
-        self.memory_panels
-            .retain(|target, _| target.resolve(&self.sessions).is_some());
-        #[cfg(feature = "silvestris-ui")]
-        self.snapshot_forms
-            .retain(|target, _| target.resolve(&self.sessions).is_some());
-        #[cfg(feature = "silvestris-ui")]
-        self.timeline_forms
-            .retain(|(target, _), _| target.resolve(&self.sessions).is_some());
-        #[cfg(feature = "silvestris-ui")]
-        self.kernel_panels
-            .retain(|target, _| target.resolve(&self.sessions).is_some());
-        #[cfg(feature = "silvestris-ui")]
-        self.cpu_forms
-            .retain(|target, _| target.resolve(&self.sessions).is_some());
-        #[cfg(feature = "silvestris-ui")]
-        self.breakpoint_panels
-            .retain(|target, _| target.resolve(&self.sessions).is_some());
-        #[cfg(feature = "silvestris-ui")]
-        self.command_palettes
-            .retain(|target, _| target.resolve(&self.sessions).is_some());
+        if targets_changed {
+            self.inspector_state.retain(&self.sessions);
+            #[cfg(feature = "silvestris-ui")]
+            self.memory_panels
+                .retain(|target, _| target.resolve(&self.sessions).is_some());
+            #[cfg(feature = "silvestris-ui")]
+            self.snapshot_forms
+                .retain(|target, _| target.resolve(&self.sessions).is_some());
+            #[cfg(feature = "silvestris-ui")]
+            self.timeline_forms
+                .retain(|(target, _), _| target.resolve(&self.sessions).is_some());
+            #[cfg(feature = "silvestris-ui")]
+            self.kernel_panels
+                .retain(|target, _| target.resolve(&self.sessions).is_some());
+            #[cfg(feature = "silvestris-ui")]
+            self.cpu_forms
+                .retain(|target, _| target.resolve(&self.sessions).is_some());
+            #[cfg(feature = "silvestris-ui")]
+            self.breakpoint_panels
+                .retain(|target, _| target.resolve(&self.sessions).is_some());
+            #[cfg(feature = "silvestris-ui")]
+            self.command_palettes
+                .retain(|target, _| target.resolve(&self.sessions).is_some());
+        }
         self.sync_inspection_selection();
         if let Some(surface) =
             surface.filter(|surface| surface.target.is_current(&self.inspected, &self.sessions))
@@ -927,7 +1016,7 @@ impl LotusWindow {
         for session in &visible {
             self.tiles.entry(session.clone()).or_default();
         }
-        for summary in &self.sessions {
+        for summary in self.sessions.iter() {
             let Some(tile) = self.tiles.get_mut(&summary.info.id) else {
                 continue;
             };
@@ -965,11 +1054,17 @@ impl LotusWindow {
             drop_images(std::mem::replace(&mut tile.images, images), cx);
             tile.epoch = epoch;
             tile.preview = Some(identity);
+            changed = true;
             ui.preview_installed(identity.sequence);
         }
         #[cfg(feature = "silvestris-ui")]
-        self.sync_shared_sources(cx);
+        if _navigation_changed || self.source_context.2 != self.selected {
+            self.sync_shared_sources(cx);
+        }
         ui.poll_completed();
+        if changed && preview_visible {
+            cx.notify();
+        }
     }
 
     fn send(&mut self, command: Command) {
@@ -1122,6 +1217,7 @@ impl LotusWindow {
                 }
             }
             // Ctrl+O needs a context and is handled in the root listener.
+            cx.notify();
             return;
         }
         match key {
@@ -1142,6 +1238,7 @@ impl LotusWindow {
                     cx.notify();
                 }
                 self.menu = Menu::Closed;
+                cx.notify();
                 window.focus(&self.focus, cx);
                 return;
             }
@@ -2158,7 +2255,7 @@ impl LotusWindow {
                     },
                 )),
             );
-        for card in &self.cards {
+        for card in self.cards.iter() {
             let parent = card.clone();
             menu = menu.child(
                 menu_item(
@@ -2779,7 +2876,7 @@ impl LotusWindow {
                     .child("None configured for this host."),
             );
         }
-        for asset in &self.assets {
+        for asset in self.assets.iter() {
             let handle = asset.clone();
             let session = session.clone();
             list = list.child(
@@ -4380,6 +4477,7 @@ impl LotusWindow {
                             if !view.toggled_debug_details.remove(&id) {
                                 view.toggled_debug_details.insert(id);
                             }
+                            view.poll(cx);
                             cx.notify();
                         }),
                     ),
@@ -6185,7 +6283,7 @@ mod tests {
                 telemetry: Telemetry::new(),
             };
             let target = SessionTarget::from_summary(&session);
-            view.sessions = vec![session];
+            view.sessions = Arc::new(vec![session]);
             view.selected = target.id.clone();
             view.inspected = target.id.clone();
             view.show_panel(Panel::Gpu);

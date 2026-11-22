@@ -9,10 +9,63 @@ use gpui::{
     canvas, div, fill, point, px, size, Bounds, InteractiveElement, IntoElement, ParentElement,
     Rgba, Styled,
 };
+use lotus_session::supervisor::SessionSummary;
 use lotus_session::telemetry::{Actor, Telemetry, GUEST_REFRESH_HZ};
 
 use crate::layout::{PILL_GAP, PILL_HEIGHT};
 use crate::theme;
+
+/// Values used by the session tree, workspace and debugger controls.
+pub(crate) fn same_session_controls(a: &SessionSummary, b: &SessionSummary) -> bool {
+    let (x, y) = (&a.telemetry, &b.telemetry);
+    a.info == b.info
+        && x.epoch == y.epoch
+        && x.state == y.state
+        && x.playing == y.playing
+        && x.last_error == y.last_error
+        && x.failure == y.failure
+        && x.stop_reason == y.stop_reason
+        && x.policy_note == y.policy_note
+        && x.backend_name == y.backend_name
+        && x.desktop_debug_lease_blocked == y.desktop_debug_lease_blocked
+        && x.worker_features == y.worker_features
+        && match (&x.gpu_capture, &y.gpu_capture) {
+            (Some(x), Some(y)) => std::sync::Arc::ptr_eq(x, y),
+            (None, None) => true,
+            _ => false,
+        }
+}
+
+pub(crate) fn same_primary_gauges(x: &Telemetry, y: &Telemetry) -> bool {
+    x.frames == y.frames
+        && x.fps == y.fps
+        && x.speed == y.speed
+        && (cfg!(feature = "silvestris-ui") || x.fps_history == y.fps_history)
+}
+
+pub(crate) fn same_detail_gauges(x: &Telemetry, y: &Telemetry) -> bool {
+    x.audio_rate == y.audio_rate
+        && x.audio_dropped == y.audio_dropped
+        && x.renderer == y.renderer
+        && x.renderer_fallback == y.renderer_fallback
+        && x.pid == y.pid
+        && (x.pid.is_none() || uptime_bucket(x.uptime_ms) == uptime_bucket(y.uptime_ms))
+        && x.memory_bytes == y.memory_bytes
+        && x.last_actor == y.last_actor
+        && x.last_operation == y.last_operation
+        && x.input_owner == y.input_owner
+}
+
+/// The desktop shares a row snapshot until one of its consumers could display a change.
+/// Supervisor and MCP telemetry retain their full resolution.
+pub(crate) fn same_session_rows(a: &[SessionSummary], b: &[SessionSummary]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(a, b)| {
+            same_session_controls(a, b)
+                && same_primary_gauges(&a.telemetry, &b.telemetry)
+                && same_detail_gauges(&a.telemetry, &b.telemetry)
+        })
+}
 
 /// One gauge: label, headline figure and a detail line.
 pub struct Gauge {
@@ -323,9 +376,18 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn uptime_bucket(milliseconds: u64) -> u64 {
+    let seconds = milliseconds / 1000;
+    if seconds < 3600 {
+        seconds
+    } else {
+        seconds / 60 * 60
+    }
+}
+
 #[must_use]
 pub fn format_uptime(milliseconds: u64) -> String {
-    let seconds = milliseconds / 1000;
+    let seconds = uptime_bucket(milliseconds);
     match seconds {
         0..60 => format!("{seconds}s"),
         60..3600 => format!("{}m {:02}s", seconds / 60, seconds % 60),

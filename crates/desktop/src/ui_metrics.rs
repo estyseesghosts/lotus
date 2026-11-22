@@ -118,9 +118,9 @@ impl UiMetrics {
     }
 
     /// Lock the shared state for a poll. A panic elsewhere while holding it poisons the
-    /// mutex; the data is a snapshot that the next controller tick overwrites wholesale, so
-    /// the window recovers it like the controller does (`lock` in desktop_controller.rs)
-    /// instead of returning stale forever. Each recovery is counted and logged.
+    /// mutex. The window recovers it like the controller does
+    /// (`lock` in desktop_controller.rs), so subsequent publications can still be read.
+    /// Each recovery is counted and logged.
     pub fn lock_update<'a, T>(&self, latest: &'a Mutex<T>) -> MutexGuard<'a, T> {
         latest.lock().unwrap_or_else(|poisoned: PoisonError<_>| {
             let count = self.polls_recovered.fetch_add(1, Ordering::Relaxed) + 1;

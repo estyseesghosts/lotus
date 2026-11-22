@@ -654,7 +654,7 @@ mod tests {
             telemetry.state = SessionState::Paused;
             telemetry.epoch = 2;
             telemetry.worker_features = Arc::new(BTreeSet::from([GPU_CAPTURE_LEVELS.into()]));
-            view.sessions = vec![SessionSummary {
+            view.sessions = Arc::new(vec![SessionSummary {
                 info: SessionInfo {
                     id: "fixture".into(),
                     kind: SessionKind::Secondary { parent: None },
@@ -662,7 +662,7 @@ mod tests {
                     created_unix_ms: 1,
                 },
                 telemetry,
-            }];
+            }]);
             view.selected = "fixture".into();
             view.inspected = "fixture".into();
             view.control = true;
@@ -694,7 +694,7 @@ mod tests {
             assert_eq!(form.last.read(cx).text(), "20");
             assert!(mounted.keys.is_empty());
             view.update(cx, |view, cx| {
-                view.sessions[0].telemetry.epoch += 1;
+                Arc::make_mut(&mut view.sessions)[0].telemetry.epoch += 1;
                 cx.notify();
             });
             window.draw(cx).clear(cx);

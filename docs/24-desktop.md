@@ -186,3 +186,64 @@ data from a paused session — CPU registers/disassembly, threads, breakpoints,
 memory map, paged settings with apply classes, IPC with its loss counter,
 logs, GPU draw, audio regions, snapshots and timeline. Two-DPI interaction
 remains unverified.
+
+### Windows idle redraws (#158)
+
+The controller wakes GPUI for changed sessions, previews, layouts and debugger
+results. Arrivals within 16 ms share one poll. A 150 ms heartbeat samples device assignments and infrequent host
+changes. The window compares the data its controls and gauges display before
+invalidating. Restoring a minimized window samples immediately. The controller
+keeps its 33 ms supervisor cadence and serializes MCP frontend metrics at most
+once every 100 ms. Session rows, card and asset catalogs, and debugger history
+share immutable snapshots. Identical inspector replies reuse the parsed view
+for that target and query.
+
+**Verified emulator** on Windows 11 with the debug desktop, owned
+`t03.3dsx` and Release AZAHAR `5ecbd982a9159fb910f81d8e19fbfbe04facf363`
+(Ninja, MinGW, worker and Vulkan compiled in, Qt and SDL2 off, software
+renderer selected). The baseline desktop is `c33f8c0`. Each sample is three
+seconds after settling. CPU usage is for the desktop process as a percentage
+of one logical core. Idle shows one paused tile when sessions exist. Running
+shows one tile for one session and two split tiles for two or four sessions.
+With four loaded, the other two stay paused.
+
+| Loaded | Window | Renders before/after | Polls before/after | CPU % before/after | Preview installs before/after | Guest frames before/after |
+|---:|---|---:|---:|---:|---:|---:|
+| 0 | empty | 12/0 | 64/19 | 5.7/2.1 | 0/0 | — |
+| 0 | hidden empty | 0/0 | 63/19 | 9.9/0.5 | 0/0 | — |
+| 1 | paused | 12/0 | 64/21 | 10.9/1.6 | 0/0 | 0/0 |
+| 1 | running | 12/16 | 63/32 | 12.5/12.5 | 19/10 | 16/17 |
+| 1 | hidden running | 0/0 | 63/19 | 4.2/0.5 | 0/0 | 17/17 |
+| 2 | paused | 12/0 | 63/21 | 12.0/1.6 | 0/0 | 0/0 |
+| 2 | running | 12/30 | 64/43 | 18.7/25.5 | 21/23 | 27/29 |
+| 2 | hidden running | 0/0 | 63/19 | 2.1/1.6 | 0/0 | 28/26 |
+| 4 | paused | 12/0 | 63/25 | 21.3/2.6 | 0/0 | 0/0 |
+| 4 | running | 11/26 | 61/37 | 21.3/34.3 | 27/21 | 25/28 |
+| 4 | hidden running | 0/0 | 63/20 | 2.1/3.1 | 0/0 | 27/28 |
+
+Each GPUI poll acquires the shared update mutex once. Supervisor ticks stayed
+at 89–94 per sample. Metrics serializations went from one per tick to 24–25
+per sample. With 0/1/2/4 paused sessions the controller published 0/3/6/13
+changed session snapshots, down from roughly 90 assignments per sample.
+Idle CPU and render count fell. The short software playback samples varied
+in both preview install rate and CPU use. GPUI polls and renders are
+application counters. OS wakeups and GPU presentation were not measured.
+
+Run `tests/test_idle_cadence.py <desktop> <worker> <3dsx> <new-output-dir>`.
+The harness saves per-phase counters and SHA-256 screen checkpoints.
+The two-session checkpoint matched on both screens (`e5540f2e…`, `da0e7076…`).
+Playback between samples changes the scene captured by other checkpoints.
+`--baseline` records the old idle behavior for comparison.
+
+The Vulkan run used packaged CITnLO `a3994c1da5d2c6e00731a20c578a54a1b6d38fc7`.
+It recorded zero settled idle renders with 0/1/2/4 loaded sessions, including
+a single paused session with the Inspector open. Two visible sessions
+installed 150 previews and advanced 357 guest frames in three seconds.
+While minimized they advanced 359 guest frames with zero preview requests.
+Restoring advanced the preview sequence on both tiles. The same harness
+checks that removing and re-adding a paused tile can reuse the worker's
+validated exact-frame slot once. Playback still suppresses repeated slots.
+
+The CITnLO focus-cycle test also passed Windows UI Automation inspector
+open/close, Alt+Tab, title-bar activation and minimize/restore. Installed
+preview sequence matched the published sequence in every visible sample.

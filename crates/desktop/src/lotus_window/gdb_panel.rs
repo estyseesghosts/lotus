@@ -18,8 +18,8 @@ struct Port {
 }
 
 impl GdbPanel {
-    pub(super) fn refresh(&mut self, update: &Update) {
-        self.latest = update
+    pub(super) fn refresh(&mut self, update: &Update) -> bool {
+        let latest = update
             .gdb_status
             .iter()
             .find(|(target, _)| target.id == update.inspected)
@@ -30,6 +30,9 @@ impl GdbPanel {
                     update.gdb_feedback.get(target).cloned(),
                 )
             });
+        let changed = self.latest != latest;
+        self.latest = latest;
+        changed
     }
 }
 
@@ -255,7 +258,7 @@ mod tests {
                 telemetry,
             };
             let target = SessionTarget::from_summary(&summary);
-            view.sessions = vec![summary];
+            view.sessions = Arc::new(vec![summary]);
             view.selected = "fixture".into();
             view.inspected = "fixture".into();
             view.control = true;
@@ -289,7 +292,7 @@ mod tests {
                 Some(address)
             );
             view.update(cx, |view, cx| {
-                view.sessions[0].telemetry.epoch += 1;
+                Arc::make_mut(&mut view.sessions)[0].telemetry.epoch += 1;
                 cx.notify();
             });
             window.draw(cx).clear(cx);

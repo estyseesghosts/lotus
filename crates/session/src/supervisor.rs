@@ -345,7 +345,7 @@ pub struct SettingChange {
 }
 
 /// Identity of a session as listed by every frontend.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SessionInfo {
     pub id: String,
     #[serde(flatten)]
@@ -3177,10 +3177,13 @@ impl Supervisor {
         }
         let preview = native.preview_with_policy(playing).await;
         handle.telemetry().preview = native.preview_metrics().clone();
-        let (captured, _) = preview.ok()?;
-        *lock(&handle.previewed) = paused.then_some(key);
-        // A repeated slot or no frame yet: the window keeps what it shows (lotus#25).
-        native.preview_metrics().fresh.then_some(captured)
+        let (captured, shown) = preview.ok()?;
+        // A tile can be shown again at the same paused frame after forget_preview.
+        // The worker's ring may reuse the exact slot even though the tile has no image.
+        let deliver = native.preview_metrics().fresh
+            || (paused && shown == Some(frames) && !captured.is_empty());
+        *lock(&handle.previewed) = (paused && deliver).then_some(key);
+        deliver.then_some(captured)
     }
 
     pub async fn capture(&self, id: &str) -> io::Result<Vec<Artifact>> {

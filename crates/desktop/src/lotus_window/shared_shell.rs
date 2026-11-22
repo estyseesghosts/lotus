@@ -635,7 +635,7 @@ mod tests {
             let mut loaded = session("loaded");
             loaded.info.asset = Some("fixture.3dsx".into());
             view.selected = loaded.info.id.clone();
-            view.sessions = vec![loaded];
+            view.sessions = Arc::new(vec![loaded]);
             view
         });
         cx.simulate_resize(size(px(720.), px(560.)));
@@ -664,7 +664,7 @@ mod tests {
         let (view, cx) = app.add_window_view(|window, cx| {
             let mut view = LotusWindow::new(None, McpMode::Off, window, cx);
             view.preferences = Store::load(None);
-            view.sessions = vec![session("a"), session("b")];
+            view.sessions = Arc::new(vec![session("a"), session("b")]);
             view.selected = "a".into();
             view.inspected = "a".into();
             view.control = true;
@@ -759,7 +759,7 @@ mod tests {
                 view.toggle_tile_inspector("b".into());
                 view.inspected = "b".into();
                 assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), cursor);
-                view.sessions[1].telemetry.frames += 1;
+                Arc::make_mut(&mut view.sessions)[1].telemetry.frames += 1;
                 view.inspector_state.retain(&view.sessions);
                 assert_eq!(view.inspection_offset(Some(&b), Panel::Timeline), cursor);
                 assert_eq!(
@@ -809,7 +809,7 @@ mod tests {
                 view.surface_image = Some(Arc::new(RenderImage::new(vec![Frame::new(
                     RgbaImage::new(1, 1),
                 )])));
-                view.sessions[1].telemetry.epoch += 1;
+                Arc::make_mut(&mut view.sessions)[1].telemetry.epoch += 1;
                 view.retain_current_inspection(cx);
                 view.inspector_state.retain(&view.sessions);
                 let new_b = view.inspection_target().unwrap();

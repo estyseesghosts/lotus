@@ -245,9 +245,9 @@ pub enum DebugStatus {
 /// Latest published state. The window takes `previews` when they change.
 #[derive(Default)]
 pub struct Update {
-    pub sessions: Vec<SessionSummary>,
-    pub cards: Vec<String>,
-    pub assets: Vec<String>,
+    pub sessions: Arc<Vec<SessionSummary>>,
+    pub cards: Arc<Vec<String>>,
+    pub assets: Arc<Vec<String>>,
     pub max_sessions: usize,
     pub control: bool,
     /// Inspector target: preview of a single view, inspector panels, audio focus. Distinct
@@ -265,9 +265,9 @@ pub struct Update {
     /// Sessions no longer shown are removed. Independent per session (lotus#65).
     pub previews: BTreeMap<String, Preview>,
     /// Registers of the inspected session at its last paused frame, with provenance.
-    pub registers: Option<(SessionTarget, Value)>,
+    pub registers: Option<(SessionTarget, Arc<Value>)>,
     pub inspection: Option<InspectionSnapshot>,
-    debug_requests: VecDeque<DebugRequest>,
+    pub debug_requests: Arc<VecDeque<DebugRequest>>,
     pub gdb_status: BTreeMap<SessionTarget, lotus_gdb::Status>,
     pub gdb_feedback: BTreeMap<SessionTarget, GdbFeedback>,
     pub error: String,
@@ -300,9 +300,14 @@ impl Update {
         self.inspection = self.inspection.take().filter(|snapshot| {
             inspection::snapshot_current(snapshot, &self.inspected, &self.sessions)
         });
-        for request in &mut self.debug_requests {
-            if request.target.resolve(&self.sessions).is_none() {
-                request.status = DebugStatus::Expired;
+        if self.debug_requests.iter().any(|request| {
+            !matches!(request.status, DebugStatus::Expired)
+                && request.target.resolve(&self.sessions).is_none()
+        }) {
+            for request in Arc::make_mut(&mut self.debug_requests) {
+                if request.target.resolve(&self.sessions).is_none() {
+                    request.status = DebugStatus::Expired;
+                }
             }
         }
     }
@@ -331,6 +336,7 @@ impl Update {
 pub struct DesktopController {
     pub commands: SyncSender<Command>,
     pub latest: Arc<Mutex<Update>>,
+    pub window_updates: tokio::sync::watch::Receiver<()>,
     /// Fetch registers while paused only when the inspector is open.
     pub inspector: Arc<AtomicBool>,
     pub inspection_selection: Arc<Mutex<InspectionSelection>>,
@@ -347,6 +353,7 @@ pub struct DesktopController {
 }
 
 const TICK: Duration = Duration::from_millis(33);
+const METRICS_PERIOD: Duration = Duration::from_millis(100);
 const CATALOG_PERIOD: Duration = Duration::from_secs(1);
 const INSPECT_PERIOD: Duration = Duration::from_millis(500);
 /// An operation pending this long is shown as waiting.
@@ -372,9 +379,13 @@ pub struct OperationStats {
 /// Desktop loop cadence and per-operation latency, published to `lotus_status`.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct LoopMetrics {
-    /// State publications to the window.
+    /// Supervisor loop iterations since startup.
     pub ticks: u64,
-    /// Interval between the last two publications; the target is 33 ms.
+    /// Frontend metric snapshots serialized for MCP.
+    pub metrics_publications: u64,
+    /// Distinct session snapshots handed to the desktop.
+    pub session_publications: u64,
+    /// Interval between the last two loop iterations; the target is 33 ms.
     pub tick_interval_ms: f64,
     pub tick_interval_max_ms: f64,
     pub preview: OperationStats,
@@ -399,11 +410,14 @@ pub struct PendingOperation {
     pub age_ms: f64,
 }
 
+type InspectionReply = Result<Value, (io::ErrorKind, String)>;
+
 /// Inspector refresh state, updated by the requests' own tasks.
 struct InspectorKeys {
     registers: Option<(SessionTarget, u64)>,
     inspection: Option<(SessionTarget, InspectionSelection, u64)>,
     inspected_at: Instant,
+    last_view: Option<(InspectionReply, Arc<Inspection>)>,
     cpu_model: Option<(SessionTarget, u32)>,
 }
 
@@ -443,6 +457,7 @@ impl DesktopController {
             host.clone(),
             runtime.handle().clone(),
         ));
+        let (window_updates_tx, window_updates) = tokio::sync::watch::channel(());
         let context = Loops {
             controllers,
             ui: ui.clone(),
@@ -450,6 +465,7 @@ impl DesktopController {
             host: host.clone(),
             gdb: gdb.clone(),
             published: latest.clone(),
+            window_updates: window_updates_tx,
             inspector: inspector.clone(),
             inspection_selection: inspection_selection.clone(),
             debug_sequence: Arc::default(),
@@ -480,6 +496,7 @@ impl DesktopController {
             routing,
             commands: sender,
             latest,
+            window_updates,
             inspector,
             inspection_selection,
             presence,
@@ -538,6 +555,7 @@ struct Loops {
     controllers: Option<Arc<Controllers>>,
     presence: Arc<Presence>,
     published: Arc<Mutex<Update>>,
+    window_updates: tokio::sync::watch::Sender<()>,
     inspector: Arc<AtomicBool>,
     inspection_selection: Arc<Mutex<InspectionSelection>>,
     debug_sequence: Arc<AtomicU64>,
@@ -565,7 +583,13 @@ struct Loops {
 }
 
 impl Loops {
-    /// Publishes state every tick without awaiting any worker. Preview, inspector polling
+    fn wake_window(&self) {
+        if self.preview_visible.load(Ordering::Acquire) {
+            self.window_updates.send_replace(());
+        }
+    }
+
+    /// Samples supervisor state each tick without awaiting any worker. Preview, inspector polling
     /// and audio focus run as their own tasks; a slow worker delays only its own results.
     async fn run(
         self,
@@ -597,7 +621,8 @@ impl Loops {
         background.push(tokio::spawn(self.clone().inspector_loop()));
         background.push(tokio::spawn(self.clone().audio_focus_loop()));
         let mut catalog_at: Option<Instant> = None;
-        let mut published_at: Option<Instant> = None;
+        let mut ticked_at: Option<Instant> = None;
+        let mut metrics_at: Option<Instant> = None;
         let mut ticker = tick();
         // Handle -> (canonical path, file name); resolved once per handle.
         let mut content_names: BTreeMap<String, Option<(String, String)>> = BTreeMap::new();
@@ -613,8 +638,12 @@ impl Loops {
                 let assets = self.host.assets();
                 let artifacts = self.host.artifact_usage();
                 let mut update = lock(&self.published);
-                update.cards = cards;
-                update.assets = assets;
+                if *update.cards != cards {
+                    update.cards = Arc::new(cards);
+                }
+                if *update.assets != assets {
+                    update.assets = Arc::new(assets);
+                }
                 update.artifacts = Some(artifacts);
                 catalog_at = Some(Instant::now());
             }
@@ -641,7 +670,7 @@ impl Loops {
                         .clone()
                 }));
             let waiting = self.waiting();
-            let (selected, reveal) = {
+            let (selected, reveal, rows_changed, feedback_changed) = {
                 let mut update = lock(&self.published);
                 if !sessions.iter().any(|s| s.info.id == update.selected) {
                     // A stopped tile collapses the split to the other one (lotus#67); keep
@@ -656,16 +685,29 @@ impl Loops {
                         .unwrap_or_default();
                     self.reveal.store(true, Ordering::Release);
                 }
-                update.gdb_status = gdb_status;
+                let gdb_changed = update.gdb_status != gdb_status;
+                if gdb_changed {
+                    update.gdb_status = gdb_status;
+                }
                 update
                     .gdb_feedback
                     .retain(|target, _| target.resolve(&sessions).is_some());
-                update.sessions = sessions;
-                update.pending = self.pending.load(Ordering::Acquire);
-                update.waiting = waiting;
+                let rows_changed = !crate::gauges::same_session_rows(&update.sessions, &sessions);
+                if rows_changed {
+                    update.sessions = Arc::new(sessions);
+                }
+                let pending = self.pending.load(Ordering::Acquire);
+                let progress_changed =
+                    (pending > 0) != (update.pending > 0) || update.waiting != waiting;
+                update.pending = pending;
+                if update.waiting != waiting {
+                    update.waiting = waiting;
+                }
                 (
                     update.selected.clone(),
                     self.reveal.swap(false, Ordering::AcqRel),
+                    rows_changed,
+                    gdb_changed || progress_changed,
                 )
             };
             let changed = self.selected.send_if_modified(|current| {
@@ -678,7 +720,7 @@ impl Loops {
             if changed && !selected.is_empty() {
                 self.host.set_focus(&selected);
             }
-            self.show_selected(&selected, reveal);
+            let layout_changed = self.show_selected(&selected, reveal);
             let inspected = {
                 let mut update = lock(&self.published);
                 let shown = update.workspace.layout.visible();
@@ -706,7 +748,7 @@ impl Loops {
                 }
                 update.inspected.clone()
             };
-            self.inspected.send_if_modified(|current| {
+            let inspector_changed = self.inspected.send_if_modified(|current| {
                 let changed = *current != inspected;
                 if changed {
                     current.clone_from(&inspected);
@@ -714,23 +756,33 @@ impl Loops {
                 }
                 changed
             });
+            if rows_changed || feedback_changed || changed || layout_changed || inspector_changed {
+                self.wake_window();
+            }
             let now = Instant::now();
-            if let Some(previous) = published_at {
+            if let Some(previous) = ticked_at {
                 let interval = now.duration_since(previous).as_secs_f64() * 1e3;
                 let mut metrics = lock(&self.metrics);
                 metrics.ticks += 1;
+                metrics.session_publications += u64::from(rows_changed);
                 metrics.tick_interval_ms = interval;
                 metrics.tick_interval_max_ms = metrics.tick_interval_max_ms.max(interval);
                 metrics.pending = self.pending_operations();
                 metrics.published_preview_sequence = self.preview_sequence.load(Ordering::Acquire);
-                let mut value = serde_json::to_value(&*metrics).unwrap_or_default();
-                value["ui"] = self.ui.snapshot();
-                if let Some(controllers) = &self.controllers {
-                    value["controllers"] = controllers.status();
+                if metrics_at.is_none_or(|previous| now.duration_since(previous) >= METRICS_PERIOD)
+                {
+                    metrics.metrics_publications += 1;
+                    let mut value = serde_json::to_value(&*metrics).unwrap_or_default();
+                    drop(metrics);
+                    value["ui"] = self.ui.snapshot();
+                    if let Some(controllers) = &self.controllers {
+                        value["controllers"] = controllers.status();
+                    }
+                    self.host.set_frontend_metrics(value);
+                    metrics_at = Some(now);
                 }
-                self.host.set_frontend_metrics(value);
             }
-            published_at = Some(now);
+            ticked_at = Some(now);
             ticker.tick().await;
         }
         for (_, cancellation) in lock(&self.active_debug).values() {
@@ -895,6 +947,7 @@ impl Loops {
                             frames,
                         },
                     );
+                    loops.wake_window();
                 });
             }
         }
@@ -910,6 +963,7 @@ impl Loops {
             registers: None,
             inspection: None,
             inspected_at: Instant::now(),
+            last_view: None,
             cpu_model: None,
         }));
         let mut ticker = tick();
@@ -954,7 +1008,7 @@ impl Loops {
                         if loops.current_reply(&target, generation, &value)
                             && target.is_current(&update.inspected, &update.sessions)
                         {
-                            update.registers = Some((target, value));
+                            update.registers = Some((target, Arc::new(value)));
                             lock(&state).registers = key;
                         }
                     }
@@ -992,7 +1046,9 @@ impl Loops {
                 panel.command(offset)
             };
             let Some(command) = command else {
-                lock(&state).inspection = Some(view_key);
+                let mut keys = lock(&state);
+                keys.inspection = Some(view_key);
+                keys.last_view = None;
                 continue;
             };
             if !self.begin("inspection", &selected) {
@@ -1000,7 +1056,7 @@ impl Loops {
             }
             let (loops, state) = (self.clone(), state.clone());
             tokio::spawn(async move {
-                let result = loops
+                let result: io::Result<Value> = loops
                     .timed("inspection", &selected, async {
                         let mut value =
                             loops.inspect(&target, panel, offset, cpu, &command).await?;
@@ -1037,29 +1093,56 @@ impl Loops {
                         Ok(value)
                     })
                     .await;
-                lock(&state).inspected_at = Instant::now();
-                let view = match result {
-                    Ok(value) if loops.current_reply(&target, generation, &value) => {
-                        Inspection::from_value(&value, panel)
-                    }
+                let reply = match result {
+                    Ok(value) if loops.current_reply(&target, generation, &value) => Ok(value),
                     Ok(_) => return,
-                    Err(error) => Inspection::failed(error),
+                    Err(error) => Err((error.kind(), error.to_string())),
                 };
+                let cached = {
+                    let keys = lock(&state);
+                    keys.inspection
+                        .as_ref()
+                        .filter(|(old_target, old_selection, _)| {
+                            old_target == &target && old_selection == &view_key.1
+                        })
+                        .and(keys.last_view.as_ref())
+                        .filter(|(previous, _)| previous == &reply)
+                        .map(|(_, view)| view.clone())
+                };
+                let view = cached.unwrap_or_else(|| {
+                    Arc::new(match &reply {
+                        Ok(value) => Inspection::from_value(value, panel),
+                        Err((kind, message)) => {
+                            Inspection::failed(io::Error::new(*kind, message.clone()))
+                        }
+                    })
+                });
                 let mut update = lock(&loops.published);
                 let current = lock(&loops.inspection_selection);
+                let already_published = update
+                    .inspection
+                    .as_ref()
+                    .is_some_and(|snapshot| Arc::ptr_eq(&snapshot.view, &view));
+                let mut keys = lock(&state);
+                keys.inspected_at = Instant::now();
                 if loops.current(&target, generation)
                     && current.panel == panel
                     && current.offset_for(&target) == offset
                     && current.cpu_for(&target) == cpu
-                    && update.publish_inspection(InspectionSnapshot {
-                        target: Some(target),
-                        panel,
-                        offset: Some(offset),
-                        cpu,
-                        view: Arc::new(view),
-                    })
+                    && (already_published
+                        || update.publish_inspection(InspectionSnapshot {
+                            target: Some(target),
+                            panel,
+                            offset: Some(offset),
+                            cpu,
+                            view: view.clone(),
+                        }))
                 {
-                    lock(&state).inspection = Some(view_key);
+                    keys.inspection = Some(view_key);
+                    keys.last_view = Some((reply, view));
+                    if !already_published {
+                        loops.wake_window();
+                    }
                 }
             });
         }
@@ -1276,19 +1359,15 @@ impl Loops {
     /// workspace operation so MCP sees the same revision. A split is never collapsed by
     /// selection, and an unchanged selection never overrides the committed workspace.
     /// A session that vanished meanwhile is refused and retried next tick.
-    fn show_selected(&self, selected: &str, reveal: bool) {
+    fn show_selected(&self, selected: &str, reveal: bool) -> bool {
         use lotus_session::workspace::{Layout, Operation};
         let status = self.host.workspace();
-        if !reveal {
-            lock(&self.published).workspace = status.snapshot;
-            return;
-        }
         let shown = match &status.snapshot.layout {
             Layout::Split { .. } => true,
             Layout::Single { session, .. } => session == selected,
             Layout::Empty => selected.is_empty(),
         };
-        let snapshot = if shown {
+        let snapshot = if !reveal || shown {
             status.snapshot
         } else {
             let single = Operation::Single {
@@ -1301,7 +1380,12 @@ impl Loops {
                     status.snapshot
                 })
         };
-        lock(&self.published).workspace = snapshot;
+        let mut update = lock(&self.published);
+        let changed = update.workspace != snapshot;
+        if changed {
+            update.workspace = snapshot;
+        }
+        changed
     }
 
     /// Returns false once the window side has gone away.
@@ -1406,6 +1490,7 @@ impl Loops {
                     Err(error) => update.error = error.to_string(),
                 }
                 loops.pending.fetch_sub(1, Ordering::AcqRel);
+                loops.wake_window();
             });
         }
         true
@@ -1427,6 +1512,7 @@ impl Loops {
             update
                 .gdb_feedback
                 .insert(target.clone(), GdbFeedback::Pending(action));
+            self.wake_window();
         }
         let loops = self.clone();
         tokio::spawn(async move {
@@ -1451,6 +1537,7 @@ impl Loops {
                         update.gdb_feedback.insert(target, feedback);
                     }
                 }
+                loops.wake_window();
             }
         });
     }
@@ -1497,9 +1584,9 @@ impl Loops {
                 .iter()
                 .position(|item| !matches!(item.status, DebugStatus::Running))
                 .expect("bounded debugger queue has completed entries");
-            update.debug_requests.remove(evict);
+            Arc::make_mut(&mut update.debug_requests).remove(evict);
         }
-        update.debug_requests.push_back(DebugRequest {
+        Arc::make_mut(&mut update.debug_requests).push_back(DebugRequest {
             id,
             target: target.clone(),
             panel,
@@ -1515,6 +1602,7 @@ impl Loops {
                 }
             },
         });
+        self.wake_window();
         if !allowed {
             return;
         }
@@ -1526,12 +1614,12 @@ impl Loops {
         tokio::spawn(async move {
             let status = loops.run_debug(&target, panel, action, cancellation).await;
             let mut update = lock(&loops.published);
-            if let Some(request) = update
-                .debug_requests
+            if let Some(request) = Arc::make_mut(&mut update.debug_requests)
                 .iter_mut()
                 .find(|request| request.id == id && matches!(request.status, DebugStatus::Running))
             {
                 request.status = status;
+                loops.wake_window();
             }
             lock(&loops.active_debug).remove(&id);
         });
@@ -1539,8 +1627,7 @@ impl Loops {
 
     fn cancel_debug(&self, id: u64) {
         let mut update = lock(&self.published);
-        if let Some(request) = update
-            .debug_requests
+        if let Some(request) = Arc::make_mut(&mut update.debug_requests)
             .iter_mut()
             .find(|request| request.id == id && matches!(request.status, DebugStatus::Running))
         {
@@ -1551,6 +1638,7 @@ impl Loops {
                     active.remove(&id);
                 }
                 request.status = DebugStatus::Cancelled { dispatched };
+                self.wake_window();
             }
         }
     }
@@ -2069,7 +2157,7 @@ mod tests {
             let summary = summary();
             let target = SessionTarget::from_summary(&summary);
             let mut update = Update {
-                sessions: vec![summary],
+                sessions: Arc::new(vec![summary]),
                 inspected: "a".into(),
                 ..Default::default()
             };
@@ -2077,13 +2165,13 @@ mod tests {
                 update.publish_inspection(reply(&target)),
                 "current reply accepted"
             );
-            update.registers = Some((target.clone(), serde_json::json!({"r0":1})));
-            update.debug_requests.push_back(surface_request(&target));
+            update.registers = Some((target.clone(), Arc::new(serde_json::json!({"r0":1}))));
+            Arc::make_mut(&mut update.debug_requests).push_back(surface_request(&target));
             match transition {
-                0 => update.sessions[0].telemetry.epoch += 1,
-                1 => update.sessions[0].info.created_unix_ms += 1,
+                0 => Arc::make_mut(&mut update.sessions)[0].telemetry.epoch += 1,
+                1 => Arc::make_mut(&mut update.sessions)[0].info.created_unix_ms += 1,
                 2 => update.inspected = "b".into(),
-                _ => update.sessions.clear(),
+                _ => Arc::make_mut(&mut update.sessions).clear(),
             }
             update.retain_current_inspection();
             assert!(update.inspection.is_none());
@@ -2104,7 +2192,7 @@ mod tests {
         let summary = summary();
         let target = SessionTarget::from_summary(&summary);
         let mut update = Update {
-            sessions: vec![summary],
+            sessions: Arc::new(vec![summary]),
             inspected: "a".into(),
             ..Default::default()
         };
@@ -2116,8 +2204,8 @@ mod tests {
             cpu: Default::default(),
             view: Arc::new(trace),
         }));
-        update.debug_requests.push_back(surface_request(&target));
-        update.sessions.clear();
+        Arc::make_mut(&mut update.debug_requests).push_back(surface_request(&target));
+        Arc::make_mut(&mut update.sessions).clear();
         update.inspected.clear();
         update.retain_current_inspection();
         assert!(update.inspection.as_ref().unwrap().target.is_none());

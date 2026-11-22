@@ -111,7 +111,7 @@ struct Entry {
 }
 
 /// Usage per session, as reported by [`ArtifactStore::usage`].
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SessionUsage {
     pub count: usize,
     pub bytes: u64,
@@ -119,7 +119,7 @@ pub struct SessionUsage {
     pub live: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Usage {
     pub count: usize,
     pub bytes: u64,
