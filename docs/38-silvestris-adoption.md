@@ -13,6 +13,8 @@ use the corresponding Aqua Light default.
 The tree includes a local inspector fix for #141. The shell lets printable
 keystrokes reach GPUI’s focused text field while retaining its handling of
 navigation and its isolation from guest input.
+The shipped tree also defers Inspector focus changes until after layout
+(#74) and restores the Settings window bounds when it reopens (#58).
 The packagers verify the tree and record both IDs in the release manifest.
 The corresponding-source archive contains the shipped tree.
 
