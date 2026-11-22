@@ -1015,9 +1015,10 @@ focus it and switch its target if it is open. It replaces the preferences
 popover.
 
 - **Targets.** Global (saved defaults) and each card (its saved overrides,
-  scope `primary`), whether or not the primary runs. A secondary has no saved
-  settings and is not a target; its temporary overrides stay CLI and MCP only.
-- **Rows.** The left column picks the target and a registry group; groups with
+  scope `primary`), whether or not the primary runs. A live secondary exposes
+  temporary input settings only. Those changes expire when it stops.
+- **Rows.** The toolbar selects the target and the overview picks a registry
+  group. Groups with
   no row at that scope are hidden. Each row shows the label, description, value
   and source badge (`default`, `global`, `card`, `managed`, `desktop.json`,
   `host.json`). Worker and input values come from `Supervisor::settings` and
@@ -1027,7 +1028,8 @@ popover.
   1/100 of their range rounded up to 1, 2 or 5 × 10ⁿ (0.1 when unbounded),
   clamped to the bounds. Reset
   removes the target's value ("Reset to Global" on a card, "Reset to default"
-  on global). Text, JSON and binding values are shown read-only until #54.
+  on global). Text and structured fields validate on commit. The binding
+  editor uses typed keyboard, controller-button and axis-direction controls.
 - **Read-only.** Host settings (`host.json`, read at start), values from the
   host `profile` (`managed`), and every worker or input row when the host has
   no `allow_control` or no host configuration. The tooltip says why.
@@ -1064,6 +1066,14 @@ card-wide reset requires confirmation and only clears the selected card's saved
 overrides. Worker rows report when a change applies at the next start or is
 unavailable on the mounted backend. Loading and unreadable saved settings
 disable writes to the affected scope.
+
+### Controller bindings (#64)
+
+`desktop/src/settings_window/bindings.rs` shares the registry's per-action
+rows and the supervisor's live layout resolver. The diagnostic layout reads
+composed guest input from the selected session's desktop router. Keyboard
+capture intercepts keystrokes in the Settings window before GPUI dispatches
+actions. Secondary edits go through the session runtime layer in memory.
 
 ## Settings layers (#51)
 

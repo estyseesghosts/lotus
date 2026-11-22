@@ -1384,13 +1384,29 @@ impl Supervisor {
         &self,
         session: &str,
     ) -> io::Result<(lotus_input::layout::Resolved, lotus_input::layout::Profile)> {
-        let handle = self.handle(session)?;
-        let card = match handle.info().kind {
-            SessionKind::Primary { card } => Some(card),
-            SessionKind::Secondary { parent } => parent,
+        self.input_layout_for(&SettingsTarget::Session {
+            session: session.to_owned(),
+        })
+    }
+
+    /// Resolve input bindings for a Settings scope without querying a worker.
+    pub fn input_layout_for(
+        &self,
+        target: &SettingsTarget,
+    ) -> io::Result<(lotus_input::layout::Resolved, lotus_input::layout::Profile)> {
+        let resolution = match target {
+            SettingsTarget::Global => self.settings.resolve(None)?,
+            SettingsTarget::Card { card } => {
+                self.known_card(card)?;
+                self.settings.resolve(Some(card))?
+            }
+            SettingsTarget::Session { session } => {
+                let handle = self.handle(session)?;
+                let mut resolution = self.settings.resolve(handle.info().card())?;
+                resolution.apply_runtime(&lock(&handle.settings).runtime);
+                resolution
+            }
         };
-        let mut resolution = self.settings.resolve(card.as_deref())?;
-        resolution.apply_runtime(&lock(&handle.settings).runtime);
         let input = resolution.input();
         let (library, _) = self.settings.input_presets();
         let mut resolved =

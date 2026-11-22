@@ -4,8 +4,8 @@
 //! - One per process. [`open`] focuses the existing window and switches its target; the
 //!   gear, Ctrl+, and the card actions in the sidebar all call it.
 //! - Targets are the saved global defaults and one card's saved overrides
-//!   ([`Target`]). A card is edited whether or not its primary runs. Secondary sessions
-//!   have no saved settings and are not a target.
+//!   ([`Target`]). A card is edited whether or not its primary runs. Live secondary
+//!   sessions expose temporary Controls settings.
 //! - Rows come from the registry for the target's scope. Worker and input settings are read
 //!   and written through `Supervisor::settings` and `Supervisor::set_setting`; desktop
 //!   preferences through the main window's `desktop.json` store. Host settings are shown
@@ -37,6 +37,8 @@ use crate::theme;
 use gpui::{TitlebarOptions, WindowBounds, WindowOptions};
 
 #[cfg(feature = "silvestris-ui")]
+mod bindings;
+#[cfg(feature = "silvestris-ui")]
 mod controllers;
 #[cfg(feature = "silvestris-ui")]
 mod shared;
@@ -53,6 +55,8 @@ pub enum Target {
     Global,
     /// One card's saved overrides; its primary may be stopped.
     Card(String),
+    #[cfg(feature = "silvestris-ui")]
+    Secondary(String),
 }
 
 impl Target {
@@ -60,6 +64,8 @@ impl Target {
         match self {
             Target::Global => Scope::Global,
             Target::Card(_) => Scope::Primary,
+            #[cfg(feature = "silvestris-ui")]
+            Target::Secondary(_) => Scope::SecondaryRuntime,
         }
     }
 
@@ -67,6 +73,10 @@ impl Target {
         match self {
             Target::Global => SettingsTarget::Global,
             Target::Card(card) => SettingsTarget::Card { card: card.clone() },
+            #[cfg(feature = "silvestris-ui")]
+            Target::Secondary(session) => SettingsTarget::Session {
+                session: session.clone(),
+            },
         }
     }
 
@@ -83,6 +93,8 @@ impl Target {
         match self {
             Target::Global => "global",
             Target::Card(_) => "card",
+            #[cfg(feature = "silvestris-ui")]
+            Target::Secondary(_) => "runtime",
         }
     }
 }
@@ -218,6 +230,8 @@ pub struct SettingsWindow {
     controllers: controllers::Panel,
     #[cfg(feature = "silvestris-ui")]
     presets: Vec<String>,
+    #[cfg(feature = "silvestris-ui")]
+    binding_editor: bindings::Editor,
 }
 
 impl SettingsWindow {
@@ -248,9 +262,7 @@ impl SettingsWindow {
                                 view.refresh(cx);
                             }
                             #[cfg(feature = "silvestris-ui")]
-                            if view.group == Group::Controls {
-                                view.refresh_controllers(cx);
-                            }
+                            view.refresh_controllers(cx);
                         })
                         .is_err()
                     {
@@ -263,6 +275,9 @@ impl SettingsWindow {
         cx.observe_window_activation(window, |view, window, cx| {
             if window.is_window_active() {
                 view.refresh(cx);
+            } else {
+                #[cfg(feature = "silvestris-ui")]
+                view.binding_window_deactivated(cx);
             }
         })
         .detach();
@@ -284,9 +299,15 @@ impl SettingsWindow {
             controllers: controllers::Panel::default(),
             #[cfg(feature = "silvestris-ui")]
             presets: Vec::new(),
+            #[cfg(feature = "silvestris-ui")]
+            binding_editor: bindings::Editor::default(),
         };
         #[cfg(feature = "silvestris-ui")]
-        view.init_controllers(cx);
+        {
+            view.init_controllers(cx);
+            view.refresh_controllers(cx);
+            view.init_binding_editor(window, cx);
+        }
         view.refresh(cx);
         view
     }
@@ -298,6 +319,8 @@ impl SettingsWindow {
             {
                 self.prefs.fields.clear();
                 self.prefs.reset_card = None;
+                self.binding_editor.clear_scope();
+                self.cancel_binding_capture(cx);
             }
             self.report = None;
             self.report_error = None;
@@ -325,12 +348,19 @@ impl SettingsWindow {
                 .into_iter()
                 .map(|preset| preset.name)
                 .collect();
+            #[cfg(feature = "silvestris-ui")]
+            let layout = host
+                .input_layout_for(&target)
+                .ok()
+                .map(|(layout, _)| layout);
             #[cfg(not(feature = "silvestris-ui"))]
             let presets = ();
-            (report, cards, presets)
+            #[cfg(not(feature = "silvestris-ui"))]
+            let layout = ();
+            (report, cards, presets, layout)
         });
         cx.spawn(async move |this, cx| {
-            let (report, cards, _presets) = loading.await;
+            let (report, cards, _presets, _layout) = loading.await;
             let _ = this.update(cx, |view, cx| {
                 if view.generation != generation {
                     return;
@@ -351,6 +381,7 @@ impl SettingsWindow {
                 #[cfg(feature = "silvestris-ui")]
                 {
                     view.presets = _presets;
+                    view.binding_editor.layout = _layout;
                 }
                 cx.notify();
             });
@@ -360,6 +391,13 @@ impl SettingsWindow {
 
     /// Save (`Some`) or remove (`None`) one value at the current target.
     fn write(&mut self, descriptor: &Descriptor, value: Option<Value>, cx: &mut Context<Self>) {
+        #[cfg(feature = "silvestris-ui")]
+        if matches!(descriptor.kind, Kind::Bindings { .. })
+            && (self.binding_editor.pending.contains(&self.target)
+                || self.binding_editor.layout.is_none())
+        {
+            return;
+        }
         let (_, source) = self.value(descriptor, cx);
         if self.editable(descriptor, &source).is_err() {
             return;
@@ -391,7 +429,13 @@ impl SettingsWindow {
         let saving = cx.background_spawn(async move {
             host.set_setting(&target, &key, value, Actor::Desktop).await
         });
-        self.track_write(ui_target, saving, cx);
+        let binding = matches!(descriptor.kind, Kind::Bindings { .. });
+        #[cfg(feature = "silvestris-ui")]
+        if binding {
+            self.binding_editor.pending.push(ui_target.clone());
+            cx.notify();
+        }
+        self.track_write(ui_target, binding, saving, cx);
     }
 
     #[cfg(feature = "silvestris-ui")]
@@ -405,19 +449,30 @@ impl SettingsWindow {
         let saved = target.settings_target();
         let saving =
             cx.background_spawn(async move { host.reset_settings(&saved, Actor::Desktop).await });
-        self.track_write(target, saving, cx);
+        self.track_write(target, false, saving, cx);
     }
 
     fn track_write(
         &self,
         ui_target: Target,
+        _binding: bool,
         saving: gpui::Task<std::io::Result<Vec<SettingChange>>>,
         cx: &mut Context<Self>,
     ) {
         cx.spawn(async move |this, cx| {
             let result = saving.await;
             let _ = this.update(cx, |view, cx| {
+                #[cfg(feature = "silvestris-ui")]
+                if _binding {
+                    view.binding_editor
+                        .pending
+                        .retain(|target| target != &ui_target);
+                }
                 if view.target == ui_target {
+                    #[cfg(feature = "silvestris-ui")]
+                    if _binding {
+                        view.binding_editor.layout = None;
+                    }
                     view.error = match result {
                         Err(error) => Some(error.to_string()),
                         Ok(changes) => changes
@@ -442,6 +497,7 @@ impl SettingsWindow {
             .descriptors()
             .iter()
             .filter(|d| d.group == group && d.scopes.allows(scope) && d.key != BOUNDS_KEY)
+            .filter(|d| scope != Scope::SecondaryRuntime || d.owner == Owner::Input)
             .filter(|d| !matches!(d.availability, Availability::Excluded { .. }))
             .collect()
     }
@@ -520,6 +576,8 @@ impl SettingsWindow {
         let name = match self.target {
             Target::Global => "global.json",
             Target::Card(_) => "lotus-settings.json",
+            #[cfg(feature = "silvestris-ui")]
+            Target::Secondary(_) => return false,
         };
         self.report
             .as_ref()
@@ -1020,6 +1078,8 @@ fn reset_label(target: &Target, descriptor: &Descriptor) -> &'static str {
         (_, Owner::Desktop) => "Reset to default",
         (Target::Global, _) => "Reset to default",
         (Target::Card(_), _) => "Reset to Global",
+        #[cfg(feature = "silvestris-ui")]
+        (Target::Secondary(_), _) => "Use inherited binding",
     }
 }
 

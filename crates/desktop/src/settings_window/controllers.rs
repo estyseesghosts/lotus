@@ -8,9 +8,10 @@ use crate::{input_routing, session_tree};
 
 #[derive(Default)]
 pub(super) struct Panel {
-    routing: Option<Arc<input_routing::InputRouting>>,
+    pub(super) routing: Option<Arc<input_routing::InputRouting>>,
     devices: Option<input_routing::Controllers>,
-    sessions: Vec<(String, String)>,
+    pub(super) sessions: Vec<(String, String)>,
+    pub(super) secondaries: Vec<String>,
     error: Option<String>,
 }
 
@@ -29,12 +30,19 @@ impl SettingsWindow {
             .routing
             .as_ref()
             .map(|input| input.controllers());
+        let mut secondaries = Vec::new();
         let sessions = self
             .host
             .iter()
             .flat_map(|host| host.summaries())
             .filter(|row| row.info.asset.is_some() && row.telemetry.state.is_active())
             .map(|row| {
+                if matches!(
+                    row.info.kind,
+                    lotus_session::supervisor::SessionKind::Secondary { .. }
+                ) {
+                    secondaries.push(row.info.id.clone());
+                }
                 let label = format!(
                     "{} · {}",
                     session_tree::session_label(&row.info),
@@ -43,9 +51,13 @@ impl SettingsWindow {
                 (row.info.id, label)
             })
             .collect();
-        if self.controllers.devices != devices || self.controllers.sessions != sessions {
+        if self.controllers.devices != devices
+            || self.controllers.sessions != sessions
+            || self.controllers.secondaries != secondaries
+        {
             self.controllers.devices = devices;
             self.controllers.sessions = sessions;
+            self.controllers.secondaries = secondaries;
             cx.notify();
         }
     }

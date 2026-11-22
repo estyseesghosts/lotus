@@ -208,15 +208,16 @@ guest timing. On a small window they collapse into pills; hover for detail.
 
 The gear in the sidebar footer or Ctrl+, opens Settings; a card's gear opens
 it on that card. There is one window: opening it again focuses it. Pick
-**Global** or a card on the left, then a group. Each row shows where its value
+**All Cards (Global)**, a card or a running secondary in the **Settings for**
+menu, then a category. Each row shows where its value
 comes from; **Reset to Global** (on a card) or **Reset to default** removes the value saved
 at that level. Live settings update affected mounted primary sessions.
 Boot, renderer and CFG changes show **Restart required**. Stop and start
 the card to apply them. Input layouts and window preferences apply at once.
 Host settings and `managed`
 values are read-only, and so is everything but window preferences when the host
-does not allow control. Text, list and binding values cannot be edited here
-yet (#54); use the CLI or MCP. Esc closes it.
+does not allow control. Search opens the matching control in its category.
+Esc closes the window when an editor or menu is inactive.
 
 Pane widths and open states are saved as you drag. Discord Rich Presence
 (Settings → Discord) is off by default; when on, it shows `Playing NAME` or
@@ -317,7 +318,16 @@ and the trigger threshold are `lotus.input.*` settings. They live in the same
 files and layers as worker settings, so a card can differ from the global
 layout and a secondary can try a change that vanishes when it stops. Unlike
 worker settings they apply to running sessions at once and never reach the
-emulator. There is no editor yet (#64); use the CLI or MCP:
+emulator. In **Settings → Controls**, use **Controller Assignments** to
+identify a connected pad and pair it with a running primary or secondary.
+Open **Bindings** to add keys, pad buttons or axis directions, or click an
+existing binding to remove it. Pick a live session to see the 3DS layout
+respond to controller input. Hover over a control to see the scope's bindings,
+or click it to jump to the editor. On a card, choose **Override** to edit
+inherited bindings and **Reset to Global** to inherit them again. To make
+temporary edits, choose a running secondary in **Settings for**.
+
+The same settings can also be edited through the CLI or MCP:
 
 ```powershell
 bin\ctr-cli.exe settings set data\citnlo\host.json global lotus.input.preset '"xbox-labels"'
@@ -541,7 +551,5 @@ The inspector can copy a local failure report with log tails to the clipboard.
 
 - Early, unsigned developer build; Windows 11 x64 only.
 - Audio is emulated but muted.
-- The Settings window cannot edit text, list or binding values, and has no
-  search or input-layout editor yet (#54–#58, #64).
 - Real controllers and two-monitor DPI handling are untested.
 - No hardware-accuracy claim: the workers behave like Azahar.

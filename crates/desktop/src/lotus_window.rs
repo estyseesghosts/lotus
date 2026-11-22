@@ -1159,7 +1159,10 @@ impl LotusWindow {
             "space" if !event.is_held => self.toggle_run(),
             "." if !event.is_held => self.step(),
             key if lotus_input::layout::reserved_key(key).is_some() => {}
-            key => self.button(key, true),
+            // A repeat can arrive after focus returns from Settings or another app.
+            // Only a fresh press may start a game binding in this window.
+            key if !event.is_held || self.keys.contains(key) => self.button(key, true),
+            _ => {}
         }
     }
 

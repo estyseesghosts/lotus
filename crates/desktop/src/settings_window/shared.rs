@@ -194,6 +194,7 @@ impl SettingsWindow {
     }
 
     fn after_navigation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_binding_capture(cx);
         self.prefs.pane_scroll = gpui::ScrollHandle::new();
         self.prefs.reveal = None;
         if let Some(search) = &self.prefs.search {
@@ -223,14 +224,34 @@ impl SettingsWindow {
     }
 
     fn scope_popup(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let targets: Vec<Target> = std::iter::once(Target::Global)
+        let mut targets: Vec<Target> = std::iter::once(Target::Global)
             .chain(self.cards.iter().cloned().map(Target::Card))
+            .chain(
+                self.controllers
+                    .secondaries
+                    .iter()
+                    .cloned()
+                    .map(Target::Secondary),
+            )
             .collect();
+        if !targets.contains(&self.target) && matches!(self.target, Target::Secondary(_)) {
+            targets.push(self.target.clone());
+        }
         let items = targets
             .iter()
             .map(|t| match t {
                 Target::Global => SharedString::from("All Cards (Global)"),
                 Target::Card(card) => SharedString::from(format!("Card {card}")),
+                Target::Secondary(id) => SharedString::from(
+                    self.controllers
+                        .sessions
+                        .iter()
+                        .find(|(session, _)| session == id)
+                        .map(|(_, label)| format!("{label} (temporary)"))
+                        .unwrap_or_else(|| {
+                            format!("Secondary {} (stopped)", crate::session_tree::short_id(id))
+                        }),
+                ),
             })
             .collect();
         let selected = targets.iter().position(|t| *t == self.target);
@@ -416,6 +437,9 @@ impl SettingsWindow {
                             window.remove_window();
                         }
                     }))
+                    .on_key_up(cx.listener(|view, event: &gpui::KeyUpEvent, _, cx| {
+                        view.release_captured_key(&event.keystroke.key, cx);
+                    }))
                     .size_full()
                     .flex()
                     .flex_col()
@@ -473,7 +497,11 @@ impl SettingsWindow {
             body = body.child(Form::new(LABEL_WIDTH).rows(self.appearance_rows(cx)));
         }
         if group == Group::Controls {
-            body = body.child(self.render_controllers(cx));
+            if tab == "Bindings" {
+                body = body.child(self.render_binding_preview(cx));
+            } else {
+                body = body.child(self.render_controllers(cx));
+            }
         }
         let mut current: Option<&'static str> = None;
         let mut form_rows = Vec::new();
@@ -512,6 +540,7 @@ impl SettingsWindow {
                         .into_iter()
                         .find(|s| *s == id.as_ref())
                     {
+                        view.cancel_binding_capture(cx);
                         view.prefs.tabs.insert(group, s);
                         view.prefs.pane_scroll = gpui::ScrollHandle::new();
                         view.prefs.fit_pending = true;
@@ -523,6 +552,23 @@ impl SettingsWindow {
         let this = cx.entity().downgrade();
         let view = view.on_overflow(move |delta, window, cx| fit_pending(&this, delta, window, cx));
         prefs::pane_body().child(view.child(body))
+    }
+
+    pub(super) fn reveal_binding(&mut self, setting: &'static Descriptor, cx: &mut Context<Self>) {
+        self.cancel_binding_capture(cx);
+        self.prefs.reveal = Some(setting);
+        cx.notify();
+    }
+
+    pub(super) fn binding_preview_visible(&self) -> bool {
+        self.prefs.navigator.current().and_then(|id| group_from(id)) == Some(Group::Controls)
+            && self.prefs.tabs.get(&Group::Controls) == Some(&"Bindings")
+    }
+
+    #[cfg(all(test, debug_assertions))]
+    pub(super) fn show_bindings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_group(Group::Controls, window, cx);
+        self.prefs.tabs.insert(Group::Controls, "Bindings");
     }
 
     fn status_notes(&self, group: Group, cx: &mut Context<Self>) -> Vec<AnyElement> {
@@ -546,6 +592,8 @@ impl SettingsWindow {
                     "Overrides for card {card}. Unset values inherit Global. Live settings update \
                      the mounted worker. Other worker settings apply at the next start."
                 ),
+                Target::Secondary(_) =>
+                    "Changes apply to this secondary session and expire when it stops.".into(),
             },
             c.text_secondary,
         )];
@@ -715,6 +763,10 @@ impl SettingsWindow {
     ) -> FormRow {
         let (value, source) = self.value(descriptor, cx);
         let editable = self.editable(descriptor, &source);
+        let binding = matches!(descriptor.kind, Kind::Bindings { .. });
+        let ready = !binding
+            || (self.binding_editor.layout.is_some()
+                && !self.binding_editor.pending.contains(&self.target));
         let overridden = match descriptor.owner {
             Owner::Desktop => value != descriptor.default,
             _ => source == self.target.layer(),
@@ -723,7 +775,7 @@ impl SettingsWindow {
         let card_value = matches!(self.target, Target::Card(_))
             && matches!(descriptor.owner, Owner::Azahar | Owner::Input)
             && source != "managed";
-        let enabled = editable.is_ok() && (!card_value || overridden);
+        let enabled = ready && editable.is_ok() && (!card_value || overridden);
         let mut control = div()
             .flex()
             .flex_wrap()
@@ -839,7 +891,10 @@ impl SettingsWindow {
                     })),
                 );
             }
-            Kind::String { .. } | Kind::Json { .. } | Kind::Bindings { .. } => {
+            Kind::Bindings { .. } => {
+                control = control.child(self.render_binding(descriptor, enabled, cx));
+            }
+            Kind::String { .. } | Kind::Json { .. } => {
                 let field = self.value_field(descriptor, &value, enabled, window, cx);
                 control = control.child(div().w(px(260.0)).child(field));
             }
@@ -859,13 +914,18 @@ impl SettingsWindow {
                         move |view, _: &ClickEvent, _, cx| view.write(descriptor, None, cx),
                     )),
                 );
-        } else if card_value && editable.is_ok() {
+        } else if ready && card_value && editable.is_ok() {
             control = control.child(
                 Button::new(SharedString::from(format!("override-{key}")), "Override")
                     .size(ControlSize::Mini)
                     .on_click(cx.listener(move |view, _: &ClickEvent, _, cx| {
                         let (value, source) = view.value(descriptor, cx);
                         if matches!(view.target, Target::Card(_)) && source != view.target.layer() {
+                            let value = if binding {
+                                serde_json::json!(view.bindings(descriptor))
+                            } else {
+                                value
+                            };
                             view.write(descriptor, Some(value), cx);
                         }
                     })),
@@ -918,7 +978,13 @@ impl SettingsWindow {
             }
             _ => descriptor.description.clone(),
         };
-        if card_value && self.report.is_some() {
+        if binding && self.binding_editor.layout.is_some() {
+            let source = self.binding_source(descriptor);
+            note = match editable {
+                Err(reason) if !window_wide => format!("{source}. {reason}"),
+                _ => source,
+            };
+        } else if card_value && self.report.is_some() {
             note.push_str(if overridden {
                 " Overridden for this card."
             } else {
@@ -961,7 +1027,7 @@ impl SettingsWindow {
                     let mut f = TextField::new(window, cx);
                     f.set_size(ControlSize::Small, cx);
                     f.set_label(descriptor.label.clone(), cx);
-                    if matches!(descriptor.kind, Kind::Json { .. } | Kind::Bindings { .. }) {
+                    if matches!(descriptor.kind, Kind::Json { .. }) {
                         f.set_placeholder("JSON value", cx);
                     }
                     f.set_text(shown.clone(), cx);

@@ -354,6 +354,10 @@ impl InputRouting {
         }
     }
 
+    pub(crate) fn guest_state(&self, session: &str) -> GuestState {
+        lock(&self.router).compose(session)
+    }
+
     pub fn event(&self, event: &Event) {
         let started = Instant::now();
         let mut router = lock(&self.router);
