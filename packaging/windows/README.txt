@@ -13,16 +13,21 @@ Keep all files together. Sessions, logs and saves live in data/<backend>/session
 desktop preferences in data/desktop.json.
 Move the entire folder to move the installation. Select the homebrew again after
 moving: the launcher refreshes machine-specific asset/runtime paths each time.
-Closing LOTUS terminates its workers. Keep data/ when upgrading to retain runs.
+Closing a regular LOTUS window terminates its workers. Keep data/ when
+upgrading to retain runs.
 To keep data elsewhere: LOTUS.cmd -SetDataDir "D:\LOTUS data" (saved per Windows
 user in %APPDATA%\LOTUS\lotus.json), or a lotus.json beside launch.ps1 with
 {"data_dir": "<path>"}. Paths above under data/ then live in that directory.
 
-bin/ctr-cli.exe provides headless scenario runs. MCP is served over stdio only,
-headless (-Mode MCP) or by the window itself (-Mode WindowedMCP), where you watch
-and use the same sessions the agent drives. For a portable MCP command:
+bin/ctr-cli.exe provides headless scenario runs. Use -Mode MCP for an isolated
+headless server or -Mode WindowedMCP for stdio access to a shared desktop.
+For a portable shared MCP command:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File <folder>/launch.ps1 -Mode WindowedMCP -Fixture <homebrew.3dsx>
-No network listener.
+Clients with matching backend, data directory and fixture share the same
+window and workers. Use -Mode SharedDesktop to start this host manually with
+the same options. Closing the shared window minimizes it to the taskbar.
+Choose Quit Lotus or press Ctrl+Shift+Q to stop its workers and disconnect
+clients. The bridge uses a local Windows named pipe.
 
 This developer release is unsigned. Sessions use Vulkan and fall back to
 software rendering when the worker refuses Vulkan setup; audio is muted.

@@ -4,22 +4,41 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
-## Unreleased
+## v0.1.3 (2026-11-22)
 
-- The Windows Inspector opens with Windows accessibility active without
-  moving focus during layout. The desktop reports each tile's rendered
-  preview and gauge frame counters through [MCP](24-desktop.md).
-- A stale desktop tile drop leaves the current workspace and selection
-  intact (#73).
+Native worker pins remain AZAHAR `5ecbd982` and CITnLO `a3994c1d`.
+
+- The desktop debugger gains a hex memory viewer with guarded writes (#145),
+  a breakpoint and watchpoint manager (#144), CPU execution controls and
+  disassembly (#143), a process and thread explorer with scoped kernel
+  actions (#151), an event timeline with CiTrace export (#150), rewind,
+  named checkpoints and movies (#149), and memory scanning with pointer
+  inspection (#146).
+- Debugger source support binds symbols only to the guest build that was
+  verified in memory, steps source lines with breakpoints, and reads DWARF
+  variables through typed expressions (#76–#78). devkitPro builds can be
+  relaunched and verified from the desktop (#79).
+- On Windows, [WindowedMCP](23-local-mcp.md) clients with the same host
+  configuration share one desktop and its workers. Closing that window
+  minimizes it to the taskbar. **Quit Lotus** ends the shared session.
+- MCP clients can create, edit and attach to named investigations that
+  survive desktop restarts. Records report expired session references,
+  reject conflicting edits and restore saved source breakpoints only
+  against the verified executable (#97).
 - Settings search opens the matching control in its category. Primary card
   overrides can be created or reset individually and cleared together.
   Rejected text and numeric edits show a message beside the field (#54).
-- Settings → Controls identifies and assigns pads to running sessions. The
-  binding editor shows live button and stick input and supports temporary
-  mapping changes for a secondary (#64).
-- The Settings schema reports desktop presentation for each registry entry.
-  The editor spells out renderer and DSP choices and puts raw CFG blocks in
-  **Emulation → Advanced CFG** (#55, #58).
+  Settings → Controls identifies and assigns pads to running sessions, and
+  the binding editor previews live button and stick input (#64).
+- The Settings schema reports desktop presentation for each registry entry,
+  spells out renderer and DSP choices, and puts raw CFG blocks in
+  **Emulation → Advanced CFG** (#55, #58). Layered debugger defaults, host
+  location rows and MCP status are visible in Settings (#56). The fixed
+  Settings window restores its saved position (#58).
+- The Windows Inspector opens with Windows accessibility active without
+  moving focus during layout and reports rendered tile previews and gauge
+  frame counters through [MCP](24-desktop.md). A stale tile drop leaves the
+  workspace and selection intact (#73, #74).
 
 ## v0.1.2
 
