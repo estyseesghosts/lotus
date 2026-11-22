@@ -3818,3 +3818,512 @@ fn devkitpro_builds_relaunch_in_the_window_host() {
     drop(controller);
     std::fs::remove_dir_all(root).unwrap();
 }
+
+/// Keys that differ between two reads without a guest change: transport and GPU memory
+/// counters, artifact URIs and the newest event sequence.
+const READ_VOLATILE: &[&str] = &[".transport.", ".gpu_memory.", ".uri", ".events.latest"];
+/// As [`READ_VOLATILE`], plus session identity, for equal operations on two sessions.
+///
+/// Each card's new NAND config gets a random console unique ID (Azahar `cfg.cpp`
+/// `GenerateConsoleUniqueId`, CFG blocks 0x00090000-0x00090002), so those settings and the
+/// settings hash (`NativeSession::refresh_profile`) differ between cards. Stop and event
+/// sequences count each session's own event history (`ctr_worker/debug.h`
+/// `++event_sequence`), which differs with the operations each client ran before.
+const SESSION_VOLATILE: &[&str] = &[
+    ".stop.sequence",
+    ".matched_event",
+    ".profile_hash",
+    "cfg.0009000",
+    ".transport.",
+    ".gpu_memory.",
+    ".uri",
+    ".events.latest",
+    ".epoch",
+    ".id",
+    ".session",
+    "source_session",
+    "created_unix_ms",
+];
+
+/// One outcome through the desktop Result rows and through MCP: both refuse with the same
+/// message, or every non-volatile reply leaf appears as the same row (clipped rows as a
+/// prefix of the reply's JSON).
+fn same_outcome(
+    desktop: DebugStatus,
+    mcp: Result<Value, String>,
+    volatile: &[&str],
+) -> Option<Value> {
+    let keep = |key: &str| !volatile.iter().any(|part| key.contains(part));
+    match (desktop, mcp) {
+        (DebugStatus::Failed { message, .. }, Err(text)) => {
+            assert_eq!(message, text);
+            None
+        }
+        (DebugStatus::Finished { view, .. }, Ok(value)) => {
+            let rows = view
+                .rows
+                .iter()
+                .filter(|row| row.lane == "state" && keep(&row.key))
+                .map(|row| (row.key.as_str(), row.value.as_str()))
+                .collect::<BTreeMap<_, _>>();
+            let expected = flattened(&value, "");
+            let expected = expected
+                .iter()
+                .filter(|(key, _)| keep(key))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(
+                rows.keys().copied().collect::<Vec<_>>(),
+                expected.keys().map(|key| key.as_str()).collect::<Vec<_>>()
+            );
+            for (key, value) in expected {
+                let row = rows[key.as_str()];
+                // Register rows are shown in hex (`hex_string`); their presence is compared.
+                if key.contains("registers[") || key.ends_with(".cpsr") {
+                    continue;
+                }
+                let text = value.to_string();
+                match row.strip_suffix('…') {
+                    Some(prefix) => {
+                        assert!(text.len() > 1024 && text.starts_with(prefix), "{key}")
+                    }
+                    None => assert_eq!(row, text, "{key}"),
+                }
+            }
+            Some(value)
+        }
+        (desktop, mcp) => panic!("desktop {desktop:?} · MCP {mcp:?}"),
+    }
+}
+
+/// Session controls and Result-panel commands against `lotus_debug` and the MCP session
+/// tools (#154). The desktop drives card `desk` and MCP drives card `agent`. Both boot the
+/// owned fixture with deterministic async operations, so equal operations give equal
+/// guest state; a worker without `state_hash` must refuse it the same way in both clients.
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE"]
+fn session_controls_and_reads_match_mcp() {
+    use lotus_mcp::tool_arguments::{
+        AdvanceArgs, ControlArgs, ControlOperation, CreateArgs, KindArg, LoadArgs, SessionArgs,
+    };
+    use lotus_protocol::debug::{Predicate, SettingValue};
+    use lotus_session::SessionState;
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-session-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, &root);
+    config.allow_control = true;
+    config.assets.insert("fixture".into(), fixture);
+    config.profile.insert(
+        "deterministic_async_operations".into(),
+        SettingValue::Boolean(true),
+    );
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    // Sessions created through MCP spawn their supervision on this runtime; worker threads
+    // keep those tasks running between calls, as the window's MCP runtime does.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let send = |command| controller.commands.send(command).unwrap();
+    let call = |result: CallToolResult| {
+        let text = result.content[0].as_text().unwrap().text.clone();
+        if result.is_error == Some(true) {
+            Err(text)
+        } else {
+            Ok(serde_json::from_str::<Value>(&text).unwrap())
+        }
+    };
+    let debug = |session: &str, command| {
+        call(runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: session.into(),
+            command,
+        }))))
+    };
+    let control = |session: &str, operation| {
+        call(runtime.block_on(mcp.lotus_control(Parameters(ControlArgs {
+            session: session.into(),
+            operation,
+        }))))
+        .unwrap()
+    };
+    let target = |id: &str| {
+        let update = controller.latest.lock().unwrap();
+        let summary = update.sessions.iter().find(|s| s.info.id == id).unwrap();
+        SessionTarget {
+            id: summary.info.id.clone(),
+            created_unix_ms: summary.info.created_unix_ms,
+            epoch: summary.telemetry.epoch,
+        }
+    };
+    let desktop =
+        |id: &str, panel, command| desktop_command(&controller, &target(id), panel, command);
+    let telemetry = |id: &str, check: &dyn Fn(SessionState, bool, u64) -> bool| {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            {
+                let update = controller.latest.lock().unwrap();
+                let s = update.sessions.iter().find(|s| s.info.id == id);
+                let seen = s.map(|s| {
+                    let t = &s.telemetry;
+                    (t.state, t.playing, t.frames, t.epoch)
+                });
+                if seen.is_some_and(|(state, playing, frames, _)| check(state, playing, frames)) {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "{id}: {seen:?} · {}",
+                    update.error
+                );
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let paused_at = |id: &str, frames: u64| {
+        telemetry(id, &|state, playing, at| {
+            state == SessionState::Paused && !playing && at == frames
+        })
+    };
+
+    // Create: the desktop's card and an MCP card, then the listings both clients read.
+    send(Command::Create {
+        kind: SessionKind::Primary {
+            card: "desk".into(),
+        },
+        asset: None,
+    });
+    wait(&controller, |update| update.sessions.len() == 1);
+    let a = controller.latest.lock().unwrap().sessions[0]
+        .info
+        .id
+        .clone();
+    let b = call(
+        runtime.block_on(mcp.lotus_create_session(Parameters(CreateArgs {
+            kind: KindArg::Primary,
+            card: Some("agent".into()),
+            asset: None,
+        }))),
+    )
+    .unwrap()["session"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    wait(&controller, |update| {
+        update.sessions.iter().any(|s| s.info.id == b) && update.cards.len() == 2
+    });
+    {
+        // Read MCP first: windowed lotus_status locks the same published state.
+        let cards = call(runtime.block_on(mcp.lotus_list_cards())).unwrap();
+        let sessions = call(runtime.block_on(mcp.lotus_list_sessions())).unwrap();
+        let status: Value = serde_json::from_str(&runtime.block_on(mcp.lotus_status())).unwrap();
+        let update = controller.latest.lock().unwrap();
+        let ids = update
+            .sessions
+            .iter()
+            .map(|s| s.info.id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let listed = |value: &Value| {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|s| s["id"].as_str().unwrap().to_owned())
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let mut desktop_cards = update.cards.clone();
+        desktop_cards.sort();
+        assert_eq!(cards["cards"], serde_json::json!(desktop_cards));
+        assert_eq!(cards["mounted"]["desk"], a.as_str());
+        assert_eq!(cards["mounted"]["agent"], b.as_str());
+        assert_eq!(listed(&sessions), ids);
+        assert_eq!(status["control"], update.control);
+        assert_eq!(status["max_sessions"], update.max_sessions);
+        assert_eq!(listed(&status["sessions"]), ids);
+    }
+
+    // Load, then reset to the boot state: the desktop's Load runs, MCP's stays paused.
+    send(Command::Load {
+        session: a.clone(),
+        asset: "fixture".into(),
+    });
+    telemetry(&a, &|_, playing, _| playing);
+    let loaded = target(&a).epoch;
+    send(Command::Reset(a.clone()));
+    wait(&controller, |update| {
+        update
+            .sessions
+            .iter()
+            .any(|s| s.info.id == a && s.telemetry.epoch > loaded)
+    });
+    paused_at(&a, 0);
+    let info = call(runtime.block_on(mcp.lotus_load(Parameters(LoadArgs {
+        session: b.clone(),
+        asset: "fixture".into(),
+    }))))
+    .unwrap();
+    assert_eq!(info["asset"], "fixture");
+    assert_eq!(debug(&b, D::Reset).unwrap()["frames"], 0);
+    paused_at(&b, 0);
+
+    // Advance three frames each way; equal operations give equal state.
+    for _ in 0..3 {
+        send(Command::Step(a.clone()));
+    }
+    paused_at(&a, 3);
+    let advanced = call(
+        runtime.block_on(mcp.lotus_run_until(Parameters(AdvanceArgs {
+            session: b.clone(),
+            frames: 2,
+        }))),
+    )
+    .unwrap();
+    assert_eq!(advanced["frames"], 2);
+    assert_eq!(debug(&b, D::Advance { frames: 1 }).unwrap()["frames"], 3);
+    paused_at(&b, 3);
+    let hash = D::StateHash {
+        chunk_kib: 256,
+        sections: false,
+        dump: None,
+    };
+    let hashed = same_outcome(
+        desktop(&a, Panel::Result, hash.clone()),
+        debug(&b, hash.clone()),
+        SESSION_VOLATILE,
+    );
+    let session_status = call(
+        runtime.block_on(mcp.lotus_session_status(Parameters(SessionArgs { session: b.clone() }))),
+    )
+    .unwrap();
+    assert_eq!(session_status["status"]["frames"], 3);
+    assert_eq!(session_status["session"]["telemetry"]["frames"], 3);
+    let deterministic = session_status["status"]["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|feature| feature == "state_hash");
+    assert_eq!(hashed.is_some(), deterministic);
+
+    // Reads of one paused session through both clients.
+    for command in [
+        D::Status,
+        D::Perf,
+        D::SettingsGet {
+            name: "is_new_3ds".into(),
+        },
+        D::SettingsList {
+            offset: 0,
+            limit: 3,
+        },
+        D::SettingsDiff,
+        D::Titles {
+            media: 0,
+            offset: 0,
+            limit: 5,
+        },
+        D::CrashReport { core: 0 },
+        D::Logs {
+            after: 0,
+            limit: 20,
+        },
+        D::CaptureScaled { scale: 1 },
+        hash.clone(),
+    ] {
+        same_outcome(
+            desktop(&a, Panel::Result, command.clone()),
+            debug(&a, command),
+            READ_VOLATILE,
+        );
+    }
+
+    // run_until to frame 5 on both, then fork each and compare the forks.
+    let until = D::RunUntil {
+        predicate: Predicate::Frame { frame: 5 },
+        frames: 10,
+        timeout_ms: 20_000,
+    };
+    let ran = same_outcome(
+        desktop(&a, Panel::Result, until.clone()),
+        debug(&b, until),
+        SESSION_VOLATILE,
+    );
+    // A worker that refuses run_until refuses it identically in both clients (checked
+    // above) and both sessions stay at frame 3.
+    let frames = if ran.is_some() { 5 } else { 3 };
+    paused_at(&a, frames);
+    paused_at(&b, frames);
+    let fork = D::Fork {
+        count: 1,
+        overrides: Default::default(),
+    };
+    let forked = same_outcome(
+        desktop(&a, Panel::Result, fork.clone()),
+        debug(&b, fork),
+        SESSION_VOLATILE,
+    );
+    if let Some(agent) = forked {
+        let agent_fork = agent["forks"][0]["id"].as_str().unwrap().to_owned();
+        wait(&controller, |update| update.sessions.len() == 4);
+        let desk_fork = controller
+            .latest
+            .lock()
+            .unwrap()
+            .sessions
+            .iter()
+            .find(|s| s.info.id != a && s.info.id != b && s.info.id != agent_fork)
+            .unwrap()
+            .info
+            .id
+            .clone();
+        same_outcome(
+            desktop(&desk_fork, Panel::Result, hash.clone()),
+            debug(&agent_fork, hash.clone()),
+            SESSION_VOLATILE,
+        );
+        send(Command::Stop(desk_fork.clone()));
+        assert_eq!(debug(&agent_fork, D::Stop).unwrap()["state"], "stopped");
+        wait(&controller, |update| update.sessions.len() == 2);
+    }
+
+    // A refused and an accepted live setting, then the value each client reads back.
+    for value in [9999, 150] {
+        let set = D::SettingsSet {
+            name: "cpu_clock_percentage".into(),
+            value: SettingValue::Integer(value),
+        };
+        same_outcome(
+            desktop(&a, Panel::Settings, set.clone()),
+            debug(&b, set),
+            SESSION_VOLATILE,
+        );
+    }
+    let clock = D::SettingsGet {
+        name: "cpu_clock_percentage".into(),
+    };
+    let read = same_outcome(
+        desktop(&a, Panel::Result, clock.clone()),
+        debug(&b, clock),
+        SESSION_VOLATILE,
+    );
+    if let Some(read) = read {
+        assert_eq!(read["value"], 150);
+    }
+
+    // Rewind, instruction steps and reverse execution from the Snapshots route.
+    let rewind = D::RewindConfigure {
+        enabled: true,
+        capacity: 8,
+        budget_mib: 64,
+        interval_frames: Some(1),
+        compression_level: None,
+        compression_queue: None,
+    };
+    for command in [rewind, D::Step { core: 0, count: 4 }] {
+        same_outcome(
+            desktop(&a, Panel::States, command.clone()),
+            debug(&b, command),
+            SESSION_VOLATILE,
+        );
+    }
+    // The worker starts a new epoch for each reverse operation (`ctr_worker/control.h`), so
+    // the desktop withholds the reply as stale (`SessionTarget::accepts_reply`) while MCP
+    // returns it; the effects are compared on the new epoch instead.
+    for command in [D::ReverseStep { core: 0 }, D::ReverseContinue] {
+        let before = target(&a).epoch;
+        match (
+            desktop(&a, Panel::States, command.clone()),
+            debug(&b, command),
+        ) {
+            (DebugStatus::Failed { message, .. }, Err(text)) => assert_eq!(message, text),
+            (DebugStatus::Expired, Ok(reply)) => {
+                assert_eq!(reply["reverse"], true);
+                wait(&controller, |update| {
+                    update
+                        .sessions
+                        .iter()
+                        .any(|s| s.info.id == a && s.telemetry.epoch > before)
+                });
+                same_outcome(
+                    desktop(&a, Panel::Result, hash.clone()),
+                    debug(&b, hash.clone()),
+                    SESSION_VOLATILE,
+                );
+                // Status also reports audio focus, which one session holds at a time
+                // (supervisor `audio_focus`); its guest fields are compared across sessions.
+                let shown = same_outcome(
+                    desktop(&a, Panel::Result, D::Status),
+                    debug(&a, D::Status),
+                    READ_VOLATILE,
+                )
+                .unwrap();
+                let agent = debug(&b, D::Status).unwrap();
+                for key in ["paused", "stop", "worker_frame", "guest_ticks"] {
+                    let strip = |value: &Value| {
+                        let mut value = value[key].clone();
+                        if let Some(stop) = value.as_object_mut() {
+                            stop.remove("sequence");
+                        }
+                        value
+                    };
+                    assert_eq!(strip(&shown), strip(&agent), "{key}");
+                }
+            }
+            (desktop, mcp) => panic!("desktop {desktop:?} · MCP {mcp:?}"),
+        }
+    }
+
+    // Continue and pause: the desktop's Play/Pause and MCP's debug/control operations.
+    send(Command::Play(a.clone()));
+    debug(&b, D::Continue).unwrap();
+    for id in [&a, &b] {
+        telemetry(id, &|state, playing, _| {
+            playing && state == SessionState::Running
+        });
+    }
+    send(Command::Pause(a.clone()));
+    control(&b, ControlOperation::Pause);
+    for id in [&a, &b] {
+        telemetry(id, &|state, playing, _| {
+            !playing && state == SessionState::Paused
+        });
+    }
+
+    // Reload: a new epoch with the content still loaded.
+    let (before_a, before_b) = (target(&a).epoch, target(&b).epoch);
+    send(Command::Load {
+        session: a.clone(),
+        asset: "fixture".into(),
+    });
+    assert_eq!(
+        debug(
+            &b,
+            D::Load {
+                asset: "fixture".into()
+            }
+        )
+        .unwrap()["frames"],
+        0
+    );
+    for (id, before) in [(&a, before_a), (&b, before_b)] {
+        wait(&controller, |update| {
+            update.sessions.iter().any(|s| {
+                &s.info.id == id
+                    && s.telemetry.epoch > before
+                    && s.info.asset.as_deref() == Some("fixture")
+            })
+        });
+    }
+
+    // Stop: the desktop's Stop and MCP's control operation; neither session is listed.
+    send(Command::Stop(a.clone()));
+    assert_eq!(control(&b, ControlOperation::Stop)["state"], "stopped");
+    wait(&controller, |update| update.sessions.is_empty());
+    assert_eq!(
+        call(runtime.block_on(mcp.lotus_list_sessions())).unwrap(),
+        serde_json::json!([])
+    );
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
+}

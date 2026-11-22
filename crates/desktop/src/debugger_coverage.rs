@@ -73,7 +73,7 @@ fn render(inventory: &str) -> Result<String, String> {
             | "Source debugging" | "Variables" | "Builds" => Some("tests/native_inspector.rs"),
             "Memory" | "Breakpoints" => Some("src/lotus_window/breakpoints.rs"),
             "Guest tools" => Some("src/lotus_window/command_palette.rs"),
-            "GPU" | "GDB" => Some("tests/native_inspector.rs"),
+            "GPU" | "GDB" | "Session" => Some("tests/native_inspector.rs"),
             "Workspace" => Some("tests/responsive_controller.rs"),
             "Input" => Some("tests/input_routing.rs"),
             "external" if *route == "external only" => None,

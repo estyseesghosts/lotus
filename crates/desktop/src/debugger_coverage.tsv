@@ -1,5 +1,5 @@
 # v1	surface, operation, desktop route, permission, extra feature, detail, verification
-debug	advance	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
+debug	advance	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	asset_mount	palette	control	-	-	fixture pending
 debug	audio_capture	inspector actions	control	-	-	fixture pending
 debug	audio_focus	inspector actions	control	-	-	fixture pending
@@ -12,7 +12,7 @@ debug	breakpoints	Breakpoint manager	read	-	Settings shown when acknowledged by 
 debug	build	Builds inspector	control	-	Trusted host build profiles	Builds
 debug	build_cancel	Builds inspector	control	-	Trusted host build profiles	Builds
 debug	build_status	Builds inspector	read	-	Trusted host build profiles	Builds
-debug	capture_scaled	palette	read	-	-	fixture pending
+debug	capture_scaled	palette	read	-	-	Session
 debug	cheat_add	palette	control	-	-	Guest tools
 debug	cheat_enable	palette	control	-	-	Guest tools
 debug	cheat_remove	palette	control	-	-	Guest tools
@@ -23,15 +23,15 @@ debug	citrace_status	Event timeline	read	-	-	Timeline
 debug	citrace_stop	Event timeline	control	-	-	Timeline
 debug	compare_builds	Builds inspector	read	-	Trusted host build profiles	Builds
 debug	content_transform	palette	control	-	-	fixture pending
-debug	continue	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
-debug	crash_report	palette	read	-	-	fixture pending
+debug	continue	session controls	control	-	Current desktop controls expose a subset of arguments	Session
+debug	crash_report	palette	read	-	-	Session
 debug	deadlocks	Kernel explorer	read	-	-	Kernel
 debug	disassemble	CPU inspector	read	-	-	CPU
 debug	dsp_inspect	inspector polling	read	-	-	fixture pending
 debug	dsp_load_firmware	palette	control	-	-	fixture pending
 debug	events	Event timeline	read	-	-	Timeline
 debug	events_configure	Event timeline	control	event_subscriptions	-	Timeline
-debug	fork	palette	control	-	-	fixture pending
+debug	fork	palette	control	-	-	Session
 debug	gpu_configure	GPU capture form	control	gpu_capture_levels when capture is set	Named presets and all capture options (#147).	GPU
 debug	gpu_draw	inspector rows	read	-	-	GPU
 debug	gpu_draws	inspector polling	read	-	-	GPU
@@ -44,10 +44,10 @@ debug	inspect_variable	CPU inspector	read	-	-	Variables
 debug	install_cia	palette	control	-	-	fixture pending
 debug	lease_acquire	external only	control	-	Lease ownership belongs to the external controller	external
 debug	lease_release	external only	control	-	Lease ownership belongs to the external controller	external
-debug	load	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
+debug	load	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	load_state	Snapshots inspector	control	-	-	Snapshots
 debug	load_symbols	palette	control	-	-	Source identity
-debug	logs	inspector polling	read	-	-	fixture pending
+debug	logs	inspector polling	read	-	-	Session
 debug	matrix	palette	control	-	-	fixture pending
 debug	memory_map	Memory inspector	read	-	-	Memory
 debug	movie_play	Snapshots inspector	control	-	-	Snapshots
@@ -55,42 +55,42 @@ debug	movie_record	Snapshots inspector	control	-	-	Snapshots
 debug	movie_status	Snapshots inspector	read	-	-	Snapshots
 debug	movie_stop	Snapshots inspector	control	-	-	Snapshots
 debug	nfc_remove	palette	control	-	-	fixture pending
-debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
-debug	perf	palette	read	-	-	fixture pending
+debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments	Session
+debug	perf	palette	read	-	-	Session
 debug	pointer_chain	Memory search	read	-	-	Memory search
 debug	processes	Kernel explorer	read	-	-	Kernel
 debug	read_memory	Memory inspector	read	-	-	Memory
 debug	registers	inspector polling	read	-	-	CPU
 debug	relaunch_build	Builds inspector	control	-	Trusted host build profiles	Builds
-debug	reset	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
+debug	reset	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	resolve_symbol	palette	read	-	-	Source identity
-debug	reverse_continue	Snapshots inspector	control	-	-	fixture pending
-debug	reverse_step	Snapshots inspector	control	-	-	fixture pending
+debug	reverse_continue	Snapshots inspector	control	-	-	Session
+debug	reverse_step	Snapshots inspector	control	-	-	Session
 debug	rewind_configure	Snapshots inspector	control	rewind_compression_queue when compression_queue is set	-	Snapshots
 debug	rewind_status	Snapshots inspector	read	-	-	Snapshots
 debug	run_to	CPU inspector	control	-	-	CPU
-debug	run_until	palette	control	-	-	fixture pending
+debug	run_until	palette	control	-	-	Session
 debug	save_state	Snapshots inspector	control	-	-	Snapshots
 debug	scan	Memory search	control	-	-	Memory search
 debug	scan_narrow	Memory search	control	-	-	Memory search
 debug	scan_results	Memory search	read	-	-	Memory search
-debug	settings_diff	palette	read	-	-	fixture pending
-debug	settings_get	palette	read	-	-	fixture pending
-debug	settings_list	inspector polling	read	-	-	fixture pending
-debug	settings_set	inspector rows	control	deterministic_async for deterministic_async_operations	-	fixture pending
+debug	settings_diff	palette	read	-	-	Session
+debug	settings_get	palette	read	-	-	Session
+debug	settings_list	inspector polling	read	-	-	Session
+debug	settings_set	inspector rows	control	deterministic_async for deterministic_async_operations	-	Session
 debug	shader_trace	inspector rows	control	-	-	GPU
 debug	source_breakpoint_remove	CPU inspector	control	-	-	Source debugging
 debug	source_breakpoint_set	CPU inspector	control	-	-	Source debugging
 debug	source_breakpoints	CPU inspector	read	-	-	Source debugging
 debug	source_excerpt	CPU inspector	read	-	-	Source debugging
 debug	source_step	CPU inspector	control	-	-	Source debugging
-debug	state_hash	palette	control if dump is set	state_hash	-	fixture pending
+debug	state_hash	palette	control if dump is set	state_hash	-	Session
 debug	states	Snapshots inspector	read	-	-	Snapshots
-debug	status	session status	read	-	Cached session summaries and gauges	fixture pending
+debug	status	session status	read	-	Cached session summaries and gauges	Session
 debug	step	CPU inspector	control	-	-	CPU
 debug	step_out	CPU inspector	control	-	-	CPU
 debug	step_over	CPU inspector	control	-	-	CPU
-debug	stop	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
+debug	stop	session controls	control	-	Current desktop controls expose a subset of arguments	Session
 debug	storage_browse	palette	read	-	-	Guest tools
 debug	surface	inspector rows	control	-	-	fixture pending
 debug	suspend	Kernel explorer	control	-	-	Kernel
@@ -98,32 +98,32 @@ debug	symbolize	palette	read	-	-	Source identity
 debug	system_regenerate	palette	control	-	-	fixture pending
 debug	thread_registers	Kernel explorer	read	-	-	Kernel
 debug	threads	Kernel explorer	read	-	-	Kernel
-debug	titles	palette	read	-	-	fixture pending
+debug	titles	palette	read	-	-	Session
 debug	trace	Event timeline	control	-	-	Timeline
 debug	write_memory	Memory inspector	control	-	-	Memory
 debug	write_register	CPU inspector	control	-	-	CPU
 debug	write_thread_register	Kernel explorer	control	-	-	Kernel
 mcp-debug	lotus_capture	external only	read	-	Raw artifacts are exposed to external clients	external
 mcp-debug	lotus_capture_image	external only	read	-	Inline images are an MCP response format	external
-mcp	lotus_control	session controls	control	-	Run, pause, reset and stop	fixture pending
-mcp	lotus_create_session	session controls	control	-	Create or launch a card or secondary	fixture pending
-mcp-debug	lotus_debug	debug bridge	per operation	-	See the shared command inventory	fixture pending
+mcp	lotus_control	session controls	control	-	Run, pause, reset and stop	Session
+mcp	lotus_create_session	session controls	control	-	Create or launch a card or secondary	Session
+mcp-debug	lotus_debug	debug bridge	per operation	-	See the shared command inventory	Session
 mcp	lotus_focus_session	workspace	presentation change	-	Select a session in the desktop	Workspace
 mcp-debug	lotus_gdb	GDB inspector	control to start or stop	-	Shares the listener and client lease with the desktop (#152). CITnLO only.	GDB
 mcp	lotus_input	desktop input	control	-	Device input through the desktop router	Input
 mcp	lotus_input_presets	settings window	read or control by operation	-	Preset library and editor	fixture pending
-mcp	lotus_list_cards	session status	read	-	Card sidebar	fixture pending
-mcp	lotus_list_sessions	session status	read	-	Session sidebar	fixture pending
-mcp	lotus_load	session controls	control	-	Asset picker	fixture pending
+mcp	lotus_list_cards	session status	read	-	Card sidebar	Session
+mcp	lotus_list_sessions	session status	read	-	Session sidebar	Session
+mcp	lotus_load	session controls	control	-	Asset picker	Session
 mcp	lotus_pin_artifact	external only	control	-	External artifact retention	external
 mcp-debug	lotus_read_memory	Memory inspector	read	-	Bounded guest reads with hex and ASCII	Memory
 mcp-debug	lotus_registers	inspector polling	read	-	CPU core is selectable	CPU
 mcp	lotus_release_artifacts	external only	control	-	External artifact retention	external
-mcp	lotus_run_until	session controls	control	-	Only single-frame advance in the desktop	fixture pending
-mcp	lotus_session_status	session status	read	-	Cached session summaries and gauges	fixture pending
+mcp	lotus_run_until	session controls	control	-	Only single-frame advance in the desktop	Session
+mcp	lotus_session_status	session status	read	-	Cached session summaries and gauges	Session
 mcp	lotus_settings	settings window	read	-	Scoped settings view	fixture pending
 mcp	lotus_settings_change	settings window	control	-	Scope and application rules apply	fixture pending
 mcp	lotus_settings_schema	settings window	read	-	Settings registry drives the form	fixture pending
-mcp	lotus_status	session status	read	-	Desktop gauges show session status, not MCP server diagnostics	fixture pending
+mcp	lotus_status	session status	read	-	Desktop gauges show session status, not MCP server diagnostics	Session
 mcp	lotus_validate_scenario	external only	read	-	Scenario authoring is currently external	external
 mcp	lotus_workspace	workspace	read or control by operation	-	Interactive tiling shares the workspace model	Workspace
