@@ -177,14 +177,29 @@ impl RenderOnce for Shell {
                     .is_some_and(|p| p.presentation != Presentation::Closed);
                 let is_open = plan.presentation != Presentation::Closed;
                 if is_open && !was_open {
-                    state.return_focus = window.focused(cx);
-                    window.focus(&state.inspector_focus, cx);
-                } else if was_open && !is_open && state.inspector_focus.contains_focused(window, cx)
-                {
-                    if let Some(target) = state.return_focus.take() {
-                        window.focus(&target, cx);
-                    } else {
-                        window.blur(cx);
+                    let previous = window.focused(cx);
+                    state.return_focus = previous.clone();
+                    let inspector = state.inspector_focus.clone();
+                    // The toolbar may already have reported focus to AccessKit during
+                    // this frame's prepaint. Transfer focus after the frame is built.
+                    window.defer(cx, move |window, cx| {
+                        if window.focused(cx) == previous {
+                            window.focus(&inspector, cx);
+                        }
+                    });
+                } else if was_open && !is_open {
+                    let target = state.return_focus.take();
+                    if state.inspector_focus.contains_focused(window, cx) {
+                        let previous = window.focused(cx);
+                        window.defer(cx, move |window, cx| {
+                            if window.focused(cx) == previous {
+                                if let Some(target) = target {
+                                    window.focus(&target, cx);
+                                } else {
+                                    window.blur(cx);
+                                }
+                            }
+                        });
                     }
                 }
                 state.previous = Some(plan);
