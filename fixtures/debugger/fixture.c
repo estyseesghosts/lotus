@@ -8,6 +8,10 @@ volatile u32 canary[2] = {0xcafebabe, 0xdeadbeef};
 volatile u32 mutex_a,mutex_b,thread_phase;
 volatile u32 raced_counter,race_expected=2,race_ready;
 static unsigned char child_stack[4096] __attribute__((aligned(16)));
+#ifdef LOTUS_LAYOUT_SHIFT
+/* Rebuild variant (--define LOTUS_LAYOUT_SHIFT): moves every later function (lotus#76). */
+__attribute__((noinline, used)) u32 layout_shift(u32 x) { return x * 7 + 3; }
+#endif
 
 static u32 create_mutex(u32 locked) {
     register u32 r0 __asm__("r0")=0,r1 __asm__("r1")=locked;
@@ -100,6 +104,8 @@ __attribute__((noinline)) void tick(void) {
     if (mode == 6) deadlock_main();
     if (mode == 7) new3ds_race();
     if (mode == 8 && (counter & log_mask) == 0) output(flood_text, sizeof(flood_text)-1);
+    /* mode 9: svcExitProcess; the kernel drops this process and its mappings (lotus#76). */
+    if (mode == 9) __asm__ volatile("svc 0x03" ::: "memory");
 }
 
 __attribute__((noinline)) int main(void) {

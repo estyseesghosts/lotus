@@ -2292,3 +2292,291 @@ fn cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture() {
     assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+fn tool_error(result: CallToolResult) -> String {
+    assert_eq!(result.is_error, Some(true), "{:?}", result.content);
+    result.content[0].as_text().unwrap().text.clone()
+}
+
+/// `llvm-nm` address of a defined symbol, as an independent reference.
+fn nm_address(elf: &std::path::Path, name: &str) -> u32 {
+    let output = std::process::Command::new("llvm-nm")
+        .arg(elf)
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    let line = text
+        .lines()
+        .find(|line| line.ends_with(&format!(" {name}")))
+        .unwrap_or_else(|| panic!("{name} missing from {}", elf.display()));
+    u32::from_str_radix(&line[..8], 16).unwrap()
+}
+
+/// `llvm-addr2line` file and line for an address, as an independent reference.
+fn addr2line(elf: &std::path::Path, address: u32) -> (String, u32) {
+    let output = std::process::Command::new("llvm-addr2line")
+        .arg("-e")
+        .arg(elf)
+        .arg(format!("{address:#x}"))
+        .output()
+        .unwrap();
+    let text = String::from_utf8(output.stdout).unwrap();
+    let (file, line) = text.trim().rsplit_once(':').unwrap();
+    let line = line.split_whitespace().next().unwrap().parse().unwrap();
+    (file.replace('\\', "/"), line)
+}
+
+/// Result-panel rows under `prefix`, decoded from their JSON text.
+fn result_rows(view: &Inspection, prefix: &str) -> BTreeMap<String, Value> {
+    view.rows
+        .iter()
+        .filter(|row| row.key.starts_with(prefix))
+        .map(|row| (row.key.clone(), serde_json::from_str(&row.value).unwrap()))
+        .collect()
+}
+
+/// The same flattening the Result panel applies to a reply.
+fn flatten(value: &Value, key: String, out: &mut BTreeMap<String, Value>) {
+    match value {
+        Value::Object(map) => map
+            .iter()
+            .for_each(|(name, value)| flatten(value, format!("{key}.{name}"), out)),
+        Value::Array(values) => values
+            .iter()
+            .enumerate()
+            .for_each(|(i, value)| flatten(value, format!("{key}[{i}]"), out)),
+        _ => {
+            out.insert(key, value.clone());
+        }
+    }
+}
+
+fn flattened(value: &Value, key: &str) -> BTreeMap<String, Value> {
+    let mut out = BTreeMap::new();
+    flatten(value, key.into(), &mut out);
+    out
+}
+
+fn sha256_file(path: &std::path::Path) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(std::fs::read(path).unwrap()))
+}
+
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE(_GCC, _SHIFTED) builds with adjacent ELFs"]
+fn source_identity_binds_only_the_loaded_build() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let clang = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let gcc = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE_GCC").unwrap());
+    let shifted = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE_SHIFTED").unwrap());
+    let (clang_elf, gcc_elf, shifted_elf) = (
+        clang.with_extension("elf"),
+        gcc.with_extension("elf"),
+        shifted.with_extension("elf"),
+    );
+    let root = std::env::temp_dir().join(format!("lotus-source-id-{}", SessionUuid::generate()));
+    std::fs::create_dir_all(&root).unwrap();
+    // The worker re-reads this file on reset, so overwriting it is a rebuild.
+    let rebuild = root.join("rebuild.3dsx");
+    std::fs::copy(&clang, &rebuild).unwrap();
+    let mut config = HostConfig::new(worker, root.join("host"));
+    config.allow_control = true;
+    config.assets = BTreeMap::from([
+        ("rebuild".into(), rebuild.clone()),
+        ("gcc".into(), gcc.clone()),
+        ("clang_elf".into(), clang_elf.clone()),
+        ("gcc_elf".into(), gcc_elf.clone()),
+        ("shifted_elf".into(), shifted_elf.clone()),
+    ]);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let send = |command| controller.commands.send(command).unwrap();
+    let create = |asset: &str, known: &[String]| {
+        send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some(asset.into()),
+        });
+        wait(&controller, |update| {
+            !known.contains(&update.selected)
+                && update
+                    .sessions
+                    .iter()
+                    .any(|summary| summary.info.id == update.selected)
+        });
+        let target = selected_target(&controller);
+        send(Command::Pause(target.id.clone()));
+        wait(&controller, |update| {
+            target.resolve(&update.sessions).is_some_and(|summary| {
+                !summary.telemetry.playing
+                    && summary.telemetry.state == lotus_session::SessionState::Paused
+            })
+        });
+        target
+    };
+    let a = create("rebuild", &[]);
+    let b = create("gcc", std::slice::from_ref(&a.id));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let call = |target: &SessionTarget, command| {
+        runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: target.id.clone(),
+            command,
+        })))
+    };
+    let load = |asset: &str| D::LoadSymbols {
+        asset: asset.into(),
+    };
+    let refused = |target: &SessionTarget, asset: &str| {
+        let message = tool_error(call(target, load(asset)));
+        match desktop_command(&controller, target, Panel::Result, load(asset)) {
+            DebugStatus::Failed {
+                kind,
+                message: desktop,
+            } => {
+                assert_eq!(kind, ErrorKind::InvalidData);
+                assert_eq!(desktop, message);
+            }
+            status => panic!("{asset} bound to the wrong build: {status:?}"),
+        }
+        message
+    };
+
+    // A different compiler and a changed layout both fail the byte comparison.
+    assert!(refused(&a, "gcc_elf").contains("differs from guest memory"));
+    assert!(refused(&a, "shifted_elf").contains("differs from guest memory"));
+    assert!(refused(&b, "clang_elf").contains("differs from guest memory"));
+    let probe = D::Symbolize {
+        addresses: vec![0x0010_0000],
+    };
+    assert!(tool_error(call(&a, probe.clone())).contains("load an approved ELF"));
+
+    let bound = completed(desktop_command(
+        &controller,
+        &a,
+        Panel::Result,
+        load("clang_elf"),
+    ));
+    let row = |key: &str| result_rows(&bound, key).remove(key).unwrap();
+    let bound = serde_json::json!({
+        "mapping": row(".mapping"), "elf_sha256": row(".elf_sha256"),
+        "content": {"sha256": row(".content.sha256")}, "process": row(".process"),
+        "generation": row(".generation"),
+        "sections": (0..)
+            .map(|i| result_rows(&bound, &format!(".sections[{i}].")))
+            .take_while(|fields| !fields.is_empty())
+            .map(|fields| fields
+                .into_iter()
+                .map(|(key, value)| (key.rsplit('.').next().unwrap().to_string(), value))
+                .collect::<serde_json::Map<_, _>>())
+            .collect::<Vec<_>>(),
+    });
+    assert_eq!(bound["mapping"], "verified_bytes");
+    assert_eq!(bound["elf_sha256"], sha256_file(&clang_elf));
+    assert_eq!(bound["content"]["sha256"], sha256_file(&clang));
+    assert!(bound["process"].as_u64().unwrap() > 0);
+    let sections = bound["sections"].as_array().unwrap();
+    let section = |name: &str| sections.iter().find(|s| s["name"] == name).unwrap();
+    assert_eq!(section(".text")["verified"], true);
+    assert_eq!(section(".rodata")["verified"], true);
+    assert_eq!(section(".data")["verified"], false);
+    let bound_b = tool_json(call(&b, load("gcc_elf")));
+    assert_eq!(bound_b["elf_sha256"], sha256_file(&gcc_elf));
+    assert_eq!(bound_b["content"]["sha256"], sha256_file(&gcc));
+
+    // A/B builds share symbol names; each session resolves against its own build.
+    for (target, elf, image) in [(&a, &clang_elf, &bound), (&b, &gcc_elf, &bound_b)] {
+        let resolve = D::ResolveSymbol {
+            query: "thumb_tick".into(),
+        };
+        let via_mcp = tool_json(call(target, resolve.clone()));
+        assert_eq!(via_mcp["addresses"][0], nm_address(elf, "thumb_tick"));
+        let via_desktop = completed(desktop_command(&controller, target, Panel::Result, resolve));
+        assert_eq!(
+            result_rows(&via_desktop, ".addresses"),
+            flattened(&via_mcp["addresses"], ".addresses")
+        );
+
+        let functions = ["tick", "thumb_tick", "main", "lotus_tick_body"];
+        let mut addresses: Vec<u32> = functions.iter().map(|f| nm_address(elf, f)).collect();
+        addresses.extend([nm_address(elf, "watched"), 0x0800_0000]);
+        let command = D::Symbolize {
+            addresses: addresses.clone(),
+        };
+        let via_mcp = tool_json(call(target, command.clone()));
+        let via_desktop = completed(desktop_command(&controller, target, Panel::Result, command));
+        assert_eq!(
+            result_rows(&via_desktop, ".locations"),
+            flattened(&via_mcp["locations"], ".locations")
+        );
+        assert_eq!(via_mcp["image"]["process"], image["process"]);
+        let locations = via_mcp["locations"].as_array().unwrap();
+        for (index, function) in functions.iter().enumerate() {
+            let (file, line) = addr2line(elf, addresses[index]);
+            let location = &locations[index];
+            assert_eq!(location["section"], ".text", "{function}");
+            assert_eq!(location["line"], line, "{function} in {}", elf.display());
+            let reported = location["file"].as_str().unwrap().replace('\\', "/");
+            assert!(file.ends_with("fixture.c") && reported.ends_with("fixture.c"));
+        }
+        let data = &locations[functions.len()];
+        assert_eq!(data["section"], ".data");
+        assert_eq!(data["symbol"], "watched");
+        assert_eq!(data["line"], Value::Null);
+        let outside = &locations[functions.len() + 1];
+        assert_eq!(outside["section"], Value::Null);
+        assert_eq!(outside["symbol"], Value::Null);
+    }
+
+    // A rebuild with a changed layout: reset re-reads the file and drops the binding.
+    std::fs::copy(&shifted, &rebuild).unwrap();
+    tool_json(call(&a, D::Reset));
+    let stale = tool_error(call(&a, probe.clone()));
+    assert!(
+        stale.contains("ELF binding dropped: guest epoch"),
+        "{stale}"
+    );
+    let old = tool_error(call(&a, load("clang_elf")));
+    assert!(old.contains("differs from guest memory"), "{old}");
+    let rebound = tool_json(call(&a, load("shifted_elf")));
+    assert_eq!(rebound["content"]["sha256"], sha256_file(&shifted));
+    assert!(rebound["generation"].as_u64() > bound["generation"].as_u64());
+    let thumb_tick = |target| {
+        tool_json(call(
+            target,
+            D::ResolveSymbol {
+                query: "thumb_tick".into(),
+            },
+        ))["addresses"][0]
+            .clone()
+    };
+    assert_eq!(thumb_tick(&a), nm_address(&shifted_elf, "thumb_tick"));
+    // The sibling's binding is unaffected by A's reset.
+    assert_eq!(thumb_tick(&b), nm_address(&gcc_elf, "thumb_tick"));
+
+    // svcExitProcess removes B's process and its mappings within the same epoch.
+    let mode = nm_address(&gcc_elf, "mode");
+    tool_json(call(
+        &b,
+        D::WriteMemory {
+            address: mode,
+            bytes: vec![9, 0, 0, 0],
+        },
+    ));
+    tool_json(call(&b, D::Advance { frames: 2 }));
+    let processes = tool_json(call(&b, D::Processes));
+    assert!(
+        processes["processes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["id"] != bound_b["process"]),
+        "{processes}"
+    );
+    let exited = tool_error(call(&b, probe));
+    assert!(
+        exited.contains("no longer maps the bound ELF sections"),
+        "{exited}"
+    );
+}

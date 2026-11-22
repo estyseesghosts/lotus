@@ -122,6 +122,29 @@ pub struct NativeSession {
     breakpoint_configuration: BreakpointConfiguration,
     scan_generation: u64,
     scan_map: Option<(u64, Value)>,
+    /// Content the worker loads on `load` and re-reads from disk on `reset`.
+    content_path: Option<PathBuf>,
+    /// [`content_identity`] of that file, taken right after each load or reset.
+    content: Value,
+}
+
+/// Content files hashed for build identity; larger titles report their size only.
+const CONTENT_HASH_LIMIT: u64 = 64 << 20;
+
+/// SHA-256 and size of a content file, read after the worker loaded it.
+async fn content_identity(path: PathBuf) -> Value {
+    tokio::task::spawn_blocking(move || {
+        use sha2::{Digest, Sha256};
+        let size = fs::metadata(&path).map(|m| m.len()).ok();
+        let sha256 = size
+            .filter(|size| *size <= CONTENT_HASH_LIMIT)
+            .and_then(|_| fs::read(&path).ok())
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)));
+        serde_json::json!({"bytes": size, "sha256": sha256,
+            "hash_limit": CONTENT_HASH_LIMIT})
+    })
+    .await
+    .unwrap_or(Value::Null)
 }
 
 /// The pinned worker lists breakpoint identity and hits, but omits settings
@@ -247,6 +270,8 @@ impl NativeSession {
             breakpoint_configuration: BreakpointConfiguration::default(),
             scan_generation: 0,
             scan_map: None,
+            content_path: None,
+            content: Value::Null,
         };
         *session
             .kill
@@ -539,8 +564,15 @@ impl NativeSession {
 
     pub async fn load(&mut self, path: &Path) -> io::Result<Value> {
         let loaded = self.load_content(path).await?;
+        self.content_path = Some(path.to_path_buf());
+        self.content = content_identity(path.to_path_buf()).await;
         self.observe_boot_settings().await;
         Ok(loaded)
+    }
+
+    /// Size and SHA-256 of the content file, hashed after the latest load or reset.
+    pub fn content_identity(&self) -> &Value {
+        &self.content
     }
 
     async fn load_content(&mut self, path: &Path) -> io::Result<Value> {
@@ -616,6 +648,9 @@ impl NativeSession {
 
     pub async fn reset(&mut self) -> io::Result<Value> {
         let reset = self.operation(Method::Reset, Value::Null).await?;
+        if let Some(path) = self.content_path.clone() {
+            self.content = content_identity(path).await;
+        }
         self.observe_boot_settings().await;
         Ok(reset)
     }

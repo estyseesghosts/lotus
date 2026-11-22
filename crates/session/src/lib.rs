@@ -8,6 +8,7 @@
 pub mod artifacts;
 mod assets;
 pub mod card_store;
+mod debug_image;
 pub mod failure;
 pub mod native_session;
 pub mod policy;

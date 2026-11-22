@@ -68,7 +68,7 @@ fn render(inventory: &str) -> Result<String, String> {
             ));
         }
         let verification_link = match *verification {
-            "CPU" | "Memory search" | "Snapshots" | "Timeline" | "Kernel" => {
+            "CPU" | "Memory search" | "Snapshots" | "Timeline" | "Kernel" | "Source identity" => {
                 Some("tests/native_inspector.rs")
             }
             "Memory" | "Breakpoints" => Some("src/lotus_window/breakpoints.rs"),
@@ -132,6 +132,7 @@ fn render(inventory: &str) -> Result<String, String> {
         "Verification links to the corresponding desktop test family. GPU and GDB exercises ",
         "include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, ",
         "and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. ",
+        "Source identity binds clang and devkitARM builds of that fixture and checks refusals of other builds. ",
         "Workspace and Input use mock workers. ",
         "Fixture pending means the route still needs mapped desktop acceptance. This inventory ",
         "records test coverage independently of the outcome of any release run.\n"

@@ -705,18 +705,34 @@ impl Inspection {
                     action: None,
                 });
             }
-            if let Some(name) = value["disassembly"]["source"]["symbol"].as_str() {
-                let hash = value["disassembly"]["elf_sha256"].as_str().unwrap_or("");
+            let source = &value["disassembly"]["source"];
+            if let Some(name) = source["symbol"].as_str() {
+                let image = &value["disassembly"]["image"];
+                let line = match (source["file"].as_str(), source["line"].as_u64()) {
+                    (Some(file), Some(line)) => {
+                        let file = file.rsplit(['/', '\\']).next().unwrap_or(file);
+                        format!(" · {}:{line}", clipped(file, 120))
+                    }
+                    _ => String::new(),
+                };
                 rows.push(Row {
                     lane: "CPU",
                     key: "ELF symbol".into(),
                     value: format!(
-                        "{} + {:#x} · selected ELF {hash}",
+                        "{} + {:#x}{line} · ELF {} verified in process {}",
                         clipped(name, 200),
-                        value["disassembly"]["source"]["offset"]
-                            .as_u64()
-                            .unwrap_or(0)
+                        source["offset"].as_u64().unwrap_or(0),
+                        image["elf_sha256"].as_str().unwrap_or(""),
+                        image["process"]
                     ),
+                    action: None,
+                });
+            }
+            if let Some(reason) = value["disassembly"]["symbols_unavailable"].as_str() {
+                rows.push(Row {
+                    lane: "CPU",
+                    key: "ELF symbols".into(),
+                    value: format!("Dropped: {}", clipped(reason, 200)),
                     action: None,
                 });
             }

@@ -40,7 +40,7 @@ debug	lease_acquire	external only	control	-	Lease ownership belongs to the exter
 debug	lease_release	external only	control	-	Lease ownership belongs to the external controller	external
 debug	load	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	load_state	Snapshots inspector	control	-	-	Snapshots
-debug	load_symbols	palette	control	-	-	fixture pending
+debug	load_symbols	palette	control	-	-	Source identity
 debug	logs	inspector polling	read	-	-	fixture pending
 debug	matrix	palette	control	-	-	fixture pending
 debug	memory_map	Memory inspector	read	-	-	Memory
@@ -56,7 +56,7 @@ debug	processes	Kernel explorer	read	-	-	Kernel
 debug	read_memory	Memory inspector	read	-	-	Memory
 debug	registers	inspector polling	read	-	-	CPU
 debug	reset	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
-debug	resolve_symbol	palette	read	-	-	fixture pending
+debug	resolve_symbol	palette	read	-	-	Source identity
 debug	reverse_continue	Snapshots inspector	control	-	-	fixture pending
 debug	reverse_step	Snapshots inspector	control	-	-	fixture pending
 debug	rewind_configure	Snapshots inspector	control	rewind_compression_queue when compression_queue is set	-	Snapshots
@@ -82,7 +82,7 @@ debug	stop	session controls	control	-	Current desktop controls expose a subset o
 debug	storage_browse	palette	read	-	-	Guest tools
 debug	surface	inspector rows	control	-	-	fixture pending
 debug	suspend	Kernel explorer	control	-	-	Kernel
-debug	symbolize	palette	read	-	-	fixture pending
+debug	symbolize	palette	read	-	-	Source identity
 debug	system_regenerate	palette	control	-	-	fixture pending
 debug	thread_registers	Kernel explorer	read	-	-	Kernel
 debug	threads	Kernel explorer	read	-	-	Kernel

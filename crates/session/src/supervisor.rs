@@ -343,12 +343,6 @@ pub struct SessionSummary {
     pub telemetry: Telemetry,
 }
 
-struct SymbolBinding {
-    index: lotus_debugger::symbols::Symbols,
-    epoch: u64,
-    sha256: String,
-}
-
 /// A session's lock domain. Lock order: `native`, then `info`, `mailbox`, `telemetry`.
 struct SessionHandle {
     info: Mutex<SessionInfo>,
@@ -358,7 +352,9 @@ struct SessionHandle {
     telemetry: Mutex<Telemetry>,
     playing: AtomicBool,
     lease: Mutex<Option<String>>,
-    symbols: Mutex<Option<SymbolBinding>>,
+    symbols: Mutex<crate::debug_image::SymbolSlot>,
+    /// Counts ELF bindings so replies identify which one produced them.
+    symbol_generation: AtomicU64,
     /// (epoch, frames) of the last preview served while paused; see [`Supervisor::preview`].
     previewed: Mutex<Option<(u64, u64)>>,
     /// Set once when the session starts stopping; ends its tasks.
@@ -847,7 +843,8 @@ impl Supervisor {
             telemetry: Mutex::new(telemetry),
             playing: AtomicBool::new(false),
             lease: Mutex::new(None),
-            symbols: Mutex::new(None),
+            symbols: Mutex::default(),
+            symbol_generation: AtomicU64::new(0),
             previewed: Mutex::new(None),
             closed: AtomicBool::new(false),
             wake: tokio::sync::Notify::new(),
@@ -2187,21 +2184,29 @@ impl Supervisor {
             let bytes: Vec<u8> =
                 serde_json::from_value(result["bytes"].clone()).map_err(io::Error::other)?;
             let profile = native.profile_hash().to_owned();
-            let source = lock(&handle.symbols)
-                .as_ref()
-                .filter(|symbols| symbols.epoch == native.epoch())
-                .map(|symbols| {
-                    Ok::<_, io::Error>((symbols.index.locate(*address)?, symbols.sha256.clone()))
-                })
-                .transpose()?;
+            crate::debug_image::validate(&handle.symbols, &mut native).await?;
+            let (source, dropped) = {
+                let slot = lock(&handle.symbols);
+                let source = slot
+                    .image
+                    .as_ref()
+                    .map(|image| {
+                        Ok::<_, io::Error>((image.index.locate(*address)?, image.describe()))
+                    })
+                    .transpose()?;
+                (source, slot.dropped().map(str::to_string))
+            };
             drop(native);
             let text = crate::disassembly::decode(&handle.root, *address, &bytes, *thumb).await?;
             let mut result = serde_json::json!({"address":address,"bytes":bytes,"thumb":thumb,"assembly":text,
                 "paused":result["paused"],"safe_point":true,"rasterizer_cache_flush":true,
                 "profile_hash":profile, "epoch":result["epoch"]});
-            if let Some((location, sha256)) = source {
+            if let Some((location, image)) = source {
                 result["source"] = serde_json::to_value(location).map_err(io::Error::other)?;
-                result["elf_sha256"] = sha256.into();
+                result["elf_sha256"] = image["elf_sha256"].clone();
+                result["image"] = image;
+            } else if let Some(reason) = dropped {
+                result["symbols_unavailable"] = reason.into();
             }
             return Ok(result);
         }
@@ -2215,46 +2220,44 @@ impl Supervisor {
             let symbols = lotus_debugger::symbols::Symbols::parse(&bytes)?;
             let count = symbols.count();
             let sha256 = format!("{:x}", Sha256::digest(bytes));
-            *lock(&handle.symbols) = Some(SymbolBinding {
-                index: symbols,
-                epoch: native.epoch(),
-                sha256: sha256.clone(),
-            });
-            return Ok(
-                serde_json::json!({"symbols":count, "elf_sha256":sha256, "epoch":native.epoch()}),
-            );
+            let generation = handle.symbol_generation.fetch_add(1, Ordering::AcqRel) + 1;
+            let check = || scope.cancellation.map_or(Ok(()), DebugCancellation::check);
+            // A failed verification keeps the previous binding.
+            let image = crate::debug_image::DebugImage::bind(
+                &mut native,
+                asset,
+                symbols,
+                sha256,
+                generation,
+                &check,
+            )
+            .await?;
+            let mut result = image.describe();
+            result["symbols"] = count.into();
+            result["sections"] =
+                serde_json::to_value(image.index.sections()).map_err(io::Error::other)?;
+            lock(&handle.symbols).bind(image);
+            return Ok(result);
         }
         if let DebugCommand::Symbolize { addresses } = command {
-            let symbols = lock(&handle.symbols);
-            let symbols = symbols
-                .as_ref()
-                .filter(|symbols| symbols.epoch == native.epoch())
-                .ok_or_else(|| {
-                    io::Error::other(
-                        "load an approved ELF build artifact for this guest epoch first",
-                    )
-                })?;
+            crate::debug_image::validate(&handle.symbols, &mut native).await?;
+            let slot = lock(&handle.symbols);
+            let image = slot.image.as_ref().ok_or_else(|| slot.missing())?;
             let locations: io::Result<Vec<_>> = addresses
                 .iter()
-                .map(|address| symbols.index.locate(*address))
+                .map(|address| image.index.locate(*address))
                 .collect();
             return Ok(
-                serde_json::json!({"locations":locations?, "elf_sha256":symbols.sha256, "epoch":native.epoch()}),
+                serde_json::json!({"locations":locations?, "elf_sha256":image.elf_sha256,
+                "epoch":native.epoch(), "image":image.describe()}),
             );
         }
         if let DebugCommand::ResolveSymbol { query } = command {
-            let symbols = lock(&handle.symbols);
-            let symbols = symbols
-                .as_ref()
-                .filter(|symbols| symbols.epoch == native.epoch())
-                .ok_or_else(|| {
-                    io::Error::other(
-                        "load an approved ELF build artifact for this guest epoch first",
-                    )
-                })?;
-            return Ok(
-                serde_json::json!({"addresses":symbols.index.resolve(query)?, "elf_sha256":symbols.sha256, "epoch":native.epoch()}),
-            );
+            crate::debug_image::validate(&handle.symbols, &mut native).await?;
+            let slot = lock(&handle.symbols);
+            let image = slot.image.as_ref().ok_or_else(|| slot.missing())?;
+            return Ok(serde_json::json!({"addresses":image.index.resolve(query)?,
+                "elf_sha256":image.elf_sha256, "epoch":native.epoch(), "image":image.describe()}));
         }
         // The native mutex serializes lease transitions with execution mutations.
         let memory_check = match (scope.precondition, command) {
@@ -2409,22 +2412,36 @@ impl Supervisor {
                     self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 }
                 self.import_debug_artifacts(id, &handle.root, &mut result)?;
-                if let Some(symbols) = lock(&handle.symbols)
-                    .as_ref()
-                    .filter(|symbols| symbols.epoch == native.epoch())
-                {
-                    if let Some(frames) = result
-                        .get_mut("frames")
-                        .and_then(serde_json::Value::as_array_mut)
-                    {
-                        for frame in frames {
+                // Backtraces carry `frames`; crash reports nest them under `backtrace`.
+                let frames_at = |result: &serde_json::Value| {
+                    if result["frames"].is_array() {
+                        Some("/frames")
+                    } else if result["backtrace"]["frames"].is_array() {
+                        Some("/backtrace/frames")
+                    } else {
+                        None
+                    }
+                };
+                if let Some(pointer) = frames_at(&result) {
+                    if crate::debug_image::validate(&handle.symbols, &mut native).await? {
+                        let slot = lock(&handle.symbols);
+                        let image = slot.image.as_ref().ok_or_else(|| slot.missing())?;
+                        for frame in result
+                            .pointer_mut(pointer)
+                            .and_then(serde_json::Value::as_array_mut)
+                            .into_iter()
+                            .flatten()
+                        {
                             if let Some(pc) = frame["pc"].as_u64() {
                                 frame["source"] =
-                                    serde_json::to_value(symbols.index.locate(pc as u32)?)
+                                    serde_json::to_value(image.index.locate(pc as u32)?)
                                         .map_err(io::Error::other)?;
                             }
                         }
-                        result["elf_sha256"] = symbols.sha256.clone().into();
+                        result["elf_sha256"] = image.elf_sha256.clone().into();
+                        result["image"] = image.describe();
+                    } else if let Some(reason) = lock(&handle.symbols).dropped() {
+                        result["symbols_unavailable"] = reason.into();
                     }
                 }
                 Ok(result)

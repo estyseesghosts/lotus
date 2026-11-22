@@ -67,6 +67,30 @@ Capture program counter, instruction bytes, CPU registers, process/core/thread I
 
 For homebrew, load ELF/map file metadata from the user's build output. Cache symbol indexes keyed by binary hash and load mapping; support ASLR/mapping and relocated CRO modules when observable. For proprietary games, require user-provided symbols or show raw addresses; never use guessed source names as authoritative. Prefer `arm-none-eabi-addr2line`/Rust DWARF parsing on host for source mapping, without sending binaries to remote services.
 
+### Session-bound ELF identity (lotus#76)
+
+`load_symbols` binds an approved ELF to one session only after the guest proves it is the
+loaded build. The [binding](../crates/session/src/debug_image.rs) reads every read-only
+allocated section (`SHF_ALLOC` without `SHF_WRITE`) back from guest memory at its link
+address, in 4 KiB worker reads, and refuses the ELF at the first differing byte. 3DSX code
+loads at `PROCESS_IMAGE_VADDR` with relocations resolved against that base
+(`vendor/azahar/src/core/loader/3dsx.cpp`, `Load3DSXFile`), so the load bias is always zero
+and no bias is guessed. Writable sections are not compared because the guest changes them.
+The binding names the single process whose `memory_map` regions cover every compared section;
+none or several is a refusal. A failed `load_symbols` keeps the previous binding.
+
+Each binding records the ELF asset and SHA-256, GNU build ID when present, the content file's
+size and SHA-256 (hashed after each load or reset, up to 64 MiB), process, epoch and a
+per-session generation. `symbolize`, `resolve_symbol`, `disassemble`, `backtrace` and
+`crash_report` revalidate it under the native lock: a new epoch (load, reset, state load,
+replay, reverse step) or a process that no longer maps the sections drops it, and later
+requests report why. Replies carry the evidence as `image`. Addresses outside the ELF's
+allocated sections return no symbol or line; only executable sections return lines.
+
+Not covered: relocated CRO modules stay raw addresses, sessions forked with `fork` start
+unbound, and an external GDB client symbolizes with whatever ELF it loads itself. ELF
+suggestion from a build manifest belongs to the build workflow (lotus#79).
+
 ## Trace design
 
 Suggested event kinds:

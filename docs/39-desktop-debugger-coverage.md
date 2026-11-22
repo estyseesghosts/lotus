@@ -7,7 +7,7 @@ Linked desktop routes may expose a subset of arguments. The [command palette](..
 
 Route coverage is independent of native acceptance. The host checks [command requirements](../crates/protocol/src/debug.rs) against the selected worker's negotiated features and forwards the worker's own refusal. A dash in the feature column means the shared command declares no additional feature gate. It carries no backend support guarantee.
 
-Verification links to the corresponding desktop test family. GPU and GDB exercises include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. Workspace and Input use mock workers. Fixture pending means the route still needs mapped desktop acceptance. This inventory records test coverage independently of the outcome of any release run.
+Verification links to the corresponding desktop test family. GPU and GDB exercises include shared desktop/MCP calls on packaged workers. Memory, Breakpoints, and Guest tools include mounted interaction with CITnLO. CPU includes an owned ARM/Thumb fixture. Source identity binds clang and devkitARM builds of that fixture and checks refusals of other builds. Workspace and Input use mock workers. Fixture pending means the route still needs mapped desktop acceptance. This inventory records test coverage independently of the outcome of any release run.
 
 ## Shared debugger commands
 
@@ -54,7 +54,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `lease_release` | external only | control | - | Lease ownership belongs to the external controller | external |
 | `load` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `load_state` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
-| `load_symbols` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `load_symbols` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Source identity](../crates/desktop/tests/native_inspector.rs) |
 | `logs` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
 | `matrix` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `memory_map` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
@@ -70,7 +70,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `read_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `reset` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
-| `resolve_symbol` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `resolve_symbol` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Source identity](../crates/desktop/tests/native_inspector.rs) |
 | `reverse_continue` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | fixture pending |
 | `reverse_step` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | fixture pending |
 | `rewind_configure` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | rewind_compression_queue when compression_queue is set | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
@@ -96,7 +96,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `storage_browse` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Guest tools](../crates/desktop/src/lotus_window/command_palette.rs) |
 | `surface` | [inspector rows](../crates/desktop/src/inspection.rs) | control | - | - | fixture pending |
 | `suspend` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | control | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
-| `symbolize` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `symbolize` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Source identity](../crates/desktop/tests/native_inspector.rs) |
 | `system_regenerate` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `thread_registers` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |
 | `threads` | [Kernel explorer](../crates/desktop/src/lotus_window/kernel_panel.rs) | read | - | - | [Kernel](../crates/desktop/tests/native_inspector.rs) |

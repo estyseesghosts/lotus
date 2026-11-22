@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("output", type=Path)
 parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence"],default="debugger")
 parser.add_argument("--gcc", help="devkitARM arm-none-eabi-gcc executable (uses matching objcopy)")
+parser.add_argument("--define", action="append", default=[], help="preprocessor macro for a fixture variant")
 args = parser.parse_args()
 out = args.output.resolve()
 out.mkdir(parents=True, exist_ok=True)
@@ -31,6 +32,7 @@ command = [compiler, "-mcpu=mpcore", "-marm", "-mfloat-abi=soft", "-O1", "-g", "
 if args.fixture == "divergence":  # VFP probes; other fixtures keep their soft-float builds
     command[command.index("-mfloat-abi=soft")] = "-mfloat-abi=softfp"
     command.insert(1, "-mfpu=vfpv2")
+command[1:1] = ["-D"+name for name in args.define]
 if args.gcc:  # devkitARM defaults to -mtp=cp15, which GCC rejects for 16-bit Thumb; fixtures use no TLS
     command.insert(1, "-mtp=soft")
 if not args.gcc:
