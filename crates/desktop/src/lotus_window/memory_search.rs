@@ -7,9 +7,9 @@ const PAGE: u32 = 256;
 
 pub(super) struct SearchForm {
     address: Input,
-    length: Input,
-    width: Input,
-    value: Input,
+    pub(super) length: Input,
+    pub(super) width: Input,
+    pub(super) value: Input,
     upper: Input,
     base: Input,
     offsets: Input,
@@ -98,30 +98,18 @@ impl SearchForm {
 }
 
 impl LotusWindow {
-    pub(super) fn panel_history<'a>(
-        &'a self,
-        target: &'a SessionTarget,
-        panel: Panel,
-    ) -> impl Iterator<Item = &'a DebugRequest> {
-        self.debug_history
-            .iter()
-            .rev()
-            .filter(move |request| request.panel == panel && &request.target == target)
-    }
-
-    pub(super) fn reply_data(request: &DebugRequest) -> Option<&Value> {
-        match &request.status {
-            DebugStatus::Finished { view, .. } => view.data.as_deref(),
-            _ => None,
-        }
-    }
-
     pub(super) fn render_memory_search(
         &self,
         target: &SessionTarget,
         form: &SearchForm,
         cx: &mut Context<Self>,
     ) -> Div {
+        if target
+            .resolve(&self.sessions)
+            .is_some_and(|summary| summary.telemetry.backend_name == "AZAHAR")
+        {
+            return div().child("Memory scans and pointer chains require the CITnLO worker.");
+        }
         let scan = self.panel_history(target, Panel::Memory).find(|request| {
             matches!(
                 request.native_command(),
@@ -183,7 +171,7 @@ impl LotusWindow {
             .min_h_0()
             .gap_1()
             .overflow_y_scroll()
-            .child("Search little-endian values in a bounded guest memory snapshot.")
+            .child("Search little-endian values. Starting or narrowing a scan pauses the guest.")
             .children([
                 form.address.render("Scan address", cx),
                 form.length.render("Length (up to 1 MiB)", cx),

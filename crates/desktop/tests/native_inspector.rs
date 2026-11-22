@@ -22,7 +22,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-fn wait(controller: &DesktopController, predicate: impl Fn(&Update) -> bool) {
+fn wait(controller: &DesktopController, mut predicate: impl FnMut(&Update) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         {
@@ -1240,7 +1240,20 @@ fn check_gdb_ownership(controller: &DesktopController, target: &SessionTarget, p
     drop(runtime); // The desktop still owns the listener.
     let _socket = attach(started_address);
     gdb_action(controller, target, GdbAction::Stop);
+    let mut retry = Instant::now();
     wait(controller, |update| {
+        if matches!(
+            update.gdb_feedback.get(target),
+            Some(GdbFeedback::Failed {
+                kind: ErrorKind::WouldBlock,
+                ..
+            })
+        ) && retry.elapsed() >= Duration::from_millis(100)
+        {
+            // The manager's non-blocking lifecycle call can contend with a status poll.
+            gdb_action(controller, target, GdbAction::Stop);
+            retry = Instant::now();
+        }
         update
             .gdb_status
             .get(target)
@@ -1556,6 +1569,40 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
         check_gpu_capture_budget(&controller, &target);
         check_gpu_comparison(&controller, &target);
         check_gpu_saved_texture(&controller, &target);
+        {
+            use lotus_protocol::debug::EventCategory;
+            let timeline = |command| {
+                completed(desktop_command(
+                    &controller,
+                    &target,
+                    Panel::Timeline,
+                    command,
+                ))
+            };
+            let config = timeline(D::EventsConfigure {
+                notify: None,
+                history: Some(vec![EventCategory::Pica, EventCategory::Ipc]),
+            });
+            let mut after = config.data.as_ref().unwrap()["latest"].as_u64().unwrap();
+            timeline(D::Trace { enabled: true });
+            timeline(D::Advance { frames: 2 });
+            let mut kinds = std::collections::BTreeSet::new();
+            for _ in 0..8 {
+                let page = timeline(D::Events { after, limit: 128 });
+                let data = page.data.as_ref().unwrap();
+                for event in data["events"].as_array().unwrap() {
+                    if let Some(kind) = event["kind"].as_str() {
+                        kinds.insert(kind.to_owned());
+                    }
+                }
+                after = data["next"].as_u64().unwrap();
+                if data["latest"] == after {
+                    break;
+                }
+            }
+            timeline(D::Trace { enabled: false });
+            assert!(kinds.contains("pica") && kinds.contains("ipc"), "{kinds:?}");
+        }
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1635,6 +1682,12 @@ fn inspectors_use_shared_debugger_and_parse_large_traces_in_background() {
                 .clone()
         };
         assert_ne!(replacement.epoch, target.epoch);
+        wait(&controller, |update| {
+            update
+                .gdb_status
+                .get(&replacement)
+                .is_some_and(|status| status.state == lotus_gdb::State::Stopped)
+        });
         gdb_action(&controller, &replacement, GdbAction::Start { port: 0 });
         let until_stop = listener(&controller, &replacement);
         *controller.inspection_selection.lock().unwrap() =
@@ -1818,6 +1871,55 @@ fn gdb_reports_unsupported_on_azahar() {
     assert!(target
         .resolve(&controller.latest.lock().unwrap().sessions)
         .is_some_and(|summary| summary.telemetry.gpu_capture.is_none()));
+    for (panel, command) in [
+        (
+            Panel::Memory,
+            D::Scan {
+                address: 0x100000,
+                length: 4,
+                width: 4,
+                value: 0,
+            },
+        ),
+        (Panel::States, D::RewindStatus),
+        (
+            Panel::Memory,
+            D::ScanResults {
+                offset: 0,
+                limit: 1,
+            },
+        ),
+        (
+            Panel::Memory,
+            D::ScanNarrow {
+                mode: lotus_protocol::debug::ScanMode::Changed,
+                value: None,
+                upper: None,
+            },
+        ),
+        (Panel::Timeline, D::CitraceStatus),
+        (Panel::Threads, D::ThreadRegisters { thread: 1 }),
+    ] {
+        let reply = desktop_command(&controller, &target, panel, command.clone());
+        let DebugStatus::Failed {
+            kind: ErrorKind::Unsupported,
+            message,
+        } = reply
+        else {
+            panic!("AZAHAR {command:?} should be unsupported: {reply:?}");
+        };
+        assert!(message.contains("CITnLO"));
+        let refused = runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: target.id.clone(),
+            command,
+        })));
+        assert_eq!(refused.is_error, Some(true));
+        assert!(refused.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("CITnLO"));
+    }
     drop(controller);
     assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
     std::fs::remove_dir_all(root).unwrap();
@@ -2122,7 +2224,7 @@ fn cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture() {
             _ => None,
         })
         .unwrap();
-    let _ = debug_mcp(scan);
+    assert_eq!(debug_mcp(scan)["total"], 0);
     send(Command::ScanAt {
         target: target.clone(),
         command: page,
@@ -2179,6 +2281,11 @@ fn cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture() {
                     && snapshot.view.rows.iter().all(|row| row.key != "ELF symbol")
             })
     });
+    let reset = selected_target(&controller);
+    assert!(matches!(
+        desktop_command(&controller, &reset, Panel::Memory, D::ScanResults { offset: 0, limit: 1 }),
+        DebugStatus::Failed { kind: ErrorKind::InvalidInput, message } if message.contains("Start a new scan")
+    ));
     send(Command::Stop(target.id));
     wait(&controller, |update| update.sessions.is_empty());
     drop(controller);

@@ -173,8 +173,13 @@ def check(backend, server, worker, commit, rom, elf, output):
 def desktop_smoke(server, azahar, citnlo, rom):
     report = {
         "citnlo": {"CPU stepping and ELF symbols": "untested",
+                   "Memory scans and pointer chains": "untested",
+                   "Rewind, checkpoints and movies": "untested",
+                   "Event loss and CiTrace export/replay": "untested",
+                   "Kernel explorer and thread operations": "untested",
                    "GPU draw and shared GDB listener": "untested"},
-        "azahar": {"GDB and GPU capture levels": "untested"},
+        "azahar": {"GDB and GPU capture levels": "untested",
+                   "Memory scans, rewind, CiTrace and thread registers": "untested"},
     }
     smoke = os.environ.get("LOTUS_DESKTOP_SMOKE")
     if not smoke:
@@ -185,6 +190,9 @@ def desktop_smoke(server, azahar, citnlo, rom):
                LOTUS_DEBUG_FIXTURE=str(Path(rom).resolve()))
     env["PATH"] = str(Path(server).resolve().parent) + os.pathsep + env["PATH"]
     for test in ("cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture",
+                 "snapshots_and_movies_use_the_owned_fixture",
+                 "timeline_preserves_event_loss_and_citrace_provenance",
+                 "kernel_explorer_observes_thread_identity_and_native_deadlock",
                  "gdb_reports_unsupported_on_azahar"):
         capture = subprocess.run([str(Path(smoke).resolve()), "--ignored", "--exact", test],
                                  env=env, capture_output=True, text=True, timeout=120)
@@ -194,7 +202,12 @@ def desktop_smoke(server, azahar, citnlo, rom):
         if "1 passed" not in capture.stdout:
             raise RuntimeError(f"Expected to run one desktop smoke test: {test}")
     report["citnlo"]["CPU stepping and ELF symbols"] = "passed"
+    report["citnlo"]["Memory scans and pointer chains"] = "passed"
+    report["citnlo"]["Rewind, checkpoints and movies"] = "passed"
+    report["citnlo"]["Event loss and CiTrace export/replay"] = "passed"
+    report["citnlo"]["Kernel explorer and thread operations"] = "passed"
     report["azahar"]["GDB and GPU capture levels"] = "unsupported verified"
+    report["azahar"]["Memory scans, rewind, CiTrace and thread registers"] = "unsupported verified"
     return report
 
 

@@ -296,7 +296,9 @@ impl NativeSession {
             self.refresh_profile().await?;
         }
         let scan_map = match command {
-            D::Scan { .. } | D::ScanNarrow { .. } | D::ScanResults { .. } => {
+            D::Scan { .. } | D::ScanNarrow { .. } | D::ScanResults { .. }
+                if self.backend_name() != "AZAHAR" =>
+            {
                 let map = self
                     .operation(
                         Method::Debug,

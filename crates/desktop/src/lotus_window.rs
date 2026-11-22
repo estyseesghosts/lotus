@@ -3606,17 +3606,12 @@ impl LotusWindow {
         let show_by_default = !matches!(
             (request.panel, request.native_command()),
             (Panel::Gpu, Some(D::GpuConfigure { .. }))
-                | (
-                    Panel::Breakpoints
-                        | Panel::Cpu
-                        | Panel::Memory
-                        | Panel::States
-                        | Panel::Timeline
-                        | Panel::Ipc
-                        | Panel::Threads,
-                    _
-                )
-        );
+                | (Panel::Breakpoints | Panel::Cpu | Panel::Memory, _)
+        ) && !(cfg!(feature = "silvestris-ui")
+            && matches!(
+                request.panel,
+                Panel::States | Panel::Timeline | Panel::Ipc | Panel::Threads
+            ));
         let show_by_default = show_by_default
             || matches!(
                 (request.panel, request.native_command()),
@@ -4341,30 +4336,21 @@ impl LotusWindow {
         }
         #[cfg(feature = "silvestris-ui")]
         if let Some(target) = target.as_ref().filter(|target| {
-            current == Panel::States
-                && self.debug_request.as_ref().is_none_or(|request| {
-                    request.target != **target || !self.debug_details_visible(request)
-                })
+            self.debug_request.as_ref().is_none_or(|request| {
+                request.target != **target || !self.debug_details_visible(request)
+            })
         }) {
-            return panel.child(self.render_snapshots_panel(target, snapshot, cx));
-        }
-        #[cfg(feature = "silvestris-ui")]
-        if let Some(target) = target.as_ref().filter(|target| {
-            matches!(current, Panel::Timeline | Panel::Ipc)
-                && self.debug_request.as_ref().is_none_or(|request| {
-                    request.target != **target || !self.debug_details_visible(request)
-                })
-        }) {
-            return panel.child(self.render_event_timeline(target, current, snapshot, cx));
-        }
-        #[cfg(feature = "silvestris-ui")]
-        if let Some(target) = target.as_ref().filter(|target| {
-            current == Panel::Threads
-                && self.debug_request.as_ref().is_none_or(|request| {
-                    request.target != **target || !self.debug_details_visible(request)
-                })
-        }) {
-            return panel.child(self.render_kernel_panel(target, snapshot, cx));
+            let specialized = match current {
+                Panel::States => Some(self.render_snapshots_panel(target, snapshot, cx)),
+                Panel::Timeline | Panel::Ipc => {
+                    Some(self.render_event_timeline(target, current, snapshot, cx))
+                }
+                Panel::Threads => Some(self.render_kernel_panel(target, snapshot, cx)),
+                _ => None,
+            };
+            if let Some(body) = specialized {
+                return panel.child(body);
+            }
         }
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Gpu) {
             panel = panel.children(self.render_draw_comparison_controls(

@@ -959,6 +959,35 @@ mod tests {
                     && get_memory(view) == Some((memory_address, desired))
             });
         }
+        click(cx, "memory-search-toggle");
+        cx.update(|_, cx| {
+            let search = entity.read(cx).memory_panels[&target]
+                .search
+                .as_ref()
+                .unwrap();
+            let fields = [
+                (search.width.field.clone(), "1".to_owned()),
+                (search.length.field.clone(), "1".to_owned()),
+                (search.value.field.clone(), original.to_string()),
+            ];
+            for (field, text) in fields {
+                field.update(cx, |field, cx| field.set_text(text, cx));
+            }
+        });
+        click(cx, "memory-new-scan");
+        wait(cx, "memory scan result", &|view, _| {
+            view.debug_request.as_ref().is_some_and(|request| {
+                request.operation == "scan"
+                    && LotusWindow::reply_data(request).is_some_and(|data| {
+                        data["total"] == 1 && data["matches"][0]["address"] == memory_address
+                    })
+            })
+        });
+        click(cx, "scan-open-0");
+        wait(cx, "jump from scan into the hex viewer", &|view, _| {
+            !view.memory_panels[&target].searching
+                && get_memory(view) == Some((memory_address, original))
+        });
         cx.update(|_, cx| entity.update(cx, |view, _| view.jump_to_memory(&target, Some(0))));
         wait(cx, "unmapped address", &|view, _| {
             view.inspection
@@ -1123,6 +1152,36 @@ mod tests {
                 && !view.memory_panels.contains_key(&target)
         });
         let replacement = cx.update(|_, cx| entity.read(cx).inspection_target().unwrap());
+        for (panel, key) in [
+            (Panel::States, "movie"),
+            (Panel::Timeline, "subscriptions"),
+            (Panel::Threads, "processes"),
+        ] {
+            cx.update(|_, cx| entity.update(cx, |view, _| view.show_panel(panel)));
+            wait(cx, "desktop debugger panel", &|view, _| {
+                view.inspection.as_ref().is_some_and(|snapshot| {
+                    snapshot.panel == panel
+                        && snapshot
+                            .view
+                            .data
+                            .as_ref()
+                            .is_some_and(|data| data.get(key).is_some())
+                })
+            });
+            match panel {
+                Panel::States => click(cx, "snapshots-edit"),
+                Panel::Timeline => click(cx, "event-filters"),
+                _ => {}
+            }
+            cx.update(|window, cx| window.draw(cx).clear(cx));
+            assert!(cx
+                .debug_bounds(match panel {
+                    Panel::States => "rewind-configure",
+                    Panel::Timeline => "event-category",
+                    _ => "kernel-deadlocks",
+                })
+                .is_some());
+        }
         command_palette::exercise_guest_tools(&entity, cx, &replacement);
         cx.update(|_, cx| entity.update(cx, |view, _| view.send(Command::Stop(target.id.clone()))));
         wait(cx, "worker stop", &|view, _| {

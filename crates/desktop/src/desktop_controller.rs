@@ -1538,6 +1538,9 @@ impl Loops {
                                 | DebugCommand::LoadState { .. }
                                 | DebugCommand::ReverseStep { .. }
                                 | DebugCommand::ReverseContinue
+                        ) | (
+                            Panel::Timeline,
+                            DebugCommand::CitraceStart | DebugCommand::CitraceReplay
                         )
                     ) =>
                     {
@@ -1724,6 +1727,7 @@ impl Loops {
                 | DebugCommand::MovieStop
                 | DebugCommand::MovieStatus
                 | DebugCommand::EventsConfigure { .. }
+                | DebugCommand::Events { .. }
                 | DebugCommand::CitraceStart
                 | DebugCommand::CitraceStop
                 | DebugCommand::CitraceStatus

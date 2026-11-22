@@ -261,6 +261,58 @@ impl SharedCommands {
 }
 
 impl LotusWindow {
+    pub(super) fn panel_history<'a>(
+        &'a self,
+        target: &'a SessionTarget,
+        panel: Panel,
+    ) -> impl Iterator<Item = &'a DebugRequest> {
+        self.debug_history
+            .iter()
+            .rev()
+            .filter(move |request| request.panel == panel && &request.target == target)
+    }
+
+    pub(super) fn reply_data(request: &DebugRequest) -> Option<&Value> {
+        match &request.status {
+            DebugStatus::Finished { view, .. } => view.data.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub(super) fn inspector_action(
+        target: &SessionTarget,
+        panel: Panel,
+        id: &'static str,
+        label: &'static str,
+        command: D,
+        permitted: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let target = target.clone();
+        let enabled = permitted && command.validate().is_ok();
+        small_button(theme::palette(cx), id, label, Tone::Plain, enabled).on_click(cx.listener(
+            move |view, _, window, cx| {
+                if enabled
+                    && view.inspection_panel == panel
+                    && view.inspection_target().as_ref() == Some(&target)
+                {
+                    view.dispatch_inspector_command(&target, panel, command.clone(), window, cx);
+                    cx.notify();
+                }
+            },
+        ))
+    }
+
+    pub(super) fn inspector_control(&self, target: &SessionTarget, panel: Panel) -> bool {
+        self.control
+            && target
+                .resolve(&self.sessions)
+                .is_some_and(|summary| !summary.telemetry.desktop_debug_lease_blocked)
+            && !self
+                .panel_history(target, panel)
+                .any(|request| matches!(request.status, DebugStatus::Running))
+    }
+
     pub(super) fn sync_shared_commands(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let target = self.selected_summary().map(SessionTarget::from_summary);
         let registry = self.shared_commands.registry.clone();
