@@ -71,7 +71,22 @@ impl Host {
     }
 
     fn stall(&self, id: &str, ms: u64) {
-        std::fs::write(self.root(id).join("mock-stall-ms"), ms.to_string()).expect("stall");
+        let stall = self.root(id).join("mock-stall-ms");
+        // The worker reads the request concurrently. Publish only after it is complete.
+        let staged = stall.with_extension("tmp");
+        std::fs::write(&staged, ms.to_string()).expect("write stall");
+        std::fs::rename(staged, stall).expect("publish stall");
+    }
+
+    async fn wait_for_stall(&self, id: &str) {
+        let stall = self.root(id).join("mock-stall-ms");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while stall.exists() {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("worker consumed the stall request");
     }
 }
 
@@ -97,8 +112,7 @@ async fn a_stalled_worker_delays_only_itself() {
     let ids = fixture.running(3).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
     fixture.stall(&ids[0], 3000);
-    // Let the stalled worker's next status exchange begin.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    fixture.wait_for_stall(&ids[0]).await;
     let before: Vec<_> = ids.iter().map(|id| telemetry(&fixture.host, id)).collect();
     tokio::time::sleep(Duration::from_millis(1500)).await;
     let after: Vec<_> = ids.iter().map(|id| telemetry(&fixture.host, id)).collect();
@@ -176,12 +190,14 @@ async fn input_to_one_worker_ignores_a_sibling_stall() {
     let fixture = host("input", 4);
     let ids = fixture.running(4).await;
     fixture.stall(&ids[0], 3000);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    fixture.wait_for_stall(&ids[0]).await;
+    let stalled_polls = telemetry(&fixture.host, &ids[0]).supervision.polls;
     let tap = |buttons| InputState {
         buttons,
         ..InputState::default()
     };
     let started = Instant::now();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
     for round in 0..20 {
         for id in &ids {
             // Rapid taps: press and release within one submission burst.
@@ -195,9 +211,25 @@ async fn input_to_one_worker_ignores_a_sibling_stall() {
         if round == 0 {
             assert!(started.elapsed() < Duration::from_millis(100));
         }
-        tokio::time::sleep(Duration::from_millis(16)).await;
+        // A tap fits in the bounded mailbox. Wait for the healthy workers to consume it
+        // before submitting another, while the stalled worker's queue may overflow.
+        let delivered = (round + 1) * 2;
+        tokio::time::timeout_at(deadline, async {
+            while ids[1..]
+                .iter()
+                .any(|id| telemetry(&fixture.host, id).input.delivered < delivered)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("healthy workers did not deliver tap {}", round + 1));
     }
-    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert_eq!(
+        telemetry(&fixture.host, &ids[0]).supervision.polls,
+        stalled_polls,
+        "the sibling was stalled throughout input delivery"
+    );
     for (index, id) in ids.iter().enumerate().skip(1) {
         let input = telemetry(&fixture.host, id).input;
         assert!(
