@@ -4,6 +4,25 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## v0.1.2
+
+Native worker pins remain AZAHAR `5ecbd982` and CITnLO `a3994c1d`.
+
+- The desktop **Debug → Command Palette** builds command forms from the shared
+  debugger schema. The [coverage table](39-desktop-debugger-coverage.md)
+  records desktop routes, permissions, and worker requirements (#139, #141).
+  Worker replies retain the original Unsupported error.
+- Debugger requests and results stay with their originating session and
+  inspector panel. The desktop can cancel queued requests, and inspection
+  pages are scoped to the guest epoch (#140, #142).
+- **Debug → GDB** starts or stops a local CITnLO listener and shows when an
+  attached client holds the mutation lease. See
+  [GDB listener](23-local-mcp.md#gdb-listener-152) (#152).
+- The GPU inspector configures capture, reports activity and losses, and
+  lists retained PICA draws. Select two captured draws to compare them.
+  Texture previews read frozen capture bytes and shader inspection shows
+  retained vertex inputs (#147, #148).
+
 ## v0.1.1 (2026-11-21)
 
 Pins unchanged from v0.1.0: integration (AZAHAR) `5ecbd982`, experimental

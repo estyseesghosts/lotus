@@ -3159,7 +3159,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-accuracy"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "lotus-hardware",
  "serde",
@@ -3168,7 +3168,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "lotus-gdb",
@@ -3186,7 +3186,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-debugger"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "addr2line",
  "gimli",
@@ -3199,7 +3199,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-desktop"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "discord-rich-presence",
  "gpui",
@@ -3227,7 +3227,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-gdb"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "lotus-protocol",
  "lotus-session",
@@ -3237,14 +3237,14 @@ dependencies = [
 
 [[package]]
 name = "lotus-hardware"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "lotus-input"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "gilrs",
  "serde",
@@ -3254,7 +3254,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-mcp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "lotus-debugger",
@@ -3277,7 +3277,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "schemars",
  "serde",
@@ -3287,7 +3287,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-runner"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "lotus-hardware",
  "lotus-protocol",
@@ -3303,7 +3303,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-session"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libc",
  "lotus-debugger",
@@ -3321,7 +3321,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-settings"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "lotus-input",
  "serde",
@@ -3330,7 +3330,7 @@ dependencies = [
 
 [[package]]
 name = "lotus-trace"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "lotus-protocol",
  "serde",

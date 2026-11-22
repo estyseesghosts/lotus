@@ -1,21 +1,13 @@
-LOTUS 0.1.1 applies live setting changes to running cards. Volume and other
-live settings reach mounted sessions at once. Boot, renderer and CFG changes
-are marked **Restart required** in Settings and apply the next time the card
-starts. MCP and CLI setting writes report each change as applied, pending or
-rejected.
+LOTUS 0.1.2 adds a desktop command palette for the shared debugger
+commands. Inspector requests and results stay with their session and
+panel, and queued requests can be canceled.
 
-The new MCP tool `lotus_capture_image` returns both screens as lossless PNG
-images, with an optional 1–4× scale. `lotus_capture` still returns raw BGRA
-artifacts.
+On a CITnLO session, **Debug → GDB** starts or stops a local GDB listener and
+shows when an attached client has exclusive control. The GPU inspector
+configures capture, reports retained and dropped draws, compares two
+selected captures, and previews textures from frozen capture bytes.
 
-Session policy adds `rewind_memory_mib`, which limits the memory reserved
-for rewind recording (default 1536 MiB in interactive mode), and
-`snapshot_queue_limit`, which bounds queued snapshot requests (default 16).
-Reset and content load now release rewind and GPU-capture slots. Worker
-executable hashes are cached by file identity, so a replaced worker is always
-rehashed.
-
-Both native runtimes are unchanged from 0.1.0: AZAHAR `5ecbd982` and CITnLO
+Both native runtimes are unchanged from 0.1.1: AZAHAR `5ecbd982` and CITnLO
 `a3994c1d`.
 
 On Windows x64, extract the ZIP and run `LOTUS.cmd` with your own
@@ -26,5 +18,5 @@ local MCP server, both runtimes, fonts, license notices and build manifests.
 
 Windows requires Windows 11 x64 and Direct3D 11. Linux requires glibc 2.39 or
 newer. The packages are unsigned.
-See [the release notes](https://github.com/estyseesghosts/lotus/blob/v0.1.1/docs/35-release-notes.md)
+See the [release notes](https://github.com/estyseesghosts/lotus/blob/v0.1.2/docs/35-release-notes.md#v012)
 for details and linked evidence.
