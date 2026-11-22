@@ -43,6 +43,7 @@ fn render(inventory: &str) -> Result<String, String> {
             "GDB inspector" => Some("lotus_window/gdb_panel.rs"),
             "GPU capture form" => Some("lotus_window/gpu_capture.rs"),
             "Memory inspector" => Some("lotus_window/memory_panel.rs"),
+            "Memory search" => Some("lotus_window/memory_search.rs"),
             "Breakpoint manager" => Some("lotus_window/breakpoints.rs"),
             "external only" | "unavailable" if *detail != "-" => None,
             _ => {
@@ -64,7 +65,7 @@ fn render(inventory: &str) -> Result<String, String> {
             ));
         }
         let verification_link = match *verification {
-            "CPU" => Some("tests/native_inspector.rs"),
+            "CPU" | "Memory search" => Some("tests/native_inspector.rs"),
             "Memory" | "Breakpoints" => Some("src/lotus_window/breakpoints.rs"),
             "Guest tools" => Some("src/lotus_window/command_palette.rs"),
             "GPU" | "GDB" => Some("tests/native_inspector.rs"),

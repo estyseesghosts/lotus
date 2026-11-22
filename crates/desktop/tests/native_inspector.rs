@@ -1478,6 +1478,113 @@ fn cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture() {
             if message.contains("Guest bytes changed")))
     });
     assert_eq!(debug_mcp(read)["bytes"][0], actual);
+    let watched_value = || {
+        let data = debug_mcp(D::ReadMemory {
+            address: watched,
+            length: 4,
+        });
+        u32::from_le_bytes(std::array::from_fn(|i| {
+            data["bytes"][i].as_u64().unwrap() as u8
+        }))
+    };
+    let initial = watched_value();
+    let scan = D::Scan {
+        address: watched,
+        length: 4,
+        width: 4,
+        value: u64::from(initial),
+    };
+    let expected = debug_mcp(scan.clone())["matches"].clone();
+    assert_eq!(expected[0]["address"], watched);
+    let generation = std::cell::Cell::new(0);
+    run(Panel::Memory, scan.clone(), &|view| {
+        let data = view.data.as_ref().unwrap();
+        generation.set(data["scan_generation"].as_u64().unwrap());
+        data["matches"] == expected && data["total"] == 1
+    });
+    let page = D::ScanResults {
+        offset: 0,
+        limit: 1,
+    };
+    assert_eq!(debug_mcp(page.clone())["matches"], expected);
+    assert_eq!(debug_mcp(page.clone())["matches"], expected);
+    run(Panel::Memory, page.clone(), &|view| {
+        view.data.as_ref().unwrap()["matches"] == expected
+    });
+    run(Panel::Memory, D::Advance { frames: 1 }, &|_| true);
+    let changed = watched_value();
+    assert_ne!(changed, initial);
+    let narrow = D::ScanNarrow {
+        mode: lotus_protocol::debug::ScanMode::Changed,
+        value: None,
+        upper: None,
+    };
+    send(Command::ScanAt {
+        target: target.clone(),
+        command: narrow,
+        generation: generation.get(),
+    });
+    wait(&controller, |update| {
+        update.debug_result(Panel::Memory).is_some_and(|request|
+        request.operation == "scan_narrow" && matches!(&request.status,
+            DebugStatus::Finished { view, .. } if view.data.as_ref().unwrap()["matches"][0]["value"] == changed)
+    )
+    });
+    let current_generation = controller
+        .latest
+        .lock()
+        .unwrap()
+        .debug_result(Panel::Memory)
+        .and_then(|request| match &request.status {
+            DebugStatus::Finished { view, .. } => {
+                view.data.as_ref().unwrap()["scan_generation"].as_u64()
+            }
+            _ => None,
+        })
+        .unwrap();
+    let _ = debug_mcp(scan);
+    send(Command::ScanAt {
+        target: target.clone(),
+        command: page,
+        generation: current_generation,
+    });
+    wait(&controller, |update| {
+        update.debug_result(Panel::Memory).is_some_and(|request|
+        request.operation == "scan_results" && matches!(&request.status,
+            DebugStatus::Failed { kind: ErrorKind::InvalidInput, message } if message.contains("replaced"))
+    )
+    });
+    let canary = debug_mcp(D::ResolveSymbol {
+        query: "canary".into(),
+    })["addresses"][0]
+        .as_u64()
+        .unwrap() as u32;
+    let _ = debug_mcp(D::WriteMemory {
+        address: canary,
+        bytes: (watched + 4).to_le_bytes().to_vec(),
+    });
+    let pointer = D::PointerChain {
+        base: canary,
+        offsets: vec![-4],
+    };
+    let expected = debug_mcp(pointer.clone());
+    assert_eq!(expected["address"], watched);
+    run(Panel::Memory, pointer, &|view| {
+        view.data.as_ref().unwrap()["hops"] == expected["hops"]
+    });
+    send(Command::DebugAt {
+        target: target.clone(),
+        panel: Panel::Memory,
+        command: D::PointerChain {
+            base: 0,
+            offsets: vec![0],
+        },
+    });
+    wait(&controller, |update| {
+        update.debug_result(Panel::Memory).is_some_and(|request|
+        matches!(&request.status, DebugStatus::Failed { message, .. } if message.contains("unmapped"))
+    )
+    });
     drop(server);
     drop(runtime);
 

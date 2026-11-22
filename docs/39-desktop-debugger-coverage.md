@@ -65,7 +65,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `nfc_remove` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `pause` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `perf` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
-| `pointer_chain` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `pointer_chain` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | read | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
 | `processes` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
 | `read_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
@@ -78,9 +78,9 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `run_to` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `run_until` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `save_state` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
-| `scan` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `scan_narrow` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `scan_results` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `scan` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | control | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
+| `scan_narrow` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | control | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
+| `scan_results` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | read | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
 | `settings_diff` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
 | `settings_get` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
 | `settings_list` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |

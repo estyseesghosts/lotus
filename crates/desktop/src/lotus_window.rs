@@ -62,6 +62,8 @@ mod gpu_capture;
 #[cfg(feature = "silvestris-ui")]
 mod memory_panel;
 #[cfg(feature = "silvestris-ui")]
+mod memory_search;
+#[cfg(feature = "silvestris-ui")]
 mod shared_commands;
 #[cfg(feature = "silvestris-ui")]
 mod shared_navigation;
@@ -249,6 +251,8 @@ pub struct LotusWindow {
     registers: Option<(SessionTarget, Value)>,
     inspection: Option<InspectionSnapshot>,
     debug_request: Option<DebugRequest>,
+    #[cfg(feature = "silvestris-ui")]
+    debug_history: Vec<DebugRequest>,
     toggled_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
     inspector_state: InspectorState,
@@ -432,6 +436,8 @@ impl LotusWindow {
             #[cfg(feature = "silvestris-ui")]
             breakpoint_panels: BTreeMap::new(),
             debug_request: None,
+            #[cfg(feature = "silvestris-ui")]
+            debug_history: Vec::new(),
             toggled_debug_details: BTreeSet::new(),
             inspection_panel: {
                 #[cfg(feature = "silvestris-ui")]
@@ -772,6 +778,10 @@ impl LotusWindow {
             self.toggled_debug_details
                 .retain(|id| update.debug_requests().any(|request| request.id == *id));
             self.debug_request = update.debug_result(self.inspection_panel).cloned();
+            #[cfg(feature = "silvestris-ui")]
+            {
+                self.debug_history = update.debug_requests().cloned().collect();
+            }
             let details = self.debug_request.as_ref().and_then(|request| {
                 if !self.debug_details_visible(request) {
                     return None;

@@ -4,6 +4,8 @@ use inspection::{MemoryInspection, MemoryPage, MEMORY_PAGE_BYTES};
 
 #[derive(Default)]
 pub(super) struct MemoryPanel {
+    pub(super) search: Option<super::memory_search::SearchForm>,
+    pub(super) searching: bool,
     address: Option<Input>,
     pub(super) edit: Option<MemoryEdit>,
     cursor: Option<u32>,
@@ -61,6 +63,7 @@ impl LotusWindow {
         state.edit = None;
         state.cursor = address;
         state.show_regions = false;
+        state.searching = false;
         self.inspector_state
             .panel_mut(target, Panel::Memory)
             .set_memory_address(address);
@@ -309,7 +312,12 @@ impl LotusWindow {
             inspection::memory_address(self.inspection_offset(Some(target), Panel::Memory));
         let cursor = state.and_then(|state| state.cursor).or(address);
         let memory = snapshot.and_then(|snapshot| snapshot.view.memory.as_ref());
-        let (open, regions, go) = (target.clone(), target.clone(), target.clone());
+        let (open, regions, go, search) = (
+            target.clone(),
+            target.clone(),
+            target.clone(),
+            target.clone(),
+        );
         let mut toolbar = div()
             .flex()
             .flex_wrap()
@@ -350,6 +358,30 @@ impl LotusWindow {
                         cx.notify();
                     }
                 })),
+            )
+            .child(
+                small_button(
+                    palette,
+                    "memory-search-toggle",
+                    if state.is_some_and(|state| state.searching) {
+                        "Hex viewer"
+                    } else {
+                        "Search memory"
+                    },
+                    Tone::Plain,
+                    true,
+                )
+                .on_click(cx.listener(move |view, _, window, cx| {
+                    if view.inspection_target().as_ref() == Some(&search) {
+                        let state = view.memory_panels.entry(search.clone()).or_default();
+                        state.searching = !state.searching;
+                        if state.searching && state.search.is_none() {
+                            state.search =
+                                Some(super::memory_search::SearchForm::new(window, cx, cursor));
+                        }
+                        cx.notify();
+                    }
+                })),
             );
         if let Some(address) = address {
             for (id, label, dest) in [
@@ -385,6 +417,12 @@ impl LotusWindow {
             .text_xs()
             .child(format!("{} · epoch {}", target.id, target.epoch))
             .child(toolbar);
+        if let Some(form) = state
+            .filter(|state| state.searching)
+            .and_then(|state| state.search.as_ref())
+        {
+            return body.child(self.render_memory_search(target, form, cx));
+        }
         if let Some(input) = state.and_then(|state| state.address.as_ref()) {
             let next = input.number::<u32>("Address", cx);
             body =

@@ -51,7 +51,7 @@ debug	movie_stop	palette	control	-	-	fixture pending
 debug	nfc_remove	palette	control	-	-	fixture pending
 debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	perf	palette	read	-	-	fixture pending
-debug	pointer_chain	palette	read	-	-	fixture pending
+debug	pointer_chain	Memory search	read	-	-	Memory search
 debug	processes	palette	read	-	-	fixture pending
 debug	read_memory	Memory inspector	read	-	-	Memory
 debug	registers	inspector polling	read	-	-	CPU
@@ -64,9 +64,9 @@ debug	rewind_status	palette	read	-	-	fixture pending
 debug	run_to	CPU inspector	control	-	-	CPU
 debug	run_until	palette	control	-	-	fixture pending
 debug	save_state	inspector actions	control	-	-	fixture pending
-debug	scan	palette	control	-	-	fixture pending
-debug	scan_narrow	palette	control	-	-	fixture pending
-debug	scan_results	palette	read	-	-	fixture pending
+debug	scan	Memory search	control	-	-	Memory search
+debug	scan_narrow	Memory search	control	-	-	Memory search
+debug	scan_results	Memory search	read	-	-	Memory search
 debug	settings_diff	palette	read	-	-	fixture pending
 debug	settings_get	palette	read	-	-	fixture pending
 debug	settings_list	inspector polling	read	-	-	fixture pending

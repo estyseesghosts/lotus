@@ -103,6 +103,7 @@ pub enum DebugPrecondition<'a> {
     None,
     Paused,
     MemoryBytes(&'a [u8]),
+    ScanGeneration(u64),
 }
 
 #[derive(Default)]
@@ -2030,8 +2031,10 @@ impl Supervisor {
                 "debug session is stopping",
             ));
         }
-        if !matches!(scope.precondition, DebugPrecondition::None)
-            && (handle.playing.load(Ordering::Acquire) || native.state() != SessionState::Paused)
+        if matches!(
+            scope.precondition,
+            DebugPrecondition::Paused | DebugPrecondition::MemoryBytes(_)
+        ) && (handle.playing.load(Ordering::Acquire) || native.state() != SessionState::Paused)
         {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -2040,6 +2043,9 @@ impl Supervisor {
         }
         if let Some(feature) = command.required_feature() {
             native.require(feature)?;
+        }
+        if let DebugPrecondition::ScanGeneration(generation) = scope.precondition {
+            native.check_scan_generation(generation)?;
         }
         scope.dispatch()?;
         if let DebugCommand::StorageBrowse {

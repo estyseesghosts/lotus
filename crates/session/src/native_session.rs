@@ -120,6 +120,8 @@ pub struct NativeSession {
     /// Live preview counters for telemetry.
     preview_metrics: crate::telemetry::PreviewMetrics,
     breakpoint_configuration: BreakpointConfiguration,
+    scan_generation: u64,
+    scan_map: Option<(u64, Value)>,
 }
 
 /// The pinned worker lists breakpoint identity and hits, but omits settings
@@ -243,6 +245,8 @@ impl NativeSession {
             run_target: None,
             preview_metrics: crate::telemetry::PreviewMetrics::default(),
             breakpoint_configuration: BreakpointConfiguration::default(),
+            scan_generation: 0,
+            scan_map: None,
         };
         *session
             .kill
@@ -280,6 +284,7 @@ impl NativeSession {
         &mut self,
         command: &lotus_protocol::debug::DebugCommand,
     ) -> io::Result<Value> {
+        use lotus_protocol::debug::DebugCommand as D;
         command.validate().map_err(io::Error::other)?;
         if let Some(feature) = command.required_feature() {
             self.require(feature)?;
@@ -290,6 +295,32 @@ impl NativeSession {
         ) {
             self.refresh_profile().await?;
         }
+        let scan_map = match command {
+            D::Scan { .. } | D::ScanNarrow { .. } | D::ScanResults { .. } => {
+                let map = self
+                    .operation(
+                        Method::Debug,
+                        serde_json::json!({
+                            "operation": "memory_map"
+                        }),
+                    )
+                    .await?;
+                let map = (self.epoch(), map["regions"].clone());
+                if !matches!(command, D::Scan { .. }) && self.scan_map.as_ref() != Some(&map) {
+                    self.scan_map = None;
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Start a new scan after the guest or its memory map changes",
+                    ));
+                }
+                if !matches!(command, D::ScanResults { .. }) {
+                    self.scan_generation += 1;
+                    self.scan_map = None;
+                }
+                Some(map)
+            }
+            _ => None,
+        };
         let mut result = self
             .operation(
                 Method::Debug,
@@ -308,7 +339,21 @@ impl NativeSession {
         result["profile_hash"] = self.profile_hash.clone().into();
         self.breakpoint_configuration
             .observe(self.worker.epoch(), command, &mut result);
+        if let Some(map) = scan_map {
+            self.scan_map = Some(map);
+            result["scan_generation"] = self.scan_generation.into();
+        }
         Ok(result)
+    }
+
+    pub(crate) fn check_scan_generation(&self, generation: u64) -> io::Result<()> {
+        if self.scan_map.is_none() || generation != self.scan_generation {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "This scan was replaced. Start a new scan.",
+            ));
+        }
+        Ok(())
     }
 
     pub fn profile_hash(&self) -> &str {

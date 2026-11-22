@@ -475,6 +475,7 @@ pub(crate) fn instruction_address(text: &str) -> Option<u32> {
 }
 #[derive(Debug, Clone)]
 pub struct Inspection {
+    pub data: Option<Arc<Value>>,
     pub rows: Arc<Vec<Row>>,
     pub source: String,
     pub next: Option<u64>,
@@ -959,6 +960,7 @@ impl Inspection {
         };
         Self {
             rows: Arc::new(rows),
+            data: None,
             source: format!(
                 "{} · pin {} · profile {} · epoch {} · paused {} · cache flush {}",
                 value["identity"]["backend"],
@@ -1097,6 +1099,7 @@ impl Inspection {
     pub(crate) fn failed(error: io::Error) -> Self {
         Self {
             rows: Arc::default(),
+            data: None,
             source: String::new(),
             next: None,
             lost: 0,
@@ -1140,6 +1143,7 @@ impl Inspection {
         }));
         Self {
             rows: Arc::new(rows),
+            data: None,
             source: format!("Captured draws {a} and {b} · epoch {epoch}"),
             next: None,
             lost: 0,
@@ -1259,6 +1263,7 @@ impl Inspection {
         }
         Ok(Self {
             source: "Imported JSONL · guest ticks kept separate from host timestamps".into(),
+            data: None,
             rows: Arc::new(rows),
             next: None,
             lost,
