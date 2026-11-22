@@ -462,6 +462,11 @@ fn snapshots_and_movies_use_the_owned_fixture() {
     config.allow_control = true;
     config.policy.rewind_sessions = Some(1);
     config.assets.insert("fixture".into(), fixture);
+    // The movie profile includes the renderer. Keep recording and replay on the same one.
+    config.profile.insert(
+        "graphics_api".into(),
+        lotus_protocol::debug::SettingValue::Integer(0),
+    );
     config.profile.insert(
         "deterministic_async_operations".into(),
         lotus_protocol::debug::SettingValue::Boolean(true),
@@ -620,6 +625,44 @@ fn snapshots_and_movies_use_the_owned_fixture() {
     );
     drop(controller);
     assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE"]
+async fn prepared_movie_survives_renderer_fallback() {
+    use lotus_protocol::debug::SettingValue;
+    use lotus_session::native_session::NativeSession;
+
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let root =
+        std::env::temp_dir().join(format!("lotus-movie-fallback-{}", SessionUuid::generate()));
+    std::fs::create_dir(&root).unwrap();
+    let mut session = NativeSession::spawn(&worker, &root).await.unwrap();
+    session
+        .apply_profile(&BTreeMap::from([(
+            "physical_device".into(),
+            SettingValue::Integer(99),
+        )]))
+        .await
+        .unwrap();
+    session.prefer_vulkan().await.unwrap();
+    let original_pid = session.pid().unwrap();
+    session
+        .debug(&D::MovieRecord {
+            name: "owned".into(),
+        })
+        .await
+        .unwrap();
+    session.load(&fixture).await.unwrap();
+    assert_ne!(session.pid().unwrap(), original_pid);
+    session.advance(3).await.unwrap();
+    let movie = session.debug(&D::MovieStop).await.unwrap();
+    assert_eq!(movie["artifacts"][0]["format"], "ctm", "{movie}");
+    assert!(root.join("movies/owned.ctm").is_file());
+    session.stop().await.unwrap();
+    drop(session);
     std::fs::remove_dir_all(root).unwrap();
 }
 

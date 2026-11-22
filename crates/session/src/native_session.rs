@@ -99,6 +99,8 @@ pub struct NativeSession {
     identity: Value,
     /// Set by [`Self::prefer_vulkan`]: a typed Vulkan failure at load falls back to software.
     vulkan_fallback_armed: bool,
+    /// Worker-local movie setup that must survive a renderer fallback before boot.
+    prepared_movie: Option<lotus_protocol::debug::DebugCommand>,
     /// Worker accepts `settings_set` (`debug_api` in its hello reply).
     settings_api: bool,
     /// Why this session runs on software after Vulkan was preferred.
@@ -252,6 +254,7 @@ impl NativeSession {
             identity: serde_json::json!({"source":reply.data["source"], "backend":reply.data["backend_name"],
             "worker_sha256":file_hash(executable)?}),
             vulkan_fallback_armed: false,
+            prepared_movie: None,
             settings_api: reply.data["debug_api"] == true,
             features: reply.data["features"]
                 .as_array()
@@ -354,6 +357,13 @@ impl NativeSession {
                 serde_json::to_value(command).map_err(io::Error::other)?,
             )
             .await?;
+        match command {
+            D::MovieRecord { .. } | D::MoviePlay { .. } => {
+                self.prepared_movie = Some(command.clone());
+            }
+            D::MovieStop => self.prepared_movie = None,
+            _ => {}
+        }
         if matches!(
             command,
             lotus_protocol::debug::DebugCommand::SettingsSet { .. }
@@ -564,6 +574,7 @@ impl NativeSession {
 
     pub async fn load(&mut self, path: &Path) -> io::Result<Value> {
         let loaded = self.load_content(path).await?;
+        self.prepared_movie = None;
         self.content_path = Some(path.to_path_buf());
         self.content = content_identity(path.to_path_buf()).await;
         self.observe_boot_settings().await;
@@ -609,7 +620,11 @@ impl NativeSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = replacement.worker.kill_switch();
         replacement.kill = self.kill.clone();
+        let prepared_movie = self.prepared_movie.take();
         *self = replacement;
+        if let Some(command) = prepared_movie {
+            self.debug(&command).await?;
+        }
         self.operation(Method::Load, params).await
     }
 

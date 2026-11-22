@@ -209,6 +209,7 @@ def desktop_smoke(server, azahar, citnlo, rom):
 
     for test in ("cpu_steps_and_symbols_use_the_owned_arm_thumb_fixture",
                  "snapshots_and_movies_use_the_owned_fixture",
+                 "prepared_movie_survives_renderer_fallback",
                  "timeline_preserves_event_loss_and_citrace_provenance",
                  "kernel_explorer_observes_thread_identity_and_native_deadlock",
                  "gdb_reports_unsupported_on_azahar"):
