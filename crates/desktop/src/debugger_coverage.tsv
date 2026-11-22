@@ -14,10 +14,10 @@ debug	cheat_add	palette	control	-	-	Guest tools
 debug	cheat_enable	palette	control	-	-	Guest tools
 debug	cheat_remove	palette	control	-	-	Guest tools
 debug	cheats	palette	read	-	-	Guest tools
-debug	citrace_replay	inspector actions	control	-	-	fixture pending
-debug	citrace_start	inspector actions	control	-	-	fixture pending
-debug	citrace_status	palette	read	-	-	fixture pending
-debug	citrace_stop	inspector actions	control	-	-	fixture pending
+debug	citrace_replay	Event timeline	control	-	-	Timeline
+debug	citrace_start	Event timeline	control	-	-	Timeline
+debug	citrace_status	Event timeline	read	-	-	Timeline
+debug	citrace_stop	Event timeline	control	-	-	Timeline
 debug	content_transform	palette	control	-	-	fixture pending
 debug	continue	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	crash_report	palette	read	-	-	fixture pending
@@ -25,8 +25,8 @@ debug	deadlocks	palette	read	-	-	fixture pending
 debug	disassemble	CPU inspector	read	-	-	CPU
 debug	dsp_inspect	inspector polling	read	-	-	fixture pending
 debug	dsp_load_firmware	palette	control	-	-	fixture pending
-debug	events	inspector polling	read	-	-	fixture pending
-debug	events_configure	palette	control	event_subscriptions	-	fixture pending
+debug	events	Event timeline	read	-	-	Timeline
+debug	events_configure	Event timeline	control	event_subscriptions	-	Timeline
 debug	fork	palette	control	-	-	fixture pending
 debug	gpu_configure	GPU capture form	control	gpu_capture_levels when capture is set	Named presets and all capture options (#147).	GPU
 debug	gpu_draw	inspector rows	read	-	-	GPU
@@ -87,7 +87,7 @@ debug	system_regenerate	palette	control	-	-	fixture pending
 debug	thread_registers	palette	read	-	-	fixture pending
 debug	threads	inspector polling	read	-	-	fixture pending
 debug	titles	palette	read	-	-	fixture pending
-debug	trace	inspector actions	control	-	-	fixture pending
+debug	trace	Event timeline	control	-	-	Timeline
 debug	write_memory	Memory inspector	control	-	-	Memory
 debug	write_register	CPU inspector	control	-	-	CPU
 debug	write_thread_register	palette	control	-	-	fixture pending

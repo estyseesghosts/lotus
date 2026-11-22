@@ -56,6 +56,8 @@ mod command_palette;
 #[cfg(feature = "silvestris-ui")]
 mod cpu_panel;
 #[cfg(feature = "silvestris-ui")]
+mod event_timeline;
+#[cfg(feature = "silvestris-ui")]
 mod gdb_panel;
 #[cfg(feature = "silvestris-ui")]
 mod gpu_capture;
@@ -257,6 +259,9 @@ pub struct LotusWindow {
     debug_history: Vec<DebugRequest>,
     #[cfg(feature = "silvestris-ui")]
     snapshot_forms: std::collections::BTreeMap<SessionTarget, snapshots_panel::SnapshotForm>,
+    #[cfg(feature = "silvestris-ui")]
+    timeline_forms:
+        std::collections::BTreeMap<(SessionTarget, Panel), event_timeline::TimelineForm>,
     toggled_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
     inspector_state: InspectorState,
@@ -444,6 +449,8 @@ impl LotusWindow {
             debug_history: Vec::new(),
             #[cfg(feature = "silvestris-ui")]
             snapshot_forms: Default::default(),
+            #[cfg(feature = "silvestris-ui")]
+            timeline_forms: Default::default(),
             toggled_debug_details: BTreeSet::new(),
             inspection_panel: {
                 #[cfg(feature = "silvestris-ui")]
@@ -835,6 +842,9 @@ impl LotusWindow {
         #[cfg(feature = "silvestris-ui")]
         self.snapshot_forms
             .retain(|target, _| target.resolve(&self.sessions).is_some());
+        #[cfg(feature = "silvestris-ui")]
+        self.timeline_forms
+            .retain(|(target, _), _| target.resolve(&self.sessions).is_some());
         #[cfg(feature = "silvestris-ui")]
         self.cpu_forms
             .retain(|target, _| target.resolve(&self.sessions).is_some());
@@ -3588,7 +3598,12 @@ impl LotusWindow {
             (request.panel, request.native_command()),
             (Panel::Gpu, Some(D::GpuConfigure { .. }))
                 | (
-                    Panel::Breakpoints | Panel::Cpu | Panel::Memory | Panel::States,
+                    Panel::Breakpoints
+                        | Panel::Cpu
+                        | Panel::Memory
+                        | Panel::States
+                        | Panel::Timeline
+                        | Panel::Ipc,
                     _
                 )
         );
@@ -4029,6 +4044,7 @@ impl LotusWindow {
                 ("Finish trace", D::CitraceStop, false),
                 ("Replay trace", D::CitraceReplay, true),
             ],
+            #[cfg(not(feature = "silvestris-ui"))]
             Panel::Ipc | Panel::Timeline => vec![
                 ("Trace on", D::Trace { enabled: true }, false),
                 ("Trace off", D::Trace { enabled: false }, false),
@@ -4321,6 +4337,15 @@ impl LotusWindow {
                 })
         }) {
             return panel.child(self.render_snapshots_panel(target, snapshot, cx));
+        }
+        #[cfg(feature = "silvestris-ui")]
+        if let Some(target) = target.as_ref().filter(|target| {
+            matches!(current, Panel::Timeline | Panel::Ipc)
+                && self.debug_request.as_ref().is_none_or(|request| {
+                    request.target != **target || !self.debug_details_visible(request)
+                })
+        }) {
+            return panel.child(self.render_event_timeline(target, current, snapshot, cx));
         }
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Gpu) {
             panel = panel.children(self.render_draw_comparison_controls(

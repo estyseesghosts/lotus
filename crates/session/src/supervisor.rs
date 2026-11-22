@@ -1945,6 +1945,8 @@ impl Supervisor {
         let slot = match command {
             DebugCommand::SaveState { .. }
             | DebugCommand::LoadState { .. }
+            | DebugCommand::CitraceStart
+            | DebugCommand::CitraceReplay
             | DebugCommand::Fork { .. }
             | DebugCommand::Matrix { .. } => {
                 let slot = self.budgets.snapshot(command_name(command)).await;

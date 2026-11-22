@@ -28,10 +28,10 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `cheat_enable` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Guest tools](../crates/desktop/src/lotus_window/command_palette.rs) |
 | `cheat_remove` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | [Guest tools](../crates/desktop/src/lotus_window/command_palette.rs) |
 | `cheats` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | [Guest tools](../crates/desktop/src/lotus_window/command_palette.rs) |
-| `citrace_replay` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
-| `citrace_start` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
-| `citrace_status` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
-| `citrace_stop` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
+| `citrace_replay` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
+| `citrace_start` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
+| `citrace_status` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | read | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
+| `citrace_stop` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `content_transform` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `continue` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `crash_report` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
@@ -39,8 +39,8 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `disassemble` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `dsp_inspect` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
 | `dsp_load_firmware` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `events` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
-| `events_configure` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | event_subscriptions | - | fixture pending |
+| `events` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | read | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
+| `events_configure` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | event_subscriptions | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `fork` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `gpu_configure` | [GPU capture form](../crates/desktop/src/lotus_window/gpu_capture.rs) | control | gpu_capture_levels when capture is set | Named presets and all capture options (#147). | [GPU](../crates/desktop/tests/native_inspector.rs) |
 | `gpu_draw` | [inspector rows](../crates/desktop/src/inspection.rs) | read | - | - | [GPU](../crates/desktop/tests/native_inspector.rs) |
@@ -101,7 +101,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `thread_registers` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
 | `threads` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
 | `titles` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
-| `trace` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
+| `trace` | [Event timeline](../crates/desktop/src/lotus_window/event_timeline.rs) | control | - | - | [Timeline](../crates/desktop/tests/native_inspector.rs) |
 | `write_memory` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | control | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
 | `write_register` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `write_thread_register` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |

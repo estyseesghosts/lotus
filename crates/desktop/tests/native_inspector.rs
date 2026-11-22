@@ -101,6 +101,168 @@ fn selected_target(controller: &DesktopController) -> SessionTarget {
 }
 
 #[test]
+#[cfg(feature = "silvestris-ui")]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE"]
+fn timeline_preserves_event_loss_and_citrace_provenance() {
+    use lotus_protocol::debug::EventCategory;
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-timeline-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, &root);
+    config.allow_control = true;
+    config.assets = BTreeMap::from([
+        ("fixture".into(), fixture.clone()),
+        ("elf".into(), fixture.with_extension("elf")),
+    ]);
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let send = |command| controller.commands.send(command).unwrap();
+    let create = |count| {
+        send(Command::Create {
+            kind: SessionKind::Secondary { parent: None },
+            asset: Some("fixture".into()),
+        });
+        wait(&controller, |update| {
+            update.sessions.len() == count
+                && update
+                    .sessions
+                    .iter()
+                    .any(|summary| summary.info.id == update.selected)
+        });
+        let target = selected_target(&controller);
+        send(Command::Pause(target.id.clone()));
+        wait(&controller, |update| {
+            target.resolve(&update.sessions).is_some_and(|summary| {
+                !summary.telemetry.playing
+                    && summary.telemetry.state == lotus_session::SessionState::Paused
+            })
+        });
+        target
+    };
+    let sibling = create(1);
+    let target = create(2);
+    assert_ne!(target, sibling);
+    let timeline = |command| desktop_command(&controller, &target, Panel::Timeline, command);
+    assert!(
+        matches!(timeline(D::CitraceStop), DebugStatus::Failed { message, .. }
+        if message.contains("no active CiTrace recording"))
+    );
+    let configure = D::EventsConfigure {
+        notify: Some(vec![EventCategory::Stopped]),
+        history: Some(vec![
+            EventCategory::Log,
+            EventCategory::Svc,
+            EventCategory::Ipc,
+        ]),
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mcp = controller.mcp_server();
+    let debug = |command| {
+        tool_json(runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
+            session: target.id.clone(),
+            command,
+        }))))
+    };
+    let ack = debug(configure.clone());
+    let reply = completed(timeline(configure));
+    for field in ["notify", "history"] {
+        assert_eq!(reply.data.as_ref().unwrap()[field], ack[field]);
+    }
+    completed(timeline(D::Trace { enabled: true }));
+    let _ = debug(D::LoadSymbols {
+        asset: "elf".into(),
+    });
+    let mode = debug(D::ResolveSymbol {
+        query: "mode".into(),
+    })["addresses"][0]
+        .as_u64()
+        .unwrap() as u32;
+    let _ = debug(D::WriteMemory {
+        address: mode,
+        bytes: 8_u32.to_le_bytes().to_vec(),
+    });
+    completed(timeline(D::Advance { frames: 2 }));
+    *controller.inspection_selection.lock().unwrap() =
+        InspectionSelection::first_page(Panel::Timeline);
+    controller.inspector.store(true, Ordering::Release);
+    wait(&controller, |update| {
+        update.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot.target.as_ref() == Some(&target)
+                && snapshot.view.data.as_ref().is_some_and(|data| {
+                    data["history_gap"] == true
+                        && data["lost_total"].as_u64().is_some_and(|lost| lost > 0)
+                        && data["events"].as_array().is_some_and(|events| {
+                            events.iter().any(|event| event["kind"] == "guest_log")
+                                && events.iter().any(|event| {
+                                    event["kind"] == "svc_enter" && event["guest_ticks"].is_number()
+                                })
+                        })
+                })
+        })
+    });
+    completed(timeline(D::Trace { enabled: false }));
+    let _ = debug(D::WriteMemory {
+        address: mode,
+        bytes: 0_u32.to_le_bytes().to_vec(),
+    });
+    let recording = completed(timeline(D::CitraceStart));
+    assert_eq!(recording.data.as_ref().unwrap()["recording"], true);
+    completed(desktop_command(
+        &controller,
+        &sibling,
+        Panel::Cpu,
+        D::Registers { core: 0 },
+    ));
+    completed(timeline(D::Advance { frames: 2 }));
+    let trace = completed(timeline(D::CitraceStop));
+    let trace = trace.data.as_ref().unwrap();
+    assert_eq!(trace["recording"], false);
+    assert_eq!(trace["artifacts"][0]["mime_type"], "application/x-citrace");
+    assert!(trace["identity"]["source"]
+        .as_str()
+        .is_some_and(|pin| pin.len() == 40));
+    let uri = trace["artifacts"][0]["uri"].as_str().unwrap();
+    let destination = root.join("exported.ctf");
+    send(Command::ExportTrace {
+        target: target.clone(),
+        uri: uri.into(),
+        path: destination.clone(),
+    });
+    wait(&controller, |update| {
+        update.pending == 0 && destination.is_file()
+    });
+    assert_eq!(
+        std::fs::metadata(&destination).unwrap().len(),
+        trace["artifacts"][0]["bytes"].as_u64().unwrap()
+    );
+    let replayed = timeline(D::CitraceReplay);
+    assert!(
+        matches!(
+            replayed,
+            DebugStatus::Expired | DebugStatus::Finished { .. }
+        ),
+        "{replayed:?}"
+    );
+    wait(&controller, |update| {
+        target.resolve(&update.sessions).is_none()
+    });
+    let replay = selected_target(&controller);
+    let status = completed(desktop_command(
+        &controller,
+        &replay,
+        Panel::Timeline,
+        D::CitraceStatus,
+    ));
+    assert_eq!(status.data.as_ref().unwrap()["gpu_replay_view"], true);
+    drop(mcp);
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 #[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE"]
 fn snapshots_and_movies_use_the_owned_fixture() {
     let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());

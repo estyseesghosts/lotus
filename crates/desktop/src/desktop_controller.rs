@@ -91,6 +91,12 @@ pub enum Command {
     OpenTrace {
         path: PathBuf,
     },
+    #[cfg(feature = "silvestris-ui")]
+    ExportTrace {
+        target: SessionTarget,
+        uri: String,
+        path: PathBuf,
+    },
     Play(String),
     Pause(String),
     /// Advance one frame and stay paused.
@@ -1022,6 +1028,26 @@ impl Loops {
     ) -> io::Result<Value> {
         let mut value = self.dispatch_debug(target, command).await?;
         #[cfg(feature = "silvestris-ui")]
+        if matches!(panel, Panel::Timeline | Panel::Ipc) {
+            let status = self.dispatch_debug(target, &DebugCommand::Status).await?;
+            if !target.accepts_reply(&status) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "Guest changed"));
+            }
+            value["subscriptions"] = status["events"].clone();
+            if panel == Panel::Timeline {
+                value["citrace"] = match self
+                    .dispatch_debug(target, &DebugCommand::CitraceStatus)
+                    .await
+                {
+                    Ok(reply) if target.accepts_reply(&reply) => reply,
+                    Ok(_) => {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "Guest changed"))
+                    }
+                    Err(error) => serde_json::json!({"error": error.to_string()}),
+                };
+            }
+        }
+        #[cfg(feature = "silvestris-ui")]
         if panel == Panel::States {
             let paused = value["paused"] == true && value["state"] != "idle";
             for (key, command) in [
@@ -1668,6 +1694,11 @@ impl Loops {
                 | DebugCommand::MoviePlay { .. }
                 | DebugCommand::MovieStop
                 | DebugCommand::MovieStatus
+                | DebugCommand::EventsConfigure { .. }
+                | DebugCommand::CitraceStart
+                | DebugCommand::CitraceStop
+                | DebugCommand::CitraceStatus
+                | DebugCommand::CitraceReplay
         ) {
             view.data = Some(Arc::new(value));
         }
@@ -1713,6 +1744,33 @@ impl Loops {
             | Command::CancelDebug(_)
             | Command::Gdb { .. } => {
                 unreachable!("dispatched by drain_commands")
+            }
+            #[cfg(feature = "silvestris-ui")]
+            Command::ExportTrace { target, uri, path } => {
+                let host = self.host.clone();
+                tokio::task::spawn_blocking(move || {
+                    if !host
+                        .debug_target_current(&target.id, (target.created_unix_ms, target.epoch))
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::NotFound,
+                            "Guest changed before export",
+                        ));
+                    }
+                    let data = host.read_debug_artifact(
+                        &target.id,
+                        &uri,
+                        lotus_session::artifacts::MAX_ARTIFACT_BYTES as usize,
+                        &DebugCancellation::default(),
+                    )?;
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)?;
+                    std::io::Write::write_all(&mut file, &data)
+                })
+                .await
+                .map_err(io::Error::other)??;
             }
             Command::OpenTrace { path } => {
                 let view = tokio::task::spawn_blocking(move || Inspection::load_trace(&path)).await;

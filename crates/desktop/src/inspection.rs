@@ -595,7 +595,7 @@ fn clipped(text: &str, limit: usize) -> String {
     format!("{}…", &text[..end])
 }
 
-fn json_preview(value: &Value, limit: usize) -> String {
+pub(crate) fn json_preview(value: &Value, limit: usize) -> String {
     // The slice writer stops serialization at the display limit, including
     // nested data in a capture. A whole artifact need not be encoded again.
     let mut buffer = vec![0; limit];
@@ -963,7 +963,8 @@ impl Inspection {
         };
         Self {
             rows: Arc::new(rows),
-            data: (panel == Panel::States).then(|| Arc::new(value.clone())),
+            data: matches!(panel, Panel::States | Panel::Timeline | Panel::Ipc)
+                .then(|| Arc::new(value.clone())),
             source: format!(
                 "{} · pin {} · profile {} · epoch {} · paused {} · cache flush {}",
                 value["identity"]["backend"],

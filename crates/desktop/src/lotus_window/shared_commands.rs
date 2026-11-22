@@ -456,6 +456,14 @@ impl LotusWindow {
                 "Restore state",
                 "The saved checkpoint will replace the guest's current state.",
             ),
+            D::CitraceStart => (
+                "Record CiTrace",
+                "The recording uses the reserved CiTrace checkpoint and replaces the previous trace when finished.",
+            ),
+            D::CitraceReplay => (
+                "Replay CiTrace",
+                "Replay restores the paired checkpoint and replaces the current guest state.",
+            ),
             D::InstallCia { .. } => (
                 "Install CIA",
                 "The approved title will be installed into this guest's storage.",
