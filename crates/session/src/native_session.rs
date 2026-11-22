@@ -314,6 +314,15 @@ impl NativeSession {
     ) -> io::Result<Value> {
         use lotus_protocol::debug::DebugCommand as D;
         command.validate().map_err(io::Error::other)?;
+        if matches!(command, D::AudioFocus { enabled: true }) && self.state() == SessionState::Idle
+        {
+            // An idle worker latches focus and opens the host audio device during boot.
+            // Request playback after boot so device availability cannot block loading.
+            return Err(io::Error::new(
+                io::ErrorKind::ResourceBusy,
+                "Load content before requesting audio focus",
+            ));
+        }
         if let Some(feature) = command.required_feature() {
             self.require(feature)?;
         }

@@ -4758,6 +4758,19 @@ fn peripheral_and_system_operations_match_mcp() {
     let both = |panel, command| compare(panel, command, SESSION_VOLATILE);
 
     let desktop_target = target(&a);
+    let idle_focus = D::AudioFocus { enabled: true };
+    let reply = desktop_command(
+        &controller,
+        &desktop_target,
+        Panel::Result,
+        idle_focus.clone(),
+    );
+    assert!(matches!(
+        &reply,
+        DebugStatus::Failed { kind: ErrorKind::ResourceBusy, message }
+            if message == "Load content before requesting audio focus"
+    ));
+    assert!(same_outcome(reply, debug(&b, idle_focus), SESSION_VOLATILE).is_none());
     let experimental =
         controller.latest.lock().unwrap().gdb_status[&desktop_target].backend == "CITnLO";
     // Before content: identity regeneration, a CIA install of a 3DSX (refused by AM) and
@@ -4877,11 +4890,21 @@ fn peripheral_and_system_operations_match_mcp() {
             assert_eq!(audio["artifacts"][0]["mime_type"], "audio/wav");
         }
     }
-    // One session holds audio focus at a time (supervisor `audio_focus`); each client
-    // takes it for its own session, then releases it.
+    // Host playback requires an audio device. Capture above still uses raw guest audio.
     for enabled in [true, false] {
-        let focus = both(Panel::Result, D::AudioFocus { enabled }).unwrap();
-        assert_eq!(focus["focused"], enabled);
+        let command = D::AudioFocus { enabled };
+        let reply = desktop_command(&controller, &target(&a), Panel::Result, command.clone());
+        if let DebugStatus::Failed { kind, message } = &reply {
+            assert!(
+                enabled
+                    && *kind == ErrorKind::Unsupported
+                    && message.contains("audio_output_unavailable:"),
+                "unexpected audio focus failure: {reply:?}"
+            );
+        }
+        if let Some(focus) = same_outcome(reply, debug(&b, command), SESSION_VOLATILE) {
+            assert_eq!(focus["focused"], enabled);
+        }
     }
     let transformed = both(
         Panel::Result,
