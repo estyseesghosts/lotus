@@ -840,7 +840,11 @@ impl SettingsWindow {
                 let options = choices(kind).unwrap_or_default();
                 let items = options
                     .iter()
-                    .map(|o| SharedString::from(display(o)))
+                    .map(|o| {
+                        descriptor
+                            .choice_label(o)
+                            .map_or_else(|| display(o).into(), SharedString::from)
+                    })
                     .collect();
                 let selected = options.iter().position(|o| *o == value);
                 control = control.child(

@@ -12,9 +12,14 @@ documents; this page only says what changed. Labels follow the
 - A stale desktop tile drop leaves the current workspace and selection
   intact (#73).
 - Settings search opens the matching control in its category. Primary card
-  overrides can be created or reset individually and cleared together (#54).
-- Settings → Controls assigns and identifies devices by connection, shows
-  their primary or secondary sessions, and selects saved input presets (#64).
+  overrides can be created or reset individually and cleared together.
+  Rejected text and numeric edits show a message beside the field (#54).
+- Settings → Controls identifies and assigns pads to running sessions. The
+  binding editor shows live button and stick input and supports temporary
+  mapping changes for a secondary (#64).
+- The Settings schema reports desktop presentation for each registry entry.
+  The editor spells out renderer and DSP choices and puts raw CFG blocks in
+  **Emulation → Advanced CFG** (#55, #58).
 
 ## v0.1.2
 

@@ -63,7 +63,8 @@ experiments yet. See
   [24](24-desktop.md).
 - **Driving LOTUS** — headless or windowed, one shared supervisor and MCP
   surface; primary sessions on persistent cards, disposable secondaries,
-  sidebar and gauges: [30](30-sessions-and-interface.md).
+  sidebar and gauges: [30](30-sessions-and-interface.md). For settings scopes,
+  compatibility and schema coverage, see [the Settings registry](30-sessions-and-interface.md#settings-registry-50).
 - **Multi-instance and storage** — one process per console, private roots:
   [10](10-multi-instance-and-storage.md).
 - **Debugging** — CPU/kernel/memory: [07](07-debugger-core.md); GPU capture

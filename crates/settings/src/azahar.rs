@@ -198,7 +198,7 @@ fn exclusion(name: &str, apply: Apply, sources: &[String]) -> Option<String> {
 fn group(name: &str) -> Option<(Group, &'static str)> {
     use Group::*;
     if name.starts_with("cfg.") {
-        return Some((Emulation, "System Settings"));
+        return Some((Emulation, "Advanced CFG"));
     }
     Some(match name {
         "use_cpu_jit" | "use_fastinterp" | "cpu_clock_percentage" => (Emulation, "CPU"),
@@ -358,6 +358,25 @@ fn label(name: &str) -> String {
         text = first.to_uppercase() + &text[1..];
     }
     text
+}
+
+/// Enumerators in Azahar's src/common/settings.h. The registry independently
+/// limits supported values to what the native worker accepts.
+pub(crate) fn choice_label(key: &str, value: i64) -> Option<&'static str> {
+    Some(match (key, value) {
+        ("graphics_api", 0) => "Software",
+        ("graphics_api", 2) => "Vulkan",
+        ("init_clock", 0) => "System Time",
+        ("init_clock", 1) => "Fixed Time",
+        ("init_ticks_type", 0) => "Random",
+        ("init_ticks_type", 1) => "Fixed",
+        ("audio_emulation", 0) => "High-Level (HLE)",
+        ("audio_emulation", 1) => "Low-Level (LLE)",
+        ("audio_emulation", 2) => "Low-Level (Multithreaded LLE)",
+        ("battery_state_source", 0) => "System",
+        ("battery_state_source", 1) => "Fixed",
+        _ => return None,
+    })
 }
 
 /// When the value takes effect. The consumer citations stay in `sources`.

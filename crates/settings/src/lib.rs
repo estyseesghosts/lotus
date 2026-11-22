@@ -240,6 +240,26 @@ pub enum Availability {
     },
 }
 
+/// Settings window coverage for a registry entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Presentation {
+    Standard,
+    Expert,
+    Excluded,
+    Internal,
+}
+
+impl Presentation {
+    #[must_use]
+    pub fn has_row(self) -> bool {
+        matches!(self, Self::Standard | Self::Expert)
+    }
+}
+
+/// `desktop.json` key for the Settings window's last position and size.
+pub const SETTINGS_BOUNDS_KEY: &str = "lotus.desktop.settings_bounds";
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Descriptor {
     pub key: String,
@@ -260,6 +280,25 @@ pub struct Descriptor {
 }
 
 impl Descriptor {
+    #[must_use]
+    pub fn presentation(&self) -> Presentation {
+        if matches!(self.availability, Availability::Excluded { .. }) {
+            Presentation::Excluded
+        } else if self.key == SETTINGS_BOUNDS_KEY {
+            Presentation::Internal
+        } else if self.group == Group::Advanced || self.apply == Apply::CfgSavedata {
+            Presentation::Expert
+        } else {
+            Presentation::Standard
+        }
+    }
+
+    /// Human-readable name for a known enum value. The stored value stays unchanged.
+    #[must_use]
+    pub fn choice_label(&self, value: &Value) -> Option<&'static str> {
+        azahar::choice_label(&self.key, value.as_i64()?)
+    }
+
     /// Offered as a control on a worker of `branch` (Lotus settings ignore the branch).
     pub fn available_on(&self, branch: Option<Branch>) -> Result<(), String> {
         match &self.availability {
@@ -539,14 +578,25 @@ impl Registry {
     /// Schema for discovery (CLI, MCP, UI): every descriptor, grouped.
     #[must_use]
     pub fn schema(&self, scope: Option<Scope>) -> Value {
+        #[derive(Serialize)]
+        struct Entry<'a> {
+            #[serde(flatten)]
+            descriptor: &'a Descriptor,
+            presentation: Presentation,
+        }
+
         let groups: Vec<Value> = Group::ALL
             .iter()
             .map(|group| {
-                let settings: Vec<&Descriptor> = self
+                let settings: Vec<_> = self
                     .descriptors
                     .iter()
                     .filter(|d| d.group == *group)
                     .filter(|d| scope.is_none_or(|s| d.scopes.allows(s)))
+                    .map(|descriptor| Entry {
+                        descriptor,
+                        presentation: descriptor.presentation(),
+                    })
                     .collect();
                 serde_json::json!({"group": group, "label": group.label(), "settings": settings})
             })

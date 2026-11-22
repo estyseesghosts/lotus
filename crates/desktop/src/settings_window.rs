@@ -26,6 +26,7 @@ use gpui::{
 use gpui::{Stateful, StatefulInteractiveElement};
 use lotus_session::supervisor::{SettingChange, SettingStatus, SettingsTarget, Supervisor};
 use lotus_session::telemetry::Actor;
+pub use lotus_settings::SETTINGS_BOUNDS_KEY as BOUNDS_KEY;
 use lotus_settings::{Availability, Descriptor, Group, Kind, Owner, Registry, Scope};
 use serde_json::Value;
 
@@ -43,8 +44,6 @@ mod controllers;
 #[cfg(feature = "silvestris-ui")]
 mod shared;
 
-/// `desktop.json` key holding this window's last bounds; window state, not shown as a row.
-pub const BOUNDS_KEY: &str = "lotus.desktop.settings_bounds";
 #[cfg(not(feature = "silvestris-ui"))]
 const DEFAULT_SIZE: (f32, f32) = (860.0, 620.0);
 const MIN_SIZE: (f32, f32) = (640.0, 420.0);
@@ -502,9 +501,8 @@ impl SettingsWindow {
         Registry::builtin()
             .descriptors()
             .iter()
-            .filter(|d| d.group == group && d.scopes.allows(scope) && d.key != BOUNDS_KEY)
+            .filter(|d| d.group == group && d.scopes.allows(scope) && d.presentation().has_row())
             .filter(|d| scope != Scope::SecondaryRuntime || d.owner == Owner::Input)
-            .filter(|d| !matches!(d.availability, Availability::Excluded { .. }))
             .collect()
     }
 
@@ -1428,7 +1426,7 @@ mod tests {
             let shown = registry
                 .descriptors()
                 .iter()
-                .filter(|d| d.scopes.allows(scope) && d.key != BOUNDS_KEY)
+                .filter(|d| d.scopes.allows(scope) && d.presentation().has_row())
                 .count();
             assert!(shown > 0);
         }

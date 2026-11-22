@@ -4,7 +4,7 @@
 
 use serde_json::{json, Value};
 
-use crate::{Apply, Availability, Descriptor, Group, Kind, Owner, Scopes};
+use crate::{Apply, Availability, Descriptor, Group, Kind, Owner, Scopes, SETTINGS_BOUNDS_KEY};
 
 #[allow(clippy::too_many_arguments)]
 fn setting(
@@ -531,7 +531,7 @@ pub(crate) fn descriptors() -> Vec<Descriptor> {
             &["split", "tile"],
         ),
         setting(
-            "lotus.desktop.settings_bounds",
+            SETTINGS_BOUNDS_KEY,
             Desktop,
             General,
             "Window",

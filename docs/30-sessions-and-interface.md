@@ -925,9 +925,9 @@ the source list and for the selected session in the toolbar. The badge's
 tooltip identifies the controller.
 
 The mounted GPUI test assigns two identically named synthetic pads from the
-Settings menus and reads the two mock workers' independent input streams. The
-visual mapping editor, input capture and temporary secondary mapping edits
-remain open in #64.
+Settings menus and reads the two mock workers' independent input streams.
+The [binding editor](#controller-bindings-64) covers global, card and temporary
+secondary mappings.
 
 Evidence: **verified compiled**. Unit tests in `layout.rs` cover:
 
@@ -1002,7 +1002,11 @@ bounds or choices, default, scopes (`global`, `primary`,
   registry keys the worker no longer binds; a non-empty result is logged.
   Other workers (the mock) record `null`.
 - **Discovery.** `ctr-cli settings schema [global|primary|secondary]` and
-  `lotus_settings_schema` print the same JSON.
+  `lotus_settings_schema` print the same JSON. Without a scope filter the schema
+  lists all 173 distinct Azahar keys and Lotus-owned settings. `presentation`
+  gives the Settings window coverage (`standard`, `expert`, `excluded` or
+  `internal`). Exclusions carry an `availability.reason`. Expert raw CFG blocks
+  are under **Emulation → Advanced CFG**.
 
 The registry drives the Settings window ([below](#settings-window-53)).
 
@@ -1075,6 +1079,21 @@ rows and the supervisor's live layout resolver. The diagnostic layout reads
 composed guest input from the selected session's desktop router. Keyboard
 capture intercepts keystrokes in the Settings window before GPUI dispatches
 actions. Secondary edits go through the session runtime layer in memory.
+The mounted GPUI test at 150% scale verifies shortcut suppression, rebinding,
+live state and reset without a card write. Physical-controller pairing remains
+unverified.
+
+### Windows verification (#58)
+
+- `cargo build --locked -p lotus-session --bin lotus-mock-native` and
+  `cargo test --locked -p lotus-desktop --lib --test input_routing` run the
+  Settings and routing tests, including validation at 175% simulated scale.
+- `python tests/test_settings_window.py <lotus-desktop> <mock-worker> <output>`
+  exercises the native window's shortcut, singleton, placement and shutdown.
+- `python tests/test_mcp_settings_apply.py <lotus-mcp> <worker> <homebrew> <output>`
+  passed on Windows with the AZAHAR and CITnLO builds. It verifies live audio,
+  pending renderer, boot and CFG changes, a second unaffected card, and
+  rejection of excluded settings. The output path must be new for each run.
 
 ## Settings layers (#51)
 

@@ -47,6 +47,39 @@ fn every_inventory_setting_is_registered_once_and_classified() {
 }
 
 #[test]
+fn schema_carries_the_same_coverage_the_settings_window_uses() {
+    let schema = registry().schema(None);
+    let items: Vec<&Value> = schema["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|group| group["settings"].as_array().unwrap())
+        .collect();
+    assert_eq!(items.len(), registry().descriptors().len());
+    for item in &items {
+        let descriptor = registry().get(item["key"].as_str().unwrap()).unwrap();
+        assert_eq!(item["presentation"], json!(descriptor.presentation()));
+        if descriptor.owner == Owner::Azahar {
+            if descriptor.presentation() == Presentation::Excluded {
+                assert!(!item["availability"]["reason"].as_str().unwrap().is_empty());
+            } else {
+                assert!(descriptor.presentation().has_row());
+                assert!(descriptor.scopes.allows(Scope::Global));
+            }
+        }
+    }
+    let row = |key| items.iter().find(|item| item["key"] == key).unwrap();
+    assert_eq!(row(SETTINGS_BOUNDS_KEY)["presentation"], "internal");
+    assert_eq!(row("cfg.000a0002")["presentation"], "expert");
+    assert_eq!(row("graphics_api")["presentation"], "standard");
+    assert_eq!(row("enable_gamemode")["presentation"], "excluded");
+    let renderer = registry().get("graphics_api").unwrap();
+    assert_eq!(renderer.choice_label(&json!(0)), Some("Software"));
+    assert_eq!(renderer.choice_label(&json!(2)), Some("Vulkan"));
+    assert_eq!(renderer.choice_label(&json!(1)), None);
+}
+
+#[test]
 fn apply_classes_match_the_worker_inventory() {
     let count = |apply| {
         registry()
