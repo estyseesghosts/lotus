@@ -15,6 +15,7 @@ use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult};
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    future::Future,
     io::{ErrorKind, Read, Write},
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
     path::PathBuf,
@@ -4349,12 +4350,18 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
     let mut config = HostConfig::new(worker, &root);
     config.allow_control = true;
     config.assets.insert("fixture".into(), fixture);
-    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    config.profile.insert(
+        "deterministic_async_operations".into(),
+        lotus_protocol::debug::SettingValue::Boolean(true),
+    );
+    // The controller stops sessions during Drop. Keep the runtime that owns
+    // the MCP-created session tasks alive through that shutdown.
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
         .build()
         .unwrap();
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
     let mcp = controller.mcp_server();
     let host = controller.host().clone();
     let call = |result: CallToolResult| {
@@ -4366,10 +4373,15 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
         }
     };
     let debug = |session: &str, command| {
-        call(runtime.block_on(mcp.lotus_debug(Parameters(DebugArgs {
-            session: session.into(),
-            command,
-        }))))
+        let operation = format!("{session} {command:?}");
+        call(native_tool_call(
+            &runtime,
+            &operation,
+            mcp.lotus_debug(Parameters(DebugArgs {
+                session: session.into(),
+                command,
+            })),
+        ))
     };
     let target = |id: &str| {
         let update = controller.latest.lock().unwrap();
@@ -4388,14 +4400,16 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
             .unwrap()
     };
     let mcp_set = |card: &str, key: &str, value: Value| {
-        call(
-            runtime.block_on(mcp.lotus_settings_change(Parameters(SettingsChangeArgs {
+        call(native_tool_call(
+            &runtime,
+            "lotus_settings_change",
+            mcp.lotus_settings_change(Parameters(SettingsChangeArgs {
                 target: SettingsTargetArg::Card { card: card.into() },
                 operation: SettingsOperation::Set,
                 key: Some(key.into()),
                 value: Some(value),
-            }))),
-        )
+            })),
+        ))
         .unwrap()
     };
 
@@ -4413,13 +4427,15 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
         .info
         .id
         .clone();
-    let b = call(
-        runtime.block_on(mcp.lotus_create_session(Parameters(CreateArgs {
+    let b = call(native_tool_call(
+        &runtime,
+        "lotus_create_session",
+        mcp.lotus_create_session(Parameters(CreateArgs {
             kind: KindArg::Primary,
             card: Some("agent".into()),
             asset: None,
-        }))),
-    )
+        })),
+    ))
     .unwrap()["session"]
         .as_str()
         .unwrap()
@@ -4428,10 +4444,14 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
         update.sessions.iter().any(|s| s.info.id == b)
     });
     for id in [&a, &b] {
-        call(runtime.block_on(mcp.lotus_load(Parameters(LoadArgs {
-            session: id.clone(),
-            asset: "fixture".into(),
-        }))))
+        call(native_tool_call(
+            &runtime,
+            "lotus_load",
+            mcp.lotus_load(Parameters(LoadArgs {
+                session: id.clone(),
+                asset: "fixture".into(),
+            })),
+        ))
         .unwrap();
         debug(id, D::Pause).unwrap();
     }
@@ -4449,9 +4469,13 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
     mcp_set("agent", interval, 7.into());
     mcp_set("agent", level, (-3).into());
     for card in ["desk", "agent"] {
-        let saved = call(runtime.block_on(mcp.lotus_settings(Parameters(SettingsArgs {
-            target: SettingsTargetArg::Card { card: card.into() },
-        }))))
+        let saved = call(native_tool_call(
+            &runtime,
+            "lotus_settings",
+            mcp.lotus_settings(Parameters(SettingsArgs {
+                target: SettingsTargetArg::Card { card: card.into() },
+            })),
+        ))
         .unwrap();
         assert_eq!(saved["settings"][interval]["source"], "card", "{card}");
         assert_eq!(saved["settings"][capture]["source"], "global", "{card}");
@@ -4465,31 +4489,42 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
         compression_level: None,
         compression_queue: None,
     };
-    let configured = same_outcome(
-        desktop(&a, Panel::States, rewind.clone()),
-        debug(&b, rewind.clone()),
-        SESSION_VOLATILE,
-    );
-    let Some(configured) = configured else {
-        // No rewind on this worker; the GPU request is refused or accepted alike.
-        let gpu = D::GpuConfigure {
-            enabled: true,
-            stop_events: Vec::new(),
-            capture: None,
-            draw_range: None,
-            max_draws: None,
-            resources: None,
-        };
-        same_outcome(
-            desktop(&a, Panel::Gpu, gpu.clone()),
-            debug(&b, gpu),
-            SESSION_VOLATILE,
+    let desktop_target = target(&a);
+    let backend = controller.latest.lock().unwrap().gdb_status[&desktop_target]
+        .backend
+        .clone();
+    let check_configuration = |panel, command: D| {
+        let reply = desktop(&a, panel, command.clone());
+        if backend == "AZAHAR" {
+            assert!(
+                matches!(reply, DebugStatus::Failed { kind: ErrorKind::Unsupported, .. }),
+                "{command:?}: {reply:?}"
+            );
+        }
+        let result = same_outcome(reply, debug(&b, command), SESSION_VOLATILE);
+        assert_eq!(
+            result.is_some(),
+            backend == "CITnLO",
+            "{backend}: {result:?}"
         );
-        let _ = std::fs::remove_dir_all(&root);
-        return;
+        result
     };
-    assert_eq!(configured["interval_frames"], 7, "{configured}");
-    assert_eq!(configured["compression_level"], -3, "{configured}");
+    let configured = check_configuration(Panel::States, rewind.clone());
+    if let Some(configured) = configured {
+        assert_eq!(configured["interval_frames"], 7, "{configured}");
+        assert_eq!(configured["compression_level"], -3, "{configured}");
+
+        // The next request inherits the global value without restarting.
+        desktop_set(desk(), interval, None);
+        let inherited = completed(desktop(&a, Panel::States, rewind.clone()));
+        let rows = result_rows(&inherited, ".interval_frames");
+        assert_eq!(
+            rows.get(".interval_frames"),
+            Some(&Value::from(10)),
+            "{rows:?}"
+        );
+        assert_eq!(debug(&b, rewind).unwrap()["interval_frames"], 7);
+    }
 
     let gpu = D::GpuConfigure {
         enabled: true,
@@ -4499,19 +4534,25 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
         max_draws: None,
         resources: None,
     };
-    let captured = same_outcome(
-        desktop(&a, Panel::Gpu, gpu.clone()),
-        debug(&b, gpu),
-        SESSION_VOLATILE,
-    )
-    .unwrap();
-    assert_eq!(captured["capture"], "events", "{captured}");
+    if let Some(captured) = check_configuration(Panel::Gpu, gpu) {
+        assert_eq!(captured["capture"], "events", "{captured}");
+    }
+    drop(mcp);
+    drop(host);
+    drop(controller);
+    std::fs::remove_dir_all(&root).unwrap();
+}
 
-    // Removing the card value: the next request carries the global value, no restart.
-    desktop_set(desk(), interval, None);
-    let inherited = completed(desktop(&a, Panel::States, rewind.clone()));
-    let rows = result_rows(&inherited, ".interval_frames");
-    assert_eq!(rows.get(".interval_frames"), Some(&Value::from(10)), "{rows:?}");
-    assert_eq!(debug(&b, rewind).unwrap()["interval_frames"], 7);
-    let _ = std::fs::remove_dir_all(&root);
+fn native_tool_call(
+    runtime: &tokio::runtime::Runtime,
+    operation: &str,
+    future: impl Future<Output = CallToolResult>,
+) -> CallToolResult {
+    eprintln!("MCP {operation}");
+    let started = Instant::now();
+    let result = runtime
+        .block_on(async { tokio::time::timeout(Duration::from_secs(45), future).await })
+        .unwrap_or_else(|_| panic!("MCP {operation} exceeded its deadline"));
+    eprintln!("MCP {operation} completed in {:?}", started.elapsed());
+    result
 }

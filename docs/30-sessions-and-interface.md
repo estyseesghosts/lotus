@@ -1116,10 +1116,12 @@ and delete are MCP and `ctr-cli` only.
 saves card and global debugger defaults through the desktop write path on one
 card and `lotus_settings_change` on another, then sends rewind and GPU
 requests that omit those fields from the desktop and from `lotus_debug`.
-The worker echoes the card interval, card compression level and global
-capture level, and removing the card value takes effect on the next request.
-It passed once on the CITnLO 0.1.2 worker (**verified emulator**) but took
-492 s; the slow step is not yet identified. It was not run on AZAHAR.
+The CITnLO 0.1.2 worker echoes the card interval, card compression level
+and global capture level, and removing the card value takes effect on the
+next request. AZAHAR 0.1.2 returns matching Unsupported outcomes for rewind
+and event capture (**verified emulator**, Windows, owned ARM/Thumb fixture).
+The test keeps the MCP runtime alive through controller shutdown and bounds
+each MCP call to 45 seconds. Both pins finished in about five seconds locally.
 
 `tests/test_settings_window.py` (**verified emulator**, mock worker, real key
 events): Ctrl+, three times leaves one Settings window. The test moves it,
