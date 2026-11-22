@@ -1572,8 +1572,8 @@ mod tests {
         use lotus_session::supervisor::HostConfig;
         use rmcp::handler::server::wrapper::Parameters;
 
-        let storage = std::env::temp_dir()
-            .join(format!("lotus-settings-parity-{}", SessionUuid::generate()));
+        let storage =
+            std::env::temp_dir().join(format!("lotus-settings-parity-{}", SessionUuid::generate()));
         std::fs::create_dir_all(storage.join("cards/dev")).unwrap();
         let mut config = HostConfig::new(std::env::current_exe().unwrap(), &storage);
         config.allow_control = true;
@@ -1600,14 +1600,14 @@ mod tests {
             tool(runtime.block_on(headless.lotus_settings(Parameters(SettingsArgs { target }))))
         };
         let change = |target, operation, key: &str, value: Option<Value>| {
-            tool(
-                runtime.block_on(headless.lotus_settings_change(Parameters(SettingsChangeArgs {
+            tool(runtime.block_on(
+                headless.lotus_settings_change(Parameters(SettingsChangeArgs {
                     target,
                     operation,
                     key: Some(key.into()),
                     value,
-                }))),
-            )
+                })),
+            ))
         };
         let card = || SettingsTargetArg::Card { card: "dev".into() };
 
@@ -1649,9 +1649,12 @@ mod tests {
             (Target::Global, SettingsScope::Global),
             (Target::Card("dev".into()), SettingsScope::Primary),
         ] {
-            let schema = tool(runtime.block_on(headless.lotus_settings_schema(Parameters(
-                SettingsSchemaArgs { scope: Some(scope) },
-            ))));
+            let schema =
+                tool(runtime.block_on(
+                    headless.lotus_settings_schema(Parameters(SettingsSchemaArgs {
+                        scope: Some(scope),
+                    })),
+                ));
             cx.update(|_, cx| {
                 settings.update(cx, |view, cx| view.set_target(target.clone(), cx));
             });
@@ -1662,7 +1665,13 @@ mod tests {
                     .unwrap()
                     .iter()
                     .map(|s| s["key"].as_str().unwrap())
-                    .filter(|key| Registry::builtin().get(key).unwrap().presentation().has_row())
+                    .filter(|key| {
+                        Registry::builtin()
+                            .get(key)
+                            .unwrap()
+                            .presentation()
+                            .has_row()
+                    })
                     .collect();
                 let group = Group::ALL
                     .into_iter()
@@ -1735,14 +1744,24 @@ mod tests {
                 )
             });
             let mut parsed = &headless_config;
-            for part in descriptor.key.strip_prefix("lotus.host.").unwrap().split('.') {
+            for part in descriptor
+                .key
+                .strip_prefix("lotus.host.")
+                .unwrap()
+                .split('.')
+            {
                 parsed = &parsed[part];
             }
             assert_eq!(&value, parsed, "{}", descriptor.key);
             match enforced(&descriptor.key) {
                 Some(Ok(effective)) => assert_eq!(value, effective, "{}", descriptor.key),
                 Some(Err(effective)) => {
-                    assert_eq!(note.as_deref(), Some(effective.as_str()), "{}", descriptor.key)
+                    assert_eq!(
+                        note.as_deref(),
+                        Some(effective.as_str()),
+                        "{}",
+                        descriptor.key
+                    )
                 }
                 None => continue,
             }
@@ -1759,7 +1778,9 @@ mod tests {
         cx.update(|window, cx| {
             settings.update(cx, |view, cx| {
                 view.show_group(descriptor.group, window, cx);
-                view.prefs.tabs.insert(descriptor.group, descriptor.subgroup);
+                view.prefs
+                    .tabs
+                    .insert(descriptor.group, descriptor.subgroup);
                 view.prefs.reveal = Some(descriptor);
             });
         });
@@ -1796,7 +1817,10 @@ mod tests {
             });
         });
         let on_card = read(card());
-        assert_eq!(on_card["settings"][capture]["source"], "global", "{on_card}");
+        assert_eq!(
+            on_card["settings"][capture]["source"], "global",
+            "{on_card}"
+        );
         assert_eq!(shown(cx, &on_card)["settings"], on_card["settings"]);
         for (key, source) in [(interval, "card"), (capture, "global"), (key, "global")] {
             let descriptor = Registry::builtin().get(key).unwrap();
@@ -1817,14 +1841,20 @@ mod tests {
             to: to.map(str::to_string),
             json: None,
         };
-        tool(runtime.block_on(headless.lotus_input_presets(Parameters(presets(
-            InputPresetOperation::Duplicate,
-            Some("xbox-labels"),
-            Some("pad-b"),
-        )))));
-        let listed = tool(runtime.block_on(
-            headless.lotus_input_presets(Parameters(presets(InputPresetOperation::List, None, None))),
-        ));
+        tool(
+            runtime.block_on(headless.lotus_input_presets(Parameters(presets(
+                InputPresetOperation::Duplicate,
+                Some("xbox-labels"),
+                Some("pad-b"),
+            )))),
+        );
+        let listed = tool(
+            runtime.block_on(headless.lotus_input_presets(Parameters(presets(
+                InputPresetOperation::List,
+                None,
+                None,
+            )))),
+        );
         assert_eq!(listed["saved"], serde_json::json!(["pad-b"]));
         cx.update(|_, cx| settings.update(cx, |view, cx| view.refresh(cx)));
         draw(cx);

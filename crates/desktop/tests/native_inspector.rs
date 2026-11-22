@@ -4501,7 +4501,13 @@ fn saved_debugger_defaults_reach_the_worker_from_both_clients() {
         let reply = desktop(&a, panel, command.clone());
         if backend == "AZAHAR" {
             assert!(
-                matches!(reply, DebugStatus::Failed { kind: ErrorKind::Unsupported, .. }),
+                matches!(
+                    reply,
+                    DebugStatus::Failed {
+                        kind: ErrorKind::Unsupported,
+                        ..
+                    }
+                ),
                 "{command:?}: {reply:?}"
             );
         }
@@ -4726,15 +4732,13 @@ fn peripheral_and_system_operations_match_mcp() {
         assert_eq!(regenerated["regenerated_console_id"], true);
         assert_eq!(regenerated["regenerated_mac"], true);
     }
-    assert!(
-        both(
-            Panel::Result,
-            D::InstallCia {
-                asset: "fixture".into(),
-            }
-        )
-        .is_none()
-    );
+    assert!(both(
+        Panel::Result,
+        D::InstallCia {
+            asset: "fixture".into(),
+        }
+    )
+    .is_none());
     assert!(both(Panel::Result, D::BootHomeMenu { region: 0 }).is_none());
     let mic = both(
         Panel::Result,
@@ -4774,16 +4778,14 @@ fn peripheral_and_system_operations_match_mcp() {
         (camera["width"].as_u64(), camera["height"].as_u64()),
         (Some(8), Some(8))
     );
-    assert!(
-        both(
-            Panel::Result,
-            D::AssetMount {
-                asset: "nfc".into(),
-                kind: AssetKind::Nfc,
-            }
-        )
-        .is_none()
-    );
+    assert!(both(
+        Panel::Result,
+        D::AssetMount {
+            asset: "nfc".into(),
+            kind: AssetKind::Nfc,
+        }
+    )
+    .is_none());
     assert_eq!(
         both(Panel::Result, D::NfcRemove).unwrap()["session_private"],
         true
@@ -4801,17 +4803,15 @@ fn peripheral_and_system_operations_match_mcp() {
             assert_eq!(forwarding["forwarding"], enabled);
         }
     }
-    assert!(
-        both(
-            Panel::Result,
-            D::HioReply {
-                value: 0,
-                errno: 0,
-                interrupted: false,
-            }
-        )
-        .is_none()
-    );
+    assert!(both(
+        Panel::Result,
+        D::HioReply {
+            value: 0,
+            errno: 0,
+            interrupted: false,
+        }
+    )
+    .is_none());
     // The top-screen framebuffer region of VRAM, read the same way on equal guest state.
     let surface = both(
         Panel::Gpu,

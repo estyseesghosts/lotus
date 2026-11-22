@@ -107,8 +107,8 @@ fn main() {
             eprintln!("shared MCP needs a host.json");
             std::process::exit(2);
         };
-        let endpoint = lotus_desktop::local_mcp::Endpoint::for_config(config)
-            .unwrap_or_else(shared_mcp_error);
+        let endpoint =
+            lotus_desktop::local_mcp::Endpoint::for_config(config).unwrap_or_else(shared_mcp_error);
         if bridge {
             let arguments: Vec<_> = std::env::args_os()
                 .skip(1)
@@ -120,17 +120,13 @@ fn main() {
                     }
                 })
                 .collect();
-            let executable =
-                std::env::current_exe().unwrap_or_else(shared_mcp_error);
+            let executable = std::env::current_exe().unwrap_or_else(shared_mcp_error);
             endpoint
                 .bridge(&executable, &arguments)
                 .unwrap_or_else(shared_mcp_error);
             return;
         }
-        let Some(lock) = endpoint
-            .claim_host()
-            .unwrap_or_else(shared_mcp_error)
-        else {
+        let Some(lock) = endpoint.claim_host().unwrap_or_else(shared_mcp_error) else {
             eprintln!("LOTUS already has a shared desktop for this storage root. Open it from the taskbar.");
             return;
         };

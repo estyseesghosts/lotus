@@ -27,7 +27,7 @@ pub mod tiling;
 pub mod ui_framework;
 pub mod ui_metrics;
 
-#[cfg(feature = "silvestris-ui")]
-pub mod navigation;
 #[cfg(windows)]
 pub mod local_mcp;
+#[cfg(feature = "silvestris-ui")]
+pub mod navigation;
