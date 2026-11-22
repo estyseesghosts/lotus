@@ -42,6 +42,235 @@ fn wait(controller: &DesktopController, predicate: impl Fn(&Update) -> bool) {
     }
 }
 
+fn desktop_command(
+    controller: &DesktopController,
+    target: &SessionTarget,
+    panel: Panel,
+    command: D,
+) -> DebugStatus {
+    let previous = controller
+        .latest
+        .lock()
+        .unwrap()
+        .debug_requests()
+        .last()
+        .map(|r| r.id);
+    controller
+        .commands
+        .send(Command::DebugAt {
+            target: target.clone(),
+            panel,
+            command,
+        })
+        .unwrap();
+    let status = |update: &Update| {
+        update
+            .debug_requests()
+            .rev()
+            .find(|request| {
+                &request.target == target
+                    && request.panel == panel
+                    && previous.is_none_or(|id| request.id > id)
+                    && !matches!(request.status, DebugStatus::Running)
+            })
+            .map(|request| request.status.clone())
+    };
+    wait(controller, |update| status(update).is_some());
+    status(&controller.latest.lock().unwrap()).unwrap()
+}
+
+fn completed(status: DebugStatus) -> std::sync::Arc<Inspection> {
+    match status {
+        DebugStatus::Finished { view, .. } => view,
+        status => panic!("Expected a successful native command: {status:?}"),
+    }
+}
+
+fn selected_target(controller: &DesktopController) -> SessionTarget {
+    let update = controller.latest.lock().unwrap();
+    let summary = update
+        .sessions
+        .iter()
+        .find(|s| s.info.id == update.selected)
+        .unwrap();
+    SessionTarget {
+        id: summary.info.id.clone(),
+        created_unix_ms: summary.info.created_unix_ms,
+        epoch: summary.telemetry.epoch,
+    }
+}
+
+#[test]
+#[ignore = "requires LOTUS_NATIVE_WORKER and LOTUS_DEBUG_FIXTURE"]
+fn snapshots_and_movies_use_the_owned_fixture() {
+    let worker = PathBuf::from(std::env::var_os("LOTUS_NATIVE_WORKER").unwrap());
+    let fixture = PathBuf::from(std::env::var_os("LOTUS_DEBUG_FIXTURE").unwrap());
+    let root = std::env::temp_dir().join(format!("lotus-history-{}", SessionUuid::generate()));
+    let mut config = HostConfig::new(worker, &root);
+    config.allow_control = true;
+    config.policy.rewind_sessions = Some(1);
+    config.assets.insert("fixture".into(), fixture);
+    config.profile.insert(
+        "deterministic_async_operations".into(),
+        lotus_protocol::debug::SettingValue::Boolean(true),
+    );
+    let controller = DesktopController::start(config, McpMode::Off).unwrap();
+    let send = |command| controller.commands.send(command).unwrap();
+    *controller.inspection_selection.lock().unwrap() =
+        InspectionSelection::first_page(Panel::States);
+    controller.inspector.store(true, Ordering::Release);
+    let create = |name: &str| {
+        send(Command::Create {
+            kind: SessionKind::Primary { card: name.into() },
+            asset: None,
+        });
+        wait(&controller, |update| {
+            update.sessions.iter().any(|s| {
+                s.info.id == update.selected
+                    && matches!(&s.info.kind, SessionKind::Primary { card } if card == name)
+            })
+        });
+        selected_target(&controller)
+    };
+    let load = |previous: &SessionTarget| {
+        send(Command::Load {
+            session: previous.id.clone(),
+            asset: "fixture".into(),
+        });
+        wait(&controller, |update| {
+            update.sessions.iter().any(|session| {
+                session.info.id == previous.id && session.telemetry.epoch > previous.epoch
+            })
+        });
+        send(Command::Pause(previous.id.clone()));
+        wait(&controller, |update| {
+            update.sessions.iter().any(|session| {
+                session.info.id == previous.id
+                    && session.telemetry.state == lotus_session::SessionState::Paused
+                    && !session.telemetry.playing
+            })
+        });
+        selected_target(&controller)
+    };
+    let owner = create("history");
+    let command = |target: &SessionTarget, command| {
+        desktop_command(&controller, target, Panel::States, command)
+    };
+    let prepared = completed(command(
+        &owner,
+        D::MovieRecord {
+            name: "owned".into(),
+        },
+    ));
+    assert_eq!(prepared.data.as_ref().unwrap()["prepared"], "record");
+    let owner = load(&owner);
+    completed(command(&owner, D::Advance { frames: 3 }));
+    let movie = completed(command(&owner, D::MovieStop));
+    assert_eq!(
+        movie.data.as_ref().unwrap()["artifacts"][0]["screen"],
+        "ctm"
+    );
+    let rewind = D::RewindConfigure {
+        enabled: true,
+        capacity: 4,
+        budget_mib: 32,
+        interval_frames: Some(2),
+        compression_level: Some(-2),
+        compression_queue: Some(1),
+    };
+    let accepted = completed(command(&owner, rewind.clone()));
+    let values = accepted.data.as_ref().unwrap();
+    for (key, expected) in [
+        ("capacity", 4),
+        ("budget_bytes", 32 << 20),
+        ("interval_frames", 2),
+        ("compression_level", -2),
+        ("compression_queue", 1),
+    ] {
+        assert_eq!(values[key], expected, "{key}");
+    }
+    let checkpoint = "desktop-history".to_owned();
+    completed(command(
+        &owner,
+        D::SaveState {
+            name: checkpoint.clone(),
+        },
+    ));
+    wait(&controller, |update| {
+        update.inspection.as_ref().is_some_and(|snapshot| {
+            snapshot.target.as_ref() == Some(&owner)
+                && snapshot.view.data.as_ref().is_some_and(|data| {
+                    data["checkpoints"]["states"]
+                        .as_array()
+                        .is_some_and(|states| states.iter().any(|name| name == &checkpoint))
+                        && data["rewind_policy"]["memory_reserved_mib"][&owner.id] == 352
+                })
+        })
+    });
+    let sibling = load(&create("sibling"));
+    assert!(matches!(
+        command(&sibling, rewind),
+        DebugStatus::Failed {
+            kind: ErrorKind::ResourceBusy,
+            ..
+        }
+    ));
+    let result = command(
+        &owner,
+        D::LoadState {
+            name: checkpoint.clone(),
+        },
+    );
+    assert!(
+        matches!(result, DebugStatus::Expired | DebugStatus::Finished { .. }),
+        "{result:?}"
+    );
+    wait(&controller, |update| {
+        owner.resolve(&update.sessions).is_none()
+    });
+    send(Command::Stop(owner.id.clone()));
+    wait(&controller, |update| {
+        update.sessions.iter().all(|s| s.info.id != owner.id)
+    });
+    let replay = create("history");
+    let plan = completed(command(
+        &replay,
+        D::MoviePlay {
+            name: "owned".into(),
+            read_only: true,
+        },
+    ));
+    assert_eq!(plan.data.as_ref().unwrap()["prepared"], "play");
+    let replay = load(&replay);
+    let playback = completed(command(&replay, D::MovieStatus));
+    assert!(matches!(
+        playback.data.as_ref().unwrap()["mode"].as_u64(),
+        Some(2 | 3)
+    ));
+    completed(command(&replay, D::MovieStop));
+    send(Command::Stop(replay.id.clone()));
+    wait(&controller, |update| {
+        update.sessions.iter().all(|s| s.info.id != replay.id)
+    });
+    let mismatch = create("history");
+    let incompatible = command(
+        &mismatch,
+        D::SettingsSet {
+            name: "deterministic_async_operations".into(),
+            value: lotus_protocol::debug::SettingValue::Boolean(false),
+        },
+    );
+    completed(incompatible);
+    let mismatch = load(&mismatch);
+    assert!(
+        matches!(command(&mismatch, D::LoadState { name: checkpoint }),
+        DebugStatus::Failed { message, .. } if message.contains("checkpoint pin or settings mismatch"))
+    );
+    drop(controller);
+    assert!(root.is_absolute() && root.starts_with(std::env::temp_dir()));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
 fn check_gpu_comparison(controller: &DesktopController, target: &SessionTarget) {
     let send = |command| {
         controller

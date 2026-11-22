@@ -53,15 +53,15 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `lease_acquire` | external only | control | - | Lease ownership belongs to the external controller | external |
 | `lease_release` | external only | control | - | Lease ownership belongs to the external controller | external |
 | `load` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
-| `load_state` | [inspector rows](../crates/desktop/src/inspection.rs) | control | - | - | fixture pending |
+| `load_state` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `load_symbols` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `logs` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
 | `matrix` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `memory_map` | [Memory inspector](../crates/desktop/src/lotus_window/memory_panel.rs) | read | - | - | [Memory](../crates/desktop/src/lotus_window/breakpoints.rs) |
-| `movie_play` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `movie_record` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `movie_status` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
-| `movie_stop` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
+| `movie_play` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
+| `movie_record` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
+| `movie_status` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | read | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
+| `movie_stop` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `nfc_remove` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
 | `pause` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `perf` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
@@ -71,13 +71,13 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `registers` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `reset` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Current desktop controls expose a subset of arguments | fixture pending |
 | `resolve_symbol` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
-| `reverse_continue` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
-| `reverse_step` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
-| `rewind_configure` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | rewind_compression_queue when compression_queue is set | - | fixture pending |
-| `rewind_status` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | read | - | - | fixture pending |
+| `reverse_continue` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | fixture pending |
+| `reverse_step` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | fixture pending |
+| `rewind_configure` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | rewind_compression_queue when compression_queue is set | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
+| `rewind_status` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | read | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `run_to` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `run_until` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control | - | - | fixture pending |
-| `save_state` | [inspector actions](../crates/desktop/src/lotus_window.rs) | control | - | - | fixture pending |
+| `save_state` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | control | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `scan` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | control | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
 | `scan_narrow` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | control | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
 | `scan_results` | [Memory search](../crates/desktop/src/lotus_window/memory_search.rs) | read | - | - | [Memory search](../crates/desktop/tests/native_inspector.rs) |
@@ -87,7 +87,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `settings_set` | [inspector rows](../crates/desktop/src/inspection.rs) | control | deterministic_async for deterministic_async_operations | - | fixture pending |
 | `shader_trace` | [inspector rows](../crates/desktop/src/inspection.rs) | control | - | - | [GPU](../crates/desktop/tests/native_inspector.rs) |
 | `state_hash` | [palette](../crates/desktop/src/lotus_window/command_palette.rs) | control if dump is set | state_hash | - | fixture pending |
-| `states` | [inspector polling](../crates/desktop/src/inspection.rs) | read | - | - | fixture pending |
+| `states` | [Snapshots inspector](../crates/desktop/src/lotus_window/snapshots_panel.rs) | read | - | - | [Snapshots](../crates/desktop/tests/native_inspector.rs) |
 | `status` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Cached session summaries and gauges | fixture pending |
 | `step` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |
 | `step_out` | [CPU inspector](../crates/desktop/src/desktop_controller.rs) | control | - | - | [CPU](../crates/desktop/tests/native_inspector.rs) |

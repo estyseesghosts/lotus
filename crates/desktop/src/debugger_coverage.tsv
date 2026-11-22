@@ -39,15 +39,15 @@ debug	install_cia	palette	control	-	-	fixture pending
 debug	lease_acquire	external only	control	-	Lease ownership belongs to the external controller	external
 debug	lease_release	external only	control	-	Lease ownership belongs to the external controller	external
 debug	load	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
-debug	load_state	inspector rows	control	-	-	fixture pending
+debug	load_state	Snapshots inspector	control	-	-	Snapshots
 debug	load_symbols	palette	control	-	-	fixture pending
 debug	logs	inspector polling	read	-	-	fixture pending
 debug	matrix	palette	control	-	-	fixture pending
 debug	memory_map	Memory inspector	read	-	-	Memory
-debug	movie_play	palette	control	-	-	fixture pending
-debug	movie_record	palette	control	-	-	fixture pending
-debug	movie_status	palette	read	-	-	fixture pending
-debug	movie_stop	palette	control	-	-	fixture pending
+debug	movie_play	Snapshots inspector	control	-	-	Snapshots
+debug	movie_record	Snapshots inspector	control	-	-	Snapshots
+debug	movie_status	Snapshots inspector	read	-	-	Snapshots
+debug	movie_stop	Snapshots inspector	control	-	-	Snapshots
 debug	nfc_remove	palette	control	-	-	fixture pending
 debug	pause	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	perf	palette	read	-	-	fixture pending
@@ -57,13 +57,13 @@ debug	read_memory	Memory inspector	read	-	-	Memory
 debug	registers	inspector polling	read	-	-	CPU
 debug	reset	session controls	control	-	Current desktop controls expose a subset of arguments	fixture pending
 debug	resolve_symbol	palette	read	-	-	fixture pending
-debug	reverse_continue	inspector actions	control	-	-	fixture pending
-debug	reverse_step	inspector actions	control	-	-	fixture pending
-debug	rewind_configure	inspector actions	control	rewind_compression_queue when compression_queue is set	-	fixture pending
-debug	rewind_status	palette	read	-	-	fixture pending
+debug	reverse_continue	Snapshots inspector	control	-	-	fixture pending
+debug	reverse_step	Snapshots inspector	control	-	-	fixture pending
+debug	rewind_configure	Snapshots inspector	control	rewind_compression_queue when compression_queue is set	-	Snapshots
+debug	rewind_status	Snapshots inspector	read	-	-	Snapshots
 debug	run_to	CPU inspector	control	-	-	CPU
 debug	run_until	palette	control	-	-	fixture pending
-debug	save_state	inspector actions	control	-	-	fixture pending
+debug	save_state	Snapshots inspector	control	-	-	Snapshots
 debug	scan	Memory search	control	-	-	Memory search
 debug	scan_narrow	Memory search	control	-	-	Memory search
 debug	scan_results	Memory search	read	-	-	Memory search
@@ -73,7 +73,7 @@ debug	settings_list	inspector polling	read	-	-	fixture pending
 debug	settings_set	inspector rows	control	deterministic_async for deterministic_async_operations	-	fixture pending
 debug	shader_trace	inspector rows	control	-	-	GPU
 debug	state_hash	palette	control if dump is set	state_hash	-	fixture pending
-debug	states	inspector polling	read	-	-	fixture pending
+debug	states	Snapshots inspector	read	-	-	Snapshots
 debug	status	session status	read	-	Cached session summaries and gauges	fixture pending
 debug	step	CPU inspector	control	-	-	CPU
 debug	step_out	CPU inspector	control	-	-	CPU

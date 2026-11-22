@@ -1021,6 +1021,27 @@ impl Loops {
         command: &DebugCommand,
     ) -> io::Result<Value> {
         let mut value = self.dispatch_debug(target, command).await?;
+        #[cfg(feature = "silvestris-ui")]
+        if panel == Panel::States {
+            let paused = value["paused"] == true && value["state"] != "idle";
+            for (key, command) in [
+                ("movie", DebugCommand::MovieStatus),
+                ("rewind", DebugCommand::RewindStatus),
+                ("checkpoints", DebugCommand::States),
+            ] {
+                if key == "checkpoints" && !paused {
+                    continue;
+                }
+                match self.dispatch_debug(target, &command).await {
+                    Ok(reply) if target.accepts_reply(&reply) => value[key] = reply,
+                    Ok(_) => {
+                        return Err(io::Error::new(io::ErrorKind::Interrupted, "Guest changed"))
+                    }
+                    Err(error) => value[key] = serde_json::json!({"error": error.to_string()}),
+                }
+            }
+            value["rewind_policy"] = self.host.policy_status()["rewind"].clone();
+        }
         if panel == Panel::Cpu {
             let pc = value["registers"][15]
                 .as_u64()
@@ -1457,6 +1478,12 @@ impl Loops {
                                 | DebugCommand::RunTo { .. }
                                 | DebugCommand::ReverseStep { .. }
                                 | DebugCommand::WriteRegister { .. }
+                        ) | (
+                            Panel::States,
+                            DebugCommand::SaveState { .. }
+                                | DebugCommand::LoadState { .. }
+                                | DebugCommand::ReverseStep { .. }
+                                | DebugCommand::ReverseContinue
                         )
                     ) =>
                     {
@@ -1635,6 +1662,12 @@ impl Loops {
                 | DebugCommand::ScanNarrow { .. }
                 | DebugCommand::ScanResults { .. }
                 | DebugCommand::PointerChain { .. }
+                | DebugCommand::RewindConfigure { .. }
+                | DebugCommand::RewindStatus
+                | DebugCommand::MovieRecord { .. }
+                | DebugCommand::MoviePlay { .. }
+                | DebugCommand::MovieStop
+                | DebugCommand::MovieStatus
         ) {
             view.data = Some(Arc::new(value));
         }

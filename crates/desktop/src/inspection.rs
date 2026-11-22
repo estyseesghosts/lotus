@@ -278,6 +278,9 @@ impl Panel {
             },
             Self::Gpu => D::GpuDraws,
             Self::Audio => D::DspInspect,
+            #[cfg(feature = "silvestris-ui")]
+            Self::States => D::Status,
+            #[cfg(not(feature = "silvestris-ui"))]
             Self::States => D::States,
             Self::Result => return None,
             #[cfg(feature = "silvestris-ui")]
@@ -960,7 +963,7 @@ impl Inspection {
         };
         Self {
             rows: Arc::new(rows),
-            data: None,
+            data: (panel == Panel::States).then(|| Arc::new(value.clone())),
             source: format!(
                 "{} · pin {} · profile {} · epoch {} · paused {} · cache flush {}",
                 value["identity"]["backend"],

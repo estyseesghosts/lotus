@@ -69,6 +69,8 @@ mod shared_commands;
 mod shared_navigation;
 #[cfg(feature = "silvestris-ui")]
 mod shared_shell;
+#[cfg(feature = "silvestris-ui")]
+mod snapshots_panel;
 
 const TOOLBAR_HEIGHT: f32 = 52.0;
 // Silvestris measures its content below the frame's unified toolbar.
@@ -253,6 +255,8 @@ pub struct LotusWindow {
     debug_request: Option<DebugRequest>,
     #[cfg(feature = "silvestris-ui")]
     debug_history: Vec<DebugRequest>,
+    #[cfg(feature = "silvestris-ui")]
+    snapshot_forms: std::collections::BTreeMap<SessionTarget, snapshots_panel::SnapshotForm>,
     toggled_debug_details: BTreeSet<u64>,
     inspection_panel: Panel,
     inspector_state: InspectorState,
@@ -438,6 +442,8 @@ impl LotusWindow {
             debug_request: None,
             #[cfg(feature = "silvestris-ui")]
             debug_history: Vec::new(),
+            #[cfg(feature = "silvestris-ui")]
+            snapshot_forms: Default::default(),
             toggled_debug_details: BTreeSet::new(),
             inspection_panel: {
                 #[cfg(feature = "silvestris-ui")]
@@ -825,6 +831,9 @@ impl LotusWindow {
         self.inspector_state.retain(&self.sessions);
         #[cfg(feature = "silvestris-ui")]
         self.memory_panels
+            .retain(|target, _| target.resolve(&self.sessions).is_some());
+        #[cfg(feature = "silvestris-ui")]
+        self.snapshot_forms
             .retain(|target, _| target.resolve(&self.sessions).is_some());
         #[cfg(feature = "silvestris-ui")]
         self.cpu_forms
@@ -3578,7 +3587,10 @@ impl LotusWindow {
         let show_by_default = !matches!(
             (request.panel, request.native_command()),
             (Panel::Gpu, Some(D::GpuConfigure { .. }))
-                | (Panel::Breakpoints | Panel::Cpu | Panel::Memory, _)
+                | (
+                    Panel::Breakpoints | Panel::Cpu | Panel::Memory | Panel::States,
+                    _
+                )
         );
         let show_by_default = show_by_default
             || matches!(
@@ -3981,6 +3993,7 @@ impl LotusWindow {
                 ("Out", D::StepOut { core: 0 }, false),
                 ("Back", D::ReverseStep { core: 0 }, true),
             ],
+            #[cfg(not(feature = "silvestris-ui"))]
             Panel::States => vec![
                 (
                     "Save desktop",
@@ -4299,6 +4312,15 @@ impl LotusWindow {
         #[cfg(feature = "silvestris-ui")]
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Memory) {
             return panel.child(self.render_memory_panel(target, snapshot, cx));
+        }
+        #[cfg(feature = "silvestris-ui")]
+        if let Some(target) = target.as_ref().filter(|target| {
+            current == Panel::States
+                && self.debug_request.as_ref().is_none_or(|request| {
+                    request.target != **target || !self.debug_details_visible(request)
+                })
+        }) {
+            return panel.child(self.render_snapshots_panel(target, snapshot, cx));
         }
         if let Some(target) = target.as_ref().filter(|_| current == Panel::Gpu) {
             panel = panel.children(self.render_draw_comparison_controls(

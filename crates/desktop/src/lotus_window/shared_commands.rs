@@ -448,6 +448,14 @@ impl LotusWindow {
         cx: &mut Context<Self>,
     ) {
         let (label, warning) = match &command {
+            D::SaveState { .. } if panel == Panel::States => (
+                "Save state",
+                "A checkpoint with this name will be replaced.",
+            ),
+            D::LoadState { .. } if panel == Panel::States => (
+                "Restore state",
+                "The saved checkpoint will replace the guest's current state.",
+            ),
             D::InstallCia { .. } => (
                 "Install CIA",
                 "The approved title will be installed into this guest's storage.",
