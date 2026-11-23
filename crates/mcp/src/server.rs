@@ -183,10 +183,15 @@ pub async fn record_test_operation(
     operation: RecordTestOperation,
     actor: Actor,
 ) -> io::Result<Value> {
-    use lotus_session::test_recording::MarkRead;
+    use lotus_session::native_session::ScreenRegion;
+    use lotus_session::test_recording::{MarkRead, MarkRegion};
     match operation {
         RecordTestOperation::Start => Ok(host.record_test_start(session, actor).await?.summary()),
-        RecordTestOperation::Mark { label, memory } => {
+        RecordTestOperation::Mark {
+            label,
+            memory,
+            regions,
+        } => {
             let reads: Vec<MarkRead> = memory
                 .iter()
                 .map(|read| MarkRead {
@@ -194,9 +199,21 @@ pub async fn record_test_operation(
                     width: read.width,
                 })
                 .collect();
+            let regions: Vec<MarkRegion> = regions
+                .into_iter()
+                .map(|region| MarkRegion {
+                    screen: region.screen,
+                    region: ScreenRegion {
+                        x: region.x,
+                        y: region.y,
+                        width: region.width,
+                        height: region.height,
+                    },
+                })
+                .collect();
             json(
                 &host
-                    .record_test_mark(session, &label, &reads, actor)
+                    .record_test_mark(session, &label, &reads, &regions, actor)
                     .await?,
             )
         }
@@ -212,6 +229,7 @@ pub async fn record_test_operation(
             name,
             stop_frame,
             omit_marks,
+            omit_screen_hashes,
             assertions,
         } => {
             host.require_control()?;
@@ -233,6 +251,7 @@ pub async fn record_test_operation(
                 name,
                 stop_frame,
                 omit_marks,
+                omit_screen_hashes,
                 assertions,
             };
             let export = lotus_runner::recording::export(&recording, &options)?;

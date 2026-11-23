@@ -55,6 +55,10 @@ pub struct ExportOptions {
     /// Indices of marks to leave out.
     #[serde(default)]
     pub omit_marks: Vec<usize>,
+    /// Indices of marks whose whole-screen hashes are left out; their region and memory
+    /// assertions stay. For screens with a clock or animation outside the checked regions.
+    #[serde(default)]
+    pub omit_screen_hashes: Vec<usize>,
     /// Extra version 2 assertions, validated with the rest of the scenario.
     #[serde(default)]
     pub assertions: Vec<Assertion>,
@@ -158,6 +162,7 @@ pub fn export(recording: &TestRecording, options: &ExportOptions) -> io::Result<
     if let Some(index) = options
         .omit_marks
         .iter()
+        .chain(&options.omit_screen_hashes)
         .find(|index| **index >= recording.marks.len())
     {
         return Err(invalid(format!("no mark {index} to omit")));
@@ -238,16 +243,30 @@ pub fn export(recording: &TestRecording, options: &ExportOptions) -> io::Result<
         }
         let first = assertions.len();
         if hashes {
-            for (screen, sha256) in [("top", &mark.top_sha256), ("bottom", &mark.bottom_sha256)] {
+            if !options.omit_screen_hashes.contains(&index) {
+                for (screen, sha256) in [("top", &mark.top_sha256), ("bottom", &mark.bottom_sha256)]
+                {
+                    assertions.push(Assertion {
+                        kind: "frame_hash".into(),
+                        at_frame: Some(mark.frame),
+                        screen: Some(screen.into()),
+                        sha256: Some(sha256.clone()),
+                        ..Assertion::default()
+                    });
+                }
+            }
+            for region in &mark.regions {
                 assertions.push(Assertion {
                     kind: "frame_hash".into(),
                     at_frame: Some(mark.frame),
-                    screen: Some(screen.into()),
-                    sha256: Some(sha256.clone()),
+                    screen: Some(region.screen.clone()),
+                    sha256: Some(region.sha256.clone()),
+                    region: Some(region.region),
                     ..Assertion::default()
                 });
             }
-            if mark.frame != stop
+            if assertions.len() > first
+                && mark.frame != stop
                 && !captures.iter().any(|capture: &Capture| {
                     capture.when.as_ref().and_then(|when| when.frame) == Some(mark.frame)
                 })
@@ -421,7 +440,10 @@ pub fn write(export: &Export, directory: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lotus_session::test_recording::{InputSource, Intervention, MarkValue, RecordedMark};
+    use lotus_session::native_session::ScreenRegion;
+    use lotus_session::test_recording::{
+        InputSource, Intervention, MarkValue, RecordedMark, RegionHash,
+    };
 
     fn input(frame: u64, buttons: u32, touch: Option<(u16, u16)>) -> RecordedInput {
         RecordedInput {
@@ -444,6 +466,7 @@ mod tests {
             label: label.into(),
             top_sha256: "a".repeat(64),
             bottom_sha256: "b".repeat(64),
+            regions: Vec::new(),
             memory: vec![MarkValue {
                 address: 0x0010_0000,
                 width: 4,
@@ -563,6 +586,59 @@ mod tests {
         assert_eq!(export.scenario.assertions[2].equals, Some(7));
         assert_eq!(export.scenario.captures.len(), 2);
         assert_eq!(export.manifest["marks"][1]["assertions"], json!([3, 4, 5]));
+    }
+
+    #[test]
+    fn mark_regions_become_region_hashes_and_can_stand_alone() {
+        let mut recording = recording();
+        let region = ScreenRegion {
+            x: 8,
+            y: 16,
+            width: 32,
+            height: 24,
+        };
+        recording.marks[0].regions.push(RegionHash {
+            screen: "bottom".into(),
+            region,
+            sha256: "e".repeat(64),
+        });
+        let export = export(
+            &recording,
+            &ExportOptions {
+                omit_screen_hashes: vec![0],
+                ..options()
+            },
+        )
+        .unwrap();
+        let first = &export.scenario.assertions[0];
+        assert_eq!(
+            (first.kind.as_str(), first.at_frame, first.screen.as_deref()),
+            ("frame_hash", Some(40), Some("bottom"))
+        );
+        assert_eq!(first.region, Some(region));
+        assert_eq!(export.scenario.assertions[1].kind, "memory");
+        assert_eq!(export.manifest["marks"][0]["assertions"], json!([0, 1]));
+        // The region assertion still needs, and gets, the frame capture.
+        assert_eq!(export.scenario.captures.len(), 2);
+        assert!(export.yaml.contains("region:"), "{}", export.yaml);
+        // A mark with only memory left needs no capture.
+        let memory_only = super::export(
+            &self::recording(),
+            &ExportOptions {
+                omit_screen_hashes: vec![0, 1],
+                ..options()
+            },
+        )
+        .unwrap();
+        assert!(memory_only.scenario.captures.is_empty());
+        assert!(super::export(
+            &self::recording(),
+            &ExportOptions {
+                omit_screen_hashes: vec![2],
+                ..options()
+            }
+        )
+        .is_err());
     }
 
     #[test]

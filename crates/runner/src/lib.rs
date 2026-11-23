@@ -222,6 +222,10 @@ pub struct Assertion {
     /// `frame_hash` expected SHA-256 of the raw BGRA capture.
     #[serde(default)]
     pub sha256: Option<String>,
+    /// `frame_hash` rectangle: hash only these rows and columns of the capture
+    /// (`lotus_session::native_session::Frame::region_sha256`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<lotus_session::native_session::ScreenRegion>,
 }
 
 /// Output retention policy.
@@ -404,6 +408,7 @@ mod tests {
             text_contains: None,
             screen: None,
             sha256: None,
+            region: None,
         }
     }
 

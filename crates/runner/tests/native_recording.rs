@@ -12,10 +12,10 @@ use std::time::Duration;
 
 use lotus_protocol::debug::SettingValue;
 use lotus_runner::recording::{export, write, ExportOptions};
-use lotus_session::native_session::InputState;
+use lotus_session::native_session::{InputState, ScreenRegion};
 use lotus_session::supervisor::{HostConfig, SessionKind, Supervisor};
 use lotus_session::telemetry::Actor;
-use lotus_session::test_recording::MarkRead;
+use lotus_session::test_recording::{MarkRead, MarkRegion};
 
 const WATCHED: [&str; 5] = ["stage", "failure", "updates", "transitions", "checksum"];
 
@@ -90,6 +90,15 @@ async fn a_recorded_session_replays_through_the_scenario_runner() {
             width: 4,
         })
         .collect();
+    let half = |screen: &str, y, width| MarkRegion {
+        screen: screen.into(),
+        region: ScreenRegion {
+            x: 0,
+            y,
+            width,
+            height: 120,
+        },
+    };
     let mut rng = Lcg(95);
     // About 10 s of live input: buttons, touch and releases at irregular wall times.
     for step in 0..60 {
@@ -103,14 +112,20 @@ async fn a_recorded_session_replays_through_the_scenario_runner() {
         };
         host.input(&id, state, "live", Actor::Mcp).await.unwrap();
         if step == 30 {
-            host.record_test_mark(&id, "midway", &reads, Actor::Mcp)
-                .await
-                .unwrap();
+            host.record_test_mark(
+                &id,
+                "midway",
+                &reads,
+                &[half("bottom", 120, 320)],
+                Actor::Mcp,
+            )
+            .await
+            .unwrap();
         }
     }
     tokio::time::sleep(Duration::from_millis(200)).await;
     let end = host
-        .record_test_mark(&id, "end", &reads, Actor::Mcp)
+        .record_test_mark(&id, "end", &reads, &[half("top", 0, 400)], Actor::Mcp)
         .await
         .unwrap();
     let recording = host.record_test_stop(&id, Actor::Mcp).await.unwrap();
@@ -150,6 +165,8 @@ async fn a_recorded_session_replays_through_the_scenario_runner() {
         &recording,
         &ExportOptions {
             name: "input-95".into(),
+            // The end mark is checked by its region and memory only.
+            omit_screen_hashes: vec![1],
             ..ExportOptions::default()
         },
     )
@@ -169,8 +186,18 @@ async fn a_recorded_session_replays_through_the_scenario_runner() {
         .await
         .unwrap_or_else(|error| panic!("replay failed: {error}"));
     assert!(report.passed);
-    // Two hashes and five memory values per mark, then frame_count.
-    assert_eq!(report.assertions.len(), 2 * (2 + WATCHED.len()) + 1);
+    // Midway: two screen hashes, one region, five memory values. End: one region, five
+    // memory values. Then frame_count.
+    assert_eq!(
+        report.assertions.len(),
+        (3 + WATCHED.len()) + (1 + WATCHED.len()) + 1
+    );
+    let regions = report
+        .assertions
+        .iter()
+        .filter(|result| result.provenance.contains("region"))
+        .count();
+    assert_eq!(regions, 2);
     eprintln!(
         "replayed {} frames in {} ms, {} assertions passed",
         report.frames,

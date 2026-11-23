@@ -43,30 +43,48 @@ fn default_read_width() -> u8 {
     4
 }
 
+/// A screen rectangle a mark hashes by itself, in native pixels from the top-left.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordTestRegion {
+    /// `top` (400x240) or `bottom` (320x240).
+    pub screen: String,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RecordTestOperation {
     /// Reload the session's content and record from frame 0.
     Start,
-    /// Pause at a frame boundary, keep both screen hashes and these values, and resume.
+    /// Pause at a frame boundary, keep both screen hashes, these regions' hashes and these
+    /// values, and resume.
     Mark {
         label: String,
         #[serde(default)]
         memory: Vec<RecordTestRead>,
+        #[serde(default)]
+        regions: Vec<RecordTestRegion>,
     },
     /// End the recording at the current frame; the session stays paused.
     Stop,
     Status,
     Discard,
     /// Write `recorded-tests/<name>/scenario.yaml` and `manifest.json` under the storage
-    /// root. `stop_frame` trims the end; `omit_marks` drops marks by index; `assertions`
-    /// are extra version 2 scenario assertions.
+    /// root. `stop_frame` trims the end; `omit_marks` drops marks by index;
+    /// `omit_screen_hashes` keeps only the region and memory assertions of those marks;
+    /// `assertions` are extra version 2 scenario assertions.
     Export {
         name: String,
         #[serde(default)]
         stop_frame: Option<u64>,
         #[serde(default)]
         omit_marks: Vec<usize>,
+        #[serde(default)]
+        omit_screen_hashes: Vec<usize>,
         #[serde(default)]
         assertions: Vec<serde_json::Value>,
     },

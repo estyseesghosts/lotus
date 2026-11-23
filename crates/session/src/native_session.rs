@@ -37,6 +37,71 @@ pub struct Frame {
     pub bgra: Vec<u8>,
 }
 
+/// A rectangle of a native screen capture at scale 1, in presented pixels from the top-left
+/// (`ctr_worker/frames.h` `Capture`: `top_left_row_major`, 400 or 320 by 240).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ScreenRegion {
+    /// Native width of `screen` at scale 1, or `None` for an unknown screen name.
+    #[must_use]
+    pub fn native_width(screen: &str) -> Option<u32> {
+        match screen {
+            "top" => Some(400),
+            "bottom" => Some(320),
+            _ => None,
+        }
+    }
+
+    /// Whether the region is non-empty and inside `screen` at scale 1.
+    #[must_use]
+    pub fn fits(&self, screen: &str) -> bool {
+        Self::native_width(screen).is_some_and(|width| {
+            self.width > 0
+                && self.height > 0
+                && u64::from(self.x) + u64::from(self.width) <= u64::from(width)
+                && u64::from(self.y) + u64::from(self.height) <= 240
+        })
+    }
+}
+
+impl Frame {
+    /// SHA-256 of the region's BGRA rows, top to bottom, each `width * 4` bytes. A region
+    /// covering the whole screen hashes the same as the full capture.
+    pub fn region_sha256(&self, region: &ScreenRegion) -> io::Result<String> {
+        use sha2::{Digest, Sha256};
+        let lease = &self.lease;
+        let inside = u64::from(region.x) + u64::from(region.width) <= u64::from(lease.width)
+            && u64::from(region.y) + u64::from(region.height) <= u64::from(lease.height);
+        if region.width == 0 || region.height == 0 || !inside || lease.format != "bgra8" {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "region {region:?} is not inside the {}x{} {} capture",
+                    lease.width, lease.height, lease.screen
+                ),
+            ));
+        }
+        let stride = lease.stride as usize;
+        let mut hash = Sha256::new();
+        for row in region.y..region.y + region.height {
+            let start = row as usize * stride + region.x as usize * 4;
+            let row = self
+                .bgra
+                .get(start..start + region.width as usize * 4)
+                .ok_or_else(|| io::Error::other("capture is shorter than its lease"))?;
+            hash.update(row);
+        }
+        Ok(format!("{:x}", hash.finalize()))
+    }
+}
+
 /// Input is a complete state, so disconnect/release can always send zero.
 ///
 /// `buttons` uses Azahar's `Settings::NativeButton` bit order. Sticks are `[x, y]`, each in
@@ -1185,6 +1250,62 @@ fn native_path(path: &Path) -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(screen: &str, width: u32) -> Frame {
+        let bgra: Vec<u8> = (0..width * 240 * 4)
+            .map(|byte| (byte % 251) as u8)
+            .collect();
+        Frame {
+            lease: FrameLease {
+                screen: screen.into(),
+                path: String::new(),
+                epoch: 1,
+                sequence: 1,
+                slot: 0,
+                width,
+                height: 240,
+                stride: width * 4,
+                format: "bgra8".into(),
+                orientation: "top_left_row_major".into(),
+                bytes: bgra.len(),
+            },
+            bgra,
+        }
+    }
+
+    #[test]
+    fn region_hashes_cover_only_their_rows_and_columns() {
+        use sha2::{Digest, Sha256};
+        let mut top = frame("top", 400);
+        let whole = ScreenRegion {
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 240,
+        };
+        assert_eq!(
+            top.region_sha256(&whole).unwrap(),
+            format!("{:x}", Sha256::digest(&top.bgra))
+        );
+        let corner = ScreenRegion {
+            x: 390,
+            y: 230,
+            width: 10,
+            height: 10,
+        };
+        let before = top.region_sha256(&corner).unwrap();
+        // A pixel just left of the region does not change it; one inside does.
+        top.bgra[(235 * 400 + 389) * 4] ^= 0xff;
+        assert_eq!(top.region_sha256(&corner).unwrap(), before);
+        top.bgra[(235 * 400 + 390) * 4] ^= 0xff;
+        assert_ne!(top.region_sha256(&corner).unwrap(), before);
+
+        let bottom = frame("bottom", 320);
+        assert!(!corner.fits("bottom"));
+        assert!(bottom.region_sha256(&corner).is_err());
+        assert!(corner.fits("top"));
+        assert!(!ScreenRegion { width: 0, ..corner }.fits("top"));
+    }
 
     #[test]
     fn cached_hashes_follow_rewrites_of_the_same_length() {

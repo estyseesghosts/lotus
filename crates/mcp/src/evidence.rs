@@ -267,7 +267,10 @@ fn parse_citrace_slice(
     let limit = slice.limit.min(count - slice.offset) as usize;
     let first = start as usize + slice.offset as usize * EVENT_BYTES;
     let mut events = Vec::with_capacity(limit);
-    for event in bytes[first..first + limit * EVENT_BYTES].as_chunks::<EVENT_BYTES>().0 {
+    for event in bytes[first..first + limit * EVENT_BYTES]
+        .as_chunks::<EVENT_BYTES>()
+        .0
+    {
         events.push(match word(event, 0) {
             0xE1 => json!({"kind": "frame_marker"}),
             0xE2 => json!({"kind": "memory_load", "bytes": word(event, 8),

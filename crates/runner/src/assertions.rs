@@ -131,6 +131,9 @@ pub fn validate(scenario: &Scenario) -> Result<(), ScenarioError> {
     }
     for (index, assertion) in scenario.assertions.iter().enumerate() {
         let a = assertion;
+        if a.region.is_some() && a.kind != "frame_hash" {
+            return Err(invalid(index, "only frame_hash takes a region"));
+        }
         match a.kind.as_str() {
             "no_worker_crash" => {}
             "frame_count" => {
@@ -164,6 +167,14 @@ pub fn validate(scenario: &Scenario) -> Result<(), ScenarioError> {
                 let frame = check_frame(index, scenario, a.at_frame)?;
                 if !matches!(a.screen.as_deref(), Some("top" | "bottom")) {
                     return Err(invalid(index, "screen must be top or bottom"));
+                }
+                if a.region
+                    .is_some_and(|region| !region.fits(a.screen.as_deref().unwrap_or_default()))
+                {
+                    return Err(invalid(
+                        index,
+                        "region must be non-empty and inside the screen (top 400x240, bottom 320x240)",
+                    ));
                 }
                 if a.sha256.as_ref().is_none_or(|hash| {
                     hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit())
@@ -401,6 +412,8 @@ pub struct Observations {
     pub values: std::collections::BTreeMap<usize, u64>,
     /// `(frame, screen, sha256)` of every frame-triggered capture.
     pub hashes: Vec<(u64, String, String)>,
+    /// Region hashes for `frame_hash` assertions with a region, by assertion index.
+    pub region_hashes: std::collections::BTreeMap<usize, String>,
     pub events: Option<EventLedger>,
     /// Breakpoint hits for coverage assertions, by assertion index.
     pub hits: std::collections::BTreeMap<usize, u64>,
@@ -471,11 +484,14 @@ pub fn evaluate(scenario: &Scenario, seen: &Observations) -> Vec<AssertionResult
                 "frame_hash" => {
                     let frame = a.at_frame.unwrap_or(0);
                     let screen = a.screen.clone().unwrap_or_default();
-                    let actual = seen
-                        .hashes
-                        .iter()
-                        .find(|(at, name, _)| *at == frame && *name == screen)
-                        .map(|(_, _, hash)| hash.clone());
+                    let actual = if a.region.is_some() {
+                        seen.region_hashes.get(&index).cloned()
+                    } else {
+                        seen.hashes
+                            .iter()
+                            .find(|(at, name, _)| *at == frame && *name == screen)
+                            .map(|(_, _, hash)| hash.clone())
+                    };
                     let expected = a.sha256.clone().unwrap_or_default().to_ascii_lowercase();
                     (
                         match &actual {
@@ -485,7 +501,13 @@ pub fn evaluate(scenario: &Scenario, seen: &Observations) -> Vec<AssertionResult
                         },
                         Value::from(expected),
                         actual.map_or(Value::Null, Value::from),
-                        format!("{screen} capture at frame {frame}"),
+                        match a.region {
+                            Some(r) => format!(
+                                "{screen} capture at frame {frame}, region {}x{} at ({}, {})",
+                                r.width, r.height, r.x, r.y
+                            ),
+                            None => format!("{screen} capture at frame {frame}"),
+                        },
                     )
                 }
                 "event_seen" | "no_event" | "event_count" => {
@@ -777,6 +799,27 @@ mod tests {
             s.assertions[0].sha256 = Some("0".repeat(64));
         });
         reject(&|s| s.captures[1].when.as_mut().unwrap().frame = Some(10));
+        // A region frame_hash at frame 30, which has a capture.
+        let region = |x, width| lotus_session::native_session::ScreenRegion {
+            x,
+            y: 0,
+            width,
+            height: 240,
+        };
+        let hashed = |s: &mut Scenario, screen: &str, x, width| {
+            s.assertions[0].kind = "frame_hash".into();
+            s.assertions[0].at_frame = Some(30);
+            s.assertions[0].screen = Some(screen.into());
+            s.assertions[0].sha256 = Some("0".repeat(64));
+            s.assertions[0].region = Some(region(x, width));
+        };
+        let mut fitted = base.clone();
+        hashed(&mut fitted, "bottom", 0, 320);
+        assert!(fitted.validate().is_ok());
+        reject(&|s| hashed(s, "top", 0, 0));
+        reject(&|s| hashed(s, "top", 399, 2));
+        reject(&|s| hashed(s, "bottom", 0, 400));
+        reject(&|s| s.assertions[2].region = Some(region(0, 1)));
         reject(&|s| {
             let template = s.assertions[7].clone();
             s.assertions

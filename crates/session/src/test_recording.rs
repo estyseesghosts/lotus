@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::native_session::InputState;
+use crate::native_session::{InputState, ScreenRegion};
 
 /// Most input states kept; the runner executes at most 4,096 schedule events.
 pub const MAX_INPUTS: usize = 2048;
@@ -25,6 +25,8 @@ pub const MAX_INPUTS: usize = 2048;
 pub const MAX_MARKS: usize = 32;
 /// Most memory reads per mark.
 pub const MAX_MARK_READS: usize = 16;
+/// Most screen regions per mark.
+pub const MAX_MARK_REGIONS: usize = 8;
 /// Most interventions kept with their details; later ones are only counted.
 pub const MAX_INTERVENTIONS: usize = 64;
 
@@ -106,6 +108,25 @@ pub struct MarkRead {
     pub width: u8,
 }
 
+/// A screen rectangle a mark hashes by itself, so a replay can check it while other parts
+/// of the screen (a clock, an animation) are left out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkRegion {
+    /// `top` or `bottom`.
+    pub screen: String,
+    #[serde(flatten)]
+    pub region: ScreenRegion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegionHash {
+    pub screen: String,
+    #[serde(flatten)]
+    pub region: ScreenRegion,
+    /// [`crate::native_session::Frame::region_sha256`] of the mark's capture.
+    pub sha256: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MarkValue {
     pub address: u32,
@@ -121,6 +142,8 @@ pub struct RecordedMark {
     /// SHA-256 of the native BGRA top and bottom captures at scale 1, as the runner hashes.
     pub top_sha256: String,
     pub bottom_sha256: String,
+    #[serde(default)]
+    pub regions: Vec<RegionHash>,
     pub memory: Vec<MarkValue>,
     pub source: InputSource,
 }

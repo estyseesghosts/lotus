@@ -443,8 +443,9 @@ async fn capture_screens(
     frame: u64,
     trigger: Option<String>,
     checkpoints: &mut Vec<Checkpoint>,
-) -> io::Result<()> {
-    for captured in session.capture().await? {
+) -> io::Result<Vec<lotus_session::native_session::Frame>> {
+    let frames = session.capture().await?;
+    for captured in &frames {
         let prefix = trigger
             .as_ref()
             .map_or(String::new(), |trigger| format!("{trigger}-"));
@@ -454,11 +455,33 @@ async fn capture_screens(
         checkpoints.push(Checkpoint {
             frame,
             trigger: trigger.clone(),
-            screen: captured.lease.screen,
+            screen: captured.lease.screen.clone(),
             sha256: hash,
             bytes: captured.bgra.len(),
             artifact: filename,
         });
+    }
+    Ok(frames)
+}
+
+/// Hashes the regions of `frame_hash` assertions at `frame` from that frame's capture.
+fn region_hashes(
+    scenario: &Scenario,
+    frame: u64,
+    frames: &[lotus_session::native_session::Frame],
+    seen: &mut Observations,
+) -> io::Result<()> {
+    for (index, assertion) in scenario.assertions.iter().enumerate() {
+        let (Some(region), Some(screen)) = (&assertion.region, &assertion.screen) else {
+            continue;
+        };
+        if assertion.kind != "frame_hash" || assertion.at_frame != Some(frame) {
+            continue;
+        }
+        if let Some(captured) = frames.iter().find(|f| &f.lease.screen == screen) {
+            seen.region_hashes
+                .insert(index, captured.region_sha256(region)?);
+        }
     }
     Ok(())
 }
@@ -689,12 +712,14 @@ pub(crate) async fn run_report(
                     read_values(&mut session, scenario, frame, &mut seen).await?;
                     if frame == scenario.stop.max_frames || stops.contains(&frame) {
                         let before = checkpoints.len();
-                        capture_screens(&mut session, output, frame, None, &mut checkpoints)
-                            .await?;
+                        let frames =
+                            capture_screens(&mut session, output, frame, None, &mut checkpoints)
+                                .await?;
                         seen.hashes
                             .extend(checkpoints[before..].iter().map(|point| {
                                 (point.frame, point.screen.clone(), point.sha256.clone())
                             }));
+                        region_hashes(scenario, frame, &frames, &mut seen)?;
                     }
                 }
                 if frame == scenario.stop.max_frames {

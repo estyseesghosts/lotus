@@ -52,7 +52,7 @@ one against the owned debugger fixture. Version 1 files keep their old meaning.
 |---|---|---|---|
 | `memory` | `at_frame`, `address`, `width` 1/2/4, `equals` or `minimum`/`maximum` | `read_memory` at the frame checkpoint, little-endian | both |
 | `register` | `at_frame`, `core`, `register` 0..16 (16 = cpsr), bounds | `registers` at the checkpoint | both |
-| `frame_hash` | `at_frame`, `screen`, `sha256` | raw BGRA capture; needs a frame capture there | both |
+| `frame_hash` | `at_frame`, `screen`, `sha256`, optional `region` `{x, y, width, height}` | raw BGRA capture, or the region's rows (each `width * 4` bytes, top to bottom); needs a frame capture there | both |
 | `event_seen` / `no_event` / `event_count` | `event`, `text_contains`, `count_at_least` or bounds | worker event history from load to `max_frames` | CITnLO |
 | `reached` / `not_reached` | `address` (bit 0 = Thumb), `count_at_least` | execute-breakpoint hit counter | CITnLO |
 
@@ -109,6 +109,67 @@ by name until those exist. Predicate and breakpoint-stop capture triggers are
 not offered: they stop mid-frame and would break exact frame checkpoints.
 Timing assertions are also not offered. Draw counts need GPU capture
 configuration that scenarios do not expose.
+
+## Recorded tests (lotus#95)
+
+**Verified emulator**, AZAHAR `7b45415d` and CITnLO `64883d29`, Windows
+WinLibs UCRT GNU Release, 2026-11-22, `crates/runner/tests/native_recording.rs`.
+
+A recording turns a live session into a version 2 scenario. MCP
+`lotus_record_test` and `ctr-cli record-test <host-config> <session> [json]`
+take `{"op": ...}` with these operations:
+
+- `start` reloads the session's content, so frame 0 is a fresh boot as in a
+  scenario run.
+- `mark` pauses, records both screen hashes, up to 8 region hashes and up to
+  16 memory words, then resumes a playing session.
+- `stop`, `status` and `discard` end, read or drop the recording.
+- `export` writes `recorded-tests/<name>/scenario.yaml` and `manifest.json`
+  under the storage root.
+
+Start requires the `input_boundary` worker feature
+([21](21-native-control.md)). The worker applies live input only at a frame
+boundary and returns the frame in `input_frame`. The export schedules the
+same state at that frame, which the runner installs while paused before the
+next frame. A pause also completes at a frame boundary, so a mark's hashes
+and memory are taken at the same point the runner checks them.
+
+Each accepted input is kept with its source (desktop, MCP, host) and owner.
+Export turns consecutive states into button and touch transitions. Analog
+sticks and button bits without a scenario name are not replayed. Export
+options edit without re-recording:
+
+- `stop_frame` trims the end.
+- `omit_marks` drops marks.
+- `omit_screen_hashes` keeps only a mark's region and memory assertions, for
+  screens with a clock or animation outside the checked regions.
+- `assertions` adds any version 2 assertion, such as `reached` or
+  `event_seen`.
+
+The 3DSX is named by file name and SHA-256 only and is never copied; place it
+next to `scenario.yaml`. The manifest lists every condition the runner cannot
+reproduce, instead of claiming determinism:
+
+- analog input
+- unnamed buttons
+- a non-software renderer (screen hashes are then left out)
+- determinism settings off (#29)
+- guest files beyond the 11 nand/sysdata files both workers create at boot
+- non-default settings
+- debugger changes made while recording
+
+A guest restart invalidates the recording.
+
+`fixtures/input` folds every HID pad and touch sample into a checksum, so an
+input applied on a different HID update fails the mark's memory assertion. The
+acceptance test sends 60 random button and touch states over about 10 s at
+irregular wall times, with two marks. The second mark is checked by a
+top-half region and memory only. The exported scenario passed the runner
+(15 assertions) on both workers. Before the worker change, one input that
+followed a pause and resume landed mid-frame and the checksum differed.
+
+Source: `session::test_recording`, `session::supervisor::recording`,
+`runner::recording`, worker `ctr_worker/control.h` `FrameBoundary`.
 
 Source: `runner::execution`, `runner::assertions`, `session::native_session`; upstream frame layout
 comes from `video_core/renderer_software/renderer_software.cpp` at the stock pin.

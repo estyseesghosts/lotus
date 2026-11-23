@@ -11,8 +11,8 @@ use super::{
 use crate::native_session::{InputState, NativeSession};
 use crate::telemetry::Actor;
 use crate::test_recording::{
-    InputSource, Intervention, MarkRead, MarkValue, RecordedInput, RecordedMark, TestRecording,
-    MAX_MARKS, MAX_MARK_READS,
+    InputSource, Intervention, MarkRead, MarkRegion, MarkValue, RecordedInput, RecordedMark,
+    RegionHash, TestRecording, MAX_MARKS, MAX_MARK_READS, MAX_MARK_REGIONS,
 };
 
 /// Settings a scenario profile states itself (`lotus_runner::Profile`, runner `prepare`).
@@ -285,6 +285,7 @@ impl Supervisor {
         id: &str,
         label: &str,
         reads: &[MarkRead],
+        regions: &[MarkRegion],
         actor: Actor,
     ) -> io::Result<RecordedMark> {
         self.require_control()?;
@@ -300,6 +301,18 @@ impl Supervisor {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("a mark reads at most {MAX_MARK_READS} values of 1, 2 or 4 bytes"),
+            ));
+        }
+        if regions.len() > MAX_MARK_REGIONS
+            || regions
+                .iter()
+                .any(|region| !region.region.fits(&region.screen))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "a mark hashes at most {MAX_MARK_REGIONS} non-empty regions inside the top (400x240) or bottom (320x240) screen"
+                ),
             ));
         }
         let handle = self.handle(id)?;
@@ -324,16 +337,51 @@ impl Supervisor {
         }
         let playing = handle.is_playing();
         handle.set_playing(false);
-        pause_if_running(&mut native).await?;
+        let mark = Self::take_mark(&handle, &mut native, label, reads, regions, actor).await;
+        // A playing session resumes whether or not the mark was taken; the mark's own
+        // error is reported first.
+        let resumed = if playing {
+            let resumed = native.run().await;
+            handle.set_playing(resumed.is_ok());
+            resumed.map(drop)
+        } else {
+            Ok(())
+        };
+        let mark = mark?;
+        resumed?;
+        handle.record(actor, "record_test_mark");
+        Ok(mark)
+    }
+
+    async fn take_mark(
+        handle: &SessionHandle,
+        native: &mut NativeSession,
+        label: &str,
+        reads: &[MarkRead],
+        regions: &[MarkRegion],
+        actor: Actor,
+    ) -> io::Result<RecordedMark> {
+        pause_if_running(native).await?;
         let status = native.status().await?;
-        observe(&handle, &native, &status);
+        observe(handle, native, &status);
         let frame = status["frames"]
             .as_u64()
             .ok_or_else(|| io::Error::other("status carried no frame count"))?;
         let mut top = None;
         let mut bottom = None;
+        let mut hashes = Vec::with_capacity(regions.len());
         for captured in native.capture().await? {
             let hash = format!("{:x}", Sha256::digest(&captured.bgra));
+            for region in regions
+                .iter()
+                .filter(|region| region.screen == captured.lease.screen)
+            {
+                hashes.push(RegionHash {
+                    screen: region.screen.clone(),
+                    region: region.region,
+                    sha256: captured.region_sha256(&region.region)?,
+                });
+            }
             match captured.lease.screen.as_str() {
                 "top" => top = Some(hash),
                 "bottom" => bottom = Some(hash),
@@ -369,6 +417,7 @@ impl Supervisor {
             label: label.to_string(),
             top_sha256,
             bottom_sha256,
+            regions: hashes,
             memory,
             source: actor.into(),
         };
@@ -384,11 +433,6 @@ impl Supervisor {
             }
             recording.marks.push(mark.clone());
         }
-        if playing {
-            native.run().await?;
-            handle.set_playing(true);
-        }
-        handle.record(actor, "record_test_mark");
         Ok(mark)
     }
 

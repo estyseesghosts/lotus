@@ -1325,7 +1325,7 @@ async fn a_test_recording_keeps_inputs_marks_and_interventions() {
 
     let mark = fixture
         .host
-        .record_test_mark(&id, "pressed", &[], Actor::Mcp)
+        .record_test_mark(&id, "pressed", &[], &[], Actor::Mcp)
         .await
         .expect("mark");
     assert!(mark.frame >= input_frame);
