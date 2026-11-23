@@ -332,6 +332,10 @@ impl NativeSession {
         ) {
             self.refresh_profile().await?;
         }
+        let transactional_scan = self
+            .features
+            .contains(lotus_protocol::capabilities::feature::TRANSACTIONAL_MEMORY_SCAN);
+        let replaces_scan = matches!(command, D::Scan { .. } | D::ScanNarrow { .. });
         let scan_map = match command {
             D::Scan { .. } | D::ScanNarrow { .. } | D::ScanResults { .. }
                 if self.backend_name() != "AZAHAR" =>
@@ -352,7 +356,7 @@ impl NativeSession {
                         "Start a new scan after the guest or its memory map changes",
                     ));
                 }
-                if !matches!(command, D::ScanResults { .. }) {
+                if replaces_scan && !transactional_scan {
                     self.scan_generation += 1;
                     self.scan_map = None;
                 }
@@ -386,6 +390,9 @@ impl NativeSession {
         self.breakpoint_configuration
             .observe(self.worker.epoch(), command, &mut result);
         if let Some(map) = scan_map {
+            if replaces_scan && transactional_scan {
+                self.scan_generation += 1;
+            }
             self.scan_map = Some(map);
             result["scan_generation"] = self.scan_generation.into();
         }

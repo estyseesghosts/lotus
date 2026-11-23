@@ -2,6 +2,53 @@
 
 Status: draft. Measurements are from `tools/bench.py` on one Windows machine, t03 homebrew ROM, Old 3DS, 30 warm-up frames. Run directories: `runs/bench-vk-02` (Vulkan, 120 frames x 3), `runs/bench-sw-02` (software, 60 frames x 3), `runs/bench-preview-02` (capture every 2 frames). Workers: `azahar` = integration pin, `citnlo_pin` = CITnLO pin before this work, `citnlo_new` = CITnLO experimental `c48dac6e`. The tables predate the shared-memory previews and the run-length page table; current pins are integration `b4b9f0c2` and experimental `559f3f4d` (`config/pins.toml`; code at `0e98bf18`, README after).
 
+## CITnLO memory scanner (#156)
+
+The scan runs at the worker's debugger safe point. `CheckMemory` in
+`src/ctr_worker/debug.h` validates each page or VMA extent before reading through
+`MemorySystem::ReadBlock`. Narrowing reads one span per occupied page, including
+any cross-page value tail, and checks all pages and VMAs touched by that span.
+The original width, little-endian values and candidate order are preserved.
+
+A scan admits at most 1 MiB of guest addresses and 1,048,576 candidates. On
+Windows x64, the previous and replacement candidate vectors together reserve at
+most 32 MiB, plus a 4 KiB read buffer and the response of at most 256 matches.
+The worker checks a cooperative 250 ms wall-time budget before each bulk read
+and before publishing the result. An individual read or OS stall can run past
+that budget. An error keeps the previous complete result and its paging state.
+Lotus uses the `transactional_memory_scan` feature flag to preserve the host
+scan generation on failure. Successful `scan` and `scan_narrow` replies add
+`scan_stats` with `page_checks`, `bulk_reads`, `bytes_read`, `candidates_checked`,
+`candidate_capacity_bytes` and `worker_us`. `scan_results` keeps its existing shape.
+
+Verified emulator on Windows x64, GCC 16.2 Release, LTO off, software renderer.
+The baseline was `a3994c1d`. The first matched run recompiled the worker entry
+point at `2d0c9925` and linked it against the same pinned native libraries.
+Five samples per worker used the owned scanner fixture at its first frame.
+
+| Operation | Baseline median RPC | Updated median RPC | Updated worker median |
+| --- | ---: | ---: | ---: |
+| 1 MiB zero scan (width 1) | 43.8 ms | 10.8 ms | 5.0 ms |
+| Unchanged narrowing of all 1,048,576 candidates | 122.5 ms | 15.2 ms | 8.8 ms |
+
+Each updated operation performed 256 validation checks and 256 reads totaling
+1 MiB. Source inspection gives 1,048,576 byte validations for each baseline
+operation and 1,048,576 individual reads for baseline narrowing. In a second
+five-sample run during a background build, the probe sent an unchanged narrow
+and pause together over native stdio. Median time to the pause reply, including
+the preceding narrow, fell from 156.7 ms to 9.7 ms (maximum 168.0 and 10.0 ms).
+The guest fixture SHA-256 was
+`cce5f13aac4622db70d58907c8cf7eb100c1e1429962b5c131e2fc4dd6af3fbf`.
+
+```powershell
+python tools/build-debug-fixture.py target/scan-fixture --fixture scanner
+python tests/test_native_scan.py target/debug/lotus-mcp.exe <worker.exe> target/scan-fixture/scanner.3dsx <new-output-directory>
+```
+
+Use `--baseline` for an older worker. The probe checks widths 1, 2, 4 and 8,
+cross-page values, sparse and dense matches, all narrowing modes, sorted
+paging, range rejection at a mapped boundary and cross-page pointer reads.
+
 ## Measured (verified emulator)
 
 | renderer | config | citnlo_pin s | citnlo_new s | ratio vs off (new) |

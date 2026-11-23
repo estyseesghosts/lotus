@@ -40,12 +40,18 @@ class Peer:
         except Exception as error:
             self.output.put(error)
 
-    def call(self, method, params=None, expected="ok"):
+    def frame(self, method, params=None):
         self.sequence += 1
         data = json.dumps(dict(version_major=1, version_minor=0, request_id=self.sequence,
                                session=self.session, epoch=self.epoch, method=method, params=params)).encode()
-        self.process.stdin.write(struct.pack("<I", len(data)) + data)
+        return struct.pack("<I", len(data)) + data
+
+    def call(self, method, params=None, expected="ok"):
+        self.process.stdin.write(self.frame(method, params))
         self.process.stdin.flush()
+        return self.receive(self.sequence, expected)
+
+    def receive(self, request_id, expected="ok"):
         while True:
             reply = self.output.get(timeout=35)
             if isinstance(reply, Exception):
@@ -57,7 +63,7 @@ class Peer:
                     self.notifications_lost += 1
                 self.notifications.append(reply)
                 continue
-            assert reply["request_id"] == self.sequence, reply
+            assert reply["request_id"] == request_id, reply
             self.epoch = reply["epoch"]
             self.state = reply["state"]
             self.status = reply["status"]

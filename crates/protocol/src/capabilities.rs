@@ -96,6 +96,8 @@ impl Capabilities {
 /// it, because older workers ignore unknown fields (`gpu_configure.capture`,
 /// `hello.subscriptions`) instead of rejecting them. A worker without the field has none.
 pub mod feature {
+    /// Failed scans preserve the last complete result.
+    pub const TRANSACTIONAL_MEMORY_SCAN: &str = "transactional_memory_scan";
     /// `flush_storage` writes guest stdio buffers out for a card copy (#28).
     pub const FLUSH_STORAGE: &str = "flush_storage";
     /// `hello.subscriptions` and `events_configure` select pushed and kept categories (#26).
