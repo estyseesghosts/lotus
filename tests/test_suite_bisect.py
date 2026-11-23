@@ -119,6 +119,14 @@ assertions:
             case, = detail["cases"]
             assert case["first_failure"]["actual"] == 0xBAD
             assert case["content_sha256"] == pinned["fixture_sha256"]
+            bundle = output / "first-bad-repro"
+            command(str(cli), "suite", "export", str(history), trials[good]["suite"],
+                    pinned["suite"], str(bundle))
+            exported = json.loads((bundle / "report.json").read_text())
+            assert exported["candidate"]["revision"] == first_bad
+            replay, = exported["replays"]
+            assert replay["baseline"]["content_sha256"] == trials[good]["fixture_sha256"]
+            assert replay["candidate"]["content_sha256"] == pinned["fixture_sha256"]
         assert command(git, "status", "--porcelain") == before
         assert command(git, "rev-parse", "HEAD") == bad
 

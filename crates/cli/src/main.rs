@@ -72,6 +72,7 @@ Usage:
   ctr-cli suite list <artifact-root>
   ctr-cli suite detail <artifact-root> <suite-id>
   ctr-cli suite compare <artifact-root> <baseline-id> <candidate-id>
+  ctr-cli suite export <artifact-root> <baseline-id> <candidate-id> <new-output-directory>
   ctr-cli suite bisect <host-config> <plan.json> (Windows)
 ";
 
@@ -365,8 +366,17 @@ fn suite(args: &[String]) -> Result<()> {
             );
             return Ok(());
         }
+        [command, history, baseline, candidate, output] if command == "export" => {
+            lotus_runner::repro::export(
+                std::path::Path::new(history),
+                baseline,
+                candidate,
+                std::path::Path::new(output),
+            )?;
+            return Ok(());
+        }
         _ => {
-            bail!("usage: ctr-cli suite <run|show|list|detail|compare|bisect>; see ctr-cli --help")
+            bail!("usage: ctr-cli suite <run|show|list|detail|compare|export|bisect>; see ctr-cli --help")
         }
     };
     println!("{}", serde_json::to_string_pretty(&report)?);

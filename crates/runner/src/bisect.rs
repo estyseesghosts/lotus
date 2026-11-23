@@ -3,7 +3,7 @@ use crate::{
     assessment::Status,
     execution,
     history::{self, HISTORY_DIRECTORY},
-    suite::{self, bounded_file, identifier, PreparedSuite},
+    suite::{self, bounded_file, identifier, PreparedSuite, MAX_RECIPE_BYTES},
 };
 use lotus_protocol::envelope::SessionUuid;
 use lotus_session::supervisor::{regression_workspace_bytes, Supervisor};
@@ -158,9 +158,14 @@ fn estimate(suite: &PreparedSuite, revisions: usize) -> io::Result<u64> {
         }
         // A capture saves both 400x240 and 320x240 BGRA screens. The runner also
         // captures the final frame. Leave room for the small retained reports.
-        bytes += (scenario.captures.len() as u64 + 1) * 691_200 + (1 << 20);
+        bytes +=
+            ((scenario.captures.len() as u64 + 1) * 691_200 + (1 << 20)) * u64::from(suite.repeats);
+        let recipe_bytes = serde_json::to_vec(scenario)?.len() as u64;
+        if recipe_bytes <= MAX_RECIPE_BYTES {
+            bytes += recipe_bytes;
+        }
     }
-    Ok(bytes * u64::from(suite.repeats) * revisions as u64)
+    Ok(bytes * revisions as u64)
 }
 
 struct Search<'a> {

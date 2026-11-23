@@ -36,6 +36,14 @@ pub struct CaseDetails {
     pub error: Option<String>,
     #[serde(skip)]
     assertions: Vec<AssertionResult>,
+    #[serde(skip)]
+    pub(crate) retained: Option<RetainedRecipe>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RetainedRecipe {
+    pub(crate) assessment: String,
+    pub(crate) repeats: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -199,12 +207,17 @@ pub fn detail(output: &Path, id: &str) -> io::Result<Detail> {
             checkpoints: Vec::new(),
             error: case.error.clone(),
             assertions: Vec::new(),
+            retained: None,
         };
         if case.assessment.is_some() {
             match observations(&root, case, &suite.worker_sha256) {
                 Ok((assessment, report)) => {
                     row.scenario_sha256 = Some(assessment.scenario_sha256);
                     if let Some(report) = report {
+                        row.retained = Some(RetainedRecipe {
+                            assessment: assessment.id,
+                            repeats: assessment.attempts.len(),
+                        });
                         row.content_sha256 = Some(report.content_sha256);
                         row.checkpoints = report.checkpoints;
                         row.first_failure = report
@@ -280,14 +293,19 @@ fn checkpoint_difference(
 
 pub fn compare(root: &Path, baseline: &str, candidate: &str) -> io::Result<Comparison> {
     let before = detail(root, baseline)?;
-    let mut after: BTreeMap<_, _> = detail(root, candidate)?
+    let after = detail(root, candidate)?;
+    Ok(compare_details(&before, &after))
+}
+
+pub(crate) fn compare_details(before: &Detail, after: &Detail) -> Comparison {
+    let mut later: BTreeMap<_, _> = after
         .cases
-        .into_iter()
+        .iter()
         .map(|row| (row.scenario.clone(), row))
         .collect();
     let mut cases = Vec::new();
-    for row in before.cases {
-        let next = after.remove(&row.scenario);
+    for row in &before.cases {
+        let next = later.remove(&row.scenario);
         let mut checkpoint = None;
         let mut assertion_change = None;
         let observation = match &next {
@@ -319,29 +337,29 @@ pub fn compare(root: &Path, baseline: &str, candidate: &str) -> io::Result<Compa
             }
         };
         cases.push(Difference {
-            scenario: row.scenario,
+            scenario: row.scenario.clone(),
             baseline: Some(row.status),
-            candidate: next.as_ref().map(|next| next.status),
+            candidate: next.map(|next| next.status),
             observation,
             checkpoint,
-            first_failure: next.and_then(|next| next.first_failure),
+            first_failure: next.and_then(|next| next.first_failure.clone()),
             assertion_change,
         });
     }
-    cases.extend(after.into_values().map(|row| Difference {
-        scenario: row.scenario,
+    cases.extend(later.into_values().map(|row| Difference {
+        scenario: row.scenario.clone(),
         baseline: None,
         candidate: Some(row.status),
         observation: "added",
         checkpoint: None,
-        first_failure: row.first_failure,
+        first_failure: row.first_failure.clone(),
         assertion_change: None,
     }));
-    Ok(Comparison {
-        baseline: baseline.into(),
-        candidate: candidate.into(),
+    Comparison {
+        baseline: before.suite.id.clone(),
+        candidate: after.suite.id.clone(),
         cases,
-    })
+    }
 }
 
 #[cfg(test)]

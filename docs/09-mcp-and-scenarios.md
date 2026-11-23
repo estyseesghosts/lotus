@@ -148,6 +148,25 @@ align cases by manifest-relative scenario path and compare screen hashes and ass
 only when both runs have repeatable observations for the same scenario
 definition. All three interfaces use the same [history reader](../crates/runner/src/history.rs).
 
+### Export a regression
+
+Run `ctr-cli suite export <output> <baseline-id> <candidate-id> <new-directory>`.
+The export writes a Markdown comparison and a JSON report with the suite IDs,
+source revisions, worker hashes, and the same differences shown in history.
+For each repeatable PASS-to-FAIL case with matching scenario definitions,
+it includes both scenario scripts and a PowerShell launcher. The JSON report
+records the original scenario SHA-256, fixture SHA-256 and repeat count for
+each side. Use the relevant suite IDs from a bisect report to export a
+first-bad comparison.
+
+Follow the generated README to supply the exact 3DSX and worker executable
+for each side. The scenario runner verifies their SHA-256 values before
+launching the worker and reports a reproduced assertion failure as a nonzero
+exit. The export contains only metadata and scripts and is limited to 8 MiB.
+Older suites without a retained scenario and suites that depend on movie
+playback still export their comparison, with an explanation for each
+unavailable replay.
+
 ### Guarded first-bad search on Windows
 
 Run `ctr-cli suite bisect <host-config> <plan.json>`. The plan identifies

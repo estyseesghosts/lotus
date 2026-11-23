@@ -15,6 +15,7 @@ pub mod assessment;
 pub mod bisect;
 pub mod execution;
 pub mod history;
+pub mod repro;
 pub mod suite;
 
 /// Maximum frames a scenario may request.

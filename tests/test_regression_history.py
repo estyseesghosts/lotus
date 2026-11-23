@@ -2,6 +2,7 @@
 import hashlib
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -54,6 +55,7 @@ assertions:
     baseline = run("a" * 40)
     assert baseline["status"] == "PASS", baseline
     content = source / "debugger.3dsx"
+    baseline_content = content.read_bytes()
     content.write_bytes((changed / content.name).read_bytes())
     candidate = run("b" * 40, 1)
     assert candidate["status"] == "FAIL", candidate
@@ -77,6 +79,82 @@ assertions:
     assert change["first_failure"] == failure
     assert change["assertion_change"]["baseline"]["actual"] == 0xCAFEBABE
     assert change["assertion_change"]["candidate"]["actual"] == 0xBAD
+
+    # Export after the original scenario and guest path are gone.
+    scenario.unlink()
+    content.unlink()
+    bundle = output / "repro bundle"
+
+    def export(destination, expected=0):
+        result = subprocess.run([str(cli), "suite", "export", str(history), baseline_id,
+                                 candidate_id, str(destination)], capture_output=True, text=True,
+                                timeout=15)
+        assert result.returncode == expected, (result.stdout, result.stderr)
+
+    export(bundle)
+    assert {p.name for p in bundle.iterdir()} == {
+        "README.md", "report.json", "replay.ps1", "case-01-baseline.json", "case-01-candidate.json",
+    }
+    report = json.loads((bundle / "report.json").read_text())
+    assert report["comparison"] == diff
+    summary = (bundle / "README.md").read_text(encoding="utf-8")
+    assert "canary.yaml" in summary and "2989" in summary
+    replay, = report["replays"]
+    assert replay["case"] == 1 and replay["unavailable"] is None
+    assert report["baseline"]["revision"] == "a" * 40
+    assert report["candidate"]["revision"] == "b" * 40
+    for side, fixture, actual in (
+        ("baseline", baseline_content, 0xCAFEBABE),
+        ("candidate", (changed / "debugger.3dsx").read_bytes(), 0xBAD),
+    ):
+        recipe = replay[side]
+        assert recipe["content_sha256"] == hashlib.sha256(fixture).hexdigest()
+        assert recipe["repeats"] == 2
+        assert report[side]["worker_sha256"] == baseline["worker_sha256"]
+        spec = json.loads((bundle / recipe["scenario"]).read_text())
+        assert spec["content"]["path_handle"] == recipe["content"]
+        assert spec["content"]["sha256"] == recipe["content_sha256"]
+        assert spec["profile"]["worker_sha256"] == baseline["worker_sha256"]
+        (bundle / recipe["content"]).write_bytes(fixture)
+        result = subprocess.run([
+            shutil.which("powershell.exe"), "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(bundle / "replay.ps1"), "-Cli", str(cli), "-Worker", str(worker),
+            "-Output", str(output / ("replay-" + side)), "-Case", "1", "-Side", side,
+        ], capture_output=True, text=True, timeout=45)
+        assert result.returncode == int(side == "candidate"), (result.stdout, result.stderr)
+        replayed = json.loads(result.stdout)
+        expected_status = "PASS" if side == "baseline" else "FAIL"
+        assert replayed["status"] == expected_status, replayed
+        assert len(replayed["attempts"]) == 2
+        assert all(a["status"] == expected_status for a in replayed["attempts"])
+        if side == "candidate":
+            assert all(a["first_failure"]["actual"] == actual for a in replayed["attempts"])
+
+    export(bundle, 1)  # An export cannot overwrite an existing package.
+    (bundle / replay["candidate"]["content"]).write_bytes(baseline_content)
+    for binary, expected in ((worker, "fixture SHA-256 mismatch"),
+                             (cli, "worker executable SHA-256 mismatch")):
+        recipe = replay["candidate"] if binary == worker else replay["baseline"]
+        result = subprocess.run([str(cli), "scenario", "assess", str(bundle / recipe["scenario"]),
+                                 str(binary), str(output / "replay-refused"), "2"],
+                                capture_output=True, text=True, timeout=15)
+        assert result.returncode == 1, (result.stdout, result.stderr)
+        refused = json.loads(result.stdout)
+        assert refused["status"] == "INCOMPLETE"
+        assert all(a["error"] == expected and a["report"] is None for a in refused["attempts"])
+
+    retained = history / candidate_id / Path(candidate["cases"][0]["assessment"]).parent / "scenario.json"
+    retained.write_bytes(retained.read_bytes() + b" ")
+    corrupt = output / "corrupt export"
+    export(corrupt)
+    refused, = json.loads((corrupt / "report.json").read_text())["replays"]
+    assert refused["unavailable"] == "retained scenario SHA-256 mismatch"
+    assert not (corrupt / "replay.ps1").exists()
+    retained.unlink()
+    legacy = output / "legacy export"
+    export(legacy)
+    refused, = json.loads((legacy / "report.json").read_text())["replays"]
+    assert refused["unavailable"] == "retained scenario unavailable"
 
     def verify(client):
         tool = "lotus_regression_history"
@@ -118,7 +196,7 @@ assertions:
     report.write_text(json.dumps(changed_report))
     unavailable, = suite("compare", history, baseline_id, candidate_id)["cases"]
     assert unavailable["candidate"] == "INCOMPLETE" and unavailable["observation"] == "inconclusive"
-    print("PASS and FAIL builds retained. CLI, fresh headless MCP and windowed MCP agree.")
+    print("PASS and FAIL builds replayed from the export. CLI, headless MCP and windowed MCP agree.")
 
 
 if __name__ == "__main__":

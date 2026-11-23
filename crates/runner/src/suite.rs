@@ -15,6 +15,7 @@ use std::{
 const MAX_INPUT_BYTES: u64 = 128 << 10;
 const MAX_REPORT_BYTES: u64 = 512 << 10;
 const MAX_SUITE_SECONDS: u64 = 1800;
+pub(crate) const MAX_RECIPE_BYTES: u64 = 2 << 20;
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,7 +161,7 @@ pub(crate) async fn run_prepared(
     for (relative, scenario) in &suite.cases {
         let assessed = match scenario {
             Ok((path, scenario)) => {
-                assessment::assess_fixture(
+                let assessed = assessment::assess_fixture(
                     scenario,
                     path.parent().expect("scenario directory"),
                     &worker,
@@ -168,7 +169,14 @@ pub(crate) async fn run_prepared(
                     suite.repeats,
                     fixture,
                 )
-                .await
+                .await;
+                if let Ok(result) = &assessed {
+                    let recipe = serde_json::to_vec(scenario)?;
+                    if recipe.len() as u64 <= MAX_RECIPE_BYTES {
+                        fs::write(root.join(&result.id).join("scenario.json"), recipe)?;
+                    }
+                }
+                assessed
             }
             Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
         };

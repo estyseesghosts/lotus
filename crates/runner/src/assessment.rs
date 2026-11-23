@@ -39,7 +39,7 @@ pub struct Assessment {
     pub attempts: Vec<Attempt>,
 }
 
-fn digest(bytes: &[u8]) -> String {
+pub(crate) fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
