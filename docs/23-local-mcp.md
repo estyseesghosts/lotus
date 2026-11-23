@@ -302,7 +302,7 @@ its evidence URI.
 
 | Operation | Fields |
 | --- | --- |
-| `export` | `id`, `expected_revision`, optional `screenshots` (up to two distinct saved screen artifact URIs), optional `trace_slices` (see below), optional `include_notes` (default false) |
+| `export` | `id`, `expected_revision`, optional `screenshots` (up to two distinct saved screen artifact URIs), optional `trace_slices`, optional `replay_scenario`, optional `include_notes` (default false) |
 | `bundle` | `bundle` (SHA-256 ID or `lotus://evidence/…` URI) |
 | `summary` | `bundle` (same ID or URI) |
 
@@ -321,7 +321,18 @@ includes frame markers, register writes and memory-load addresses and sizes.
 Memory payloads, initial register state and paired checkpoints are omitted.
 The desktop investigation window can archive the first 128 events of a
 selected saved trace. Missing, changed or malformed captures are recorded as
-unavailable observations. Exact replay scripts remain pending.
+unavailable observations.
+
+To archive a replay recipe, set `replay_scenario` to a handle from the host
+configuration's `scenarios` map. The selected scenario must pass runner
+validation and declare both `content.sha256` and `profile.worker_sha256`.
+Review its free-text fields before sharing. The bundle contains the scenario
+in JSON with a portable fixture filename and an argument list for `ctr-cli
+scenario run`. Save the scenario as `replay.json`, place the matching fixture
+beside it as `replay-content.3dsx`, and supply the worker executable and a new
+output directory. The runner checks both digests before launching. The archive
+labels the recipe unverified until someone runs it. Movie playback scenarios
+require a separate recording and are outside this export format.
 
 The archive permits 64 bundles, 4 MiB per bundle, and up to 32 MiB total
 or the configured artifact byte quota, whichever is smaller. Re-exporting

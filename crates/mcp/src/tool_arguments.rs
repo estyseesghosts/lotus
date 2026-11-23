@@ -65,6 +65,10 @@ pub enum InvestigationOperation {
         /// Select up to two distinct saved CiTrace captures and event ranges.
         #[serde(default)]
         trace_slices: Vec<EvidenceTraceSlice>,
+        /// Include a host-approved scenario with a pinned content hash. Review its free-text
+        /// fields before sharing the bundle. Original fixture paths are removed.
+        #[serde(default)]
+        replay_scenario: Option<String>,
         /// Opt in only after reviewing all notes and relative source paths for sensitive data.
         #[serde(default)]
         include_notes: bool,

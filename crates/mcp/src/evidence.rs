@@ -22,14 +22,26 @@ fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
 }
 
+#[derive(Default)]
+pub struct Selections<'a> {
+    pub screenshots: &'a [String],
+    pub trace_slices: &'a [EvidenceTraceSlice],
+    pub include_notes: bool,
+    pub replay_scenario: Option<&'a Path>,
+}
+
 pub fn export(
     host: &Supervisor,
     id: &str,
     expected_revision: u64,
-    screenshots: &[String],
-    trace_slices: &[EvidenceTraceSlice],
-    include_notes: bool,
+    selections: Selections<'_>,
 ) -> io::Result<Value> {
+    let Selections {
+        screenshots,
+        trace_slices,
+        include_notes,
+        replay_scenario,
+    } = selections;
     if !host.allows_control() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -62,6 +74,7 @@ pub fn export(
             "investigation revision mismatch; reload before exporting",
         ));
     }
+    let replay = replay_scenario.map(portable_replay).transpose()?;
     let details = view.record.details;
     let catalog = host.artifacts();
     let mut images = Vec::new();
@@ -169,14 +182,60 @@ pub fn export(
         "declared_build_hashes": details.build_hashes, "declared_content_hashes": details.content_hashes,
         "sessions": sessions, "traces": traces, "trace_slices": slices,
         "screenshot_observations": observations, "images": images,
+        "replay": replay,
         "unknown": [
                     "PICA draw history (capture a CiTrace to investigate draws)",
-                    "Reproduction steps unless supplied in the opted-in notes"],
+                    "Whether the application reproduces the issue unless verified by a replay run"],
     });
     let bytes = serde_json::to_vec(&manifest)?;
     let bundle = hash(&bytes);
     publish(host, &bundle, &bytes)?;
     Ok(json!({"bundle": bundle, "uri": format!("lotus://evidence/{bundle}"), "bytes": bytes.len()}))
+}
+
+fn portable_replay(path: &Path) -> io::Result<Value> {
+    const MAX_SCENARIO_BYTES: u64 = 128 << 10;
+    let mut document = String::new();
+    File::open(path)?
+        .take(MAX_SCENARIO_BYTES + 1)
+        .read_to_string(&mut document)
+        .map_err(|_| invalid("cannot read the approved scenario as UTF-8"))?;
+    if document.len() as u64 > MAX_SCENARIO_BYTES {
+        return Err(invalid("approved replay scenario exceeds 128 KiB"));
+    }
+    let mut scenario = lotus_runner::Scenario::from_yaml(&document)
+        .map_err(|_| invalid("cannot parse the approved replay scenario"))?;
+    lotus_runner::execution::validate_execution(&scenario)
+        .map_err(|_| invalid("approved scenario failed runner validation"))?;
+    if scenario
+        .movie
+        .as_ref()
+        .is_some_and(|movie| movie.mode == "play")
+    {
+        return Err(invalid(
+            "movie playback requires a separate recording and cannot be bundled",
+        ));
+    }
+    if !scenario
+        .content
+        .sha256
+        .as_ref()
+        .is_some_and(|hash| hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(invalid("replay scenario requires a pinned content SHA-256"));
+    }
+    if scenario.profile.worker_sha256.is_none() {
+        return Err(invalid(
+            "replay scenario requires a pinned worker executable SHA-256",
+        ));
+    }
+    scenario.content.path_handle = "replay-content.3dsx".into();
+    Ok(json!({
+        "confidence": "unverified",
+        "scenario_filename": "replay.json",
+        "scenario": scenario,
+        "argv": ["ctr-cli", "scenario", "run", "replay.json", "<worker.exe>", "<new-output-directory>", "1"],
+    }))
 }
 
 fn parse_citrace_slice(

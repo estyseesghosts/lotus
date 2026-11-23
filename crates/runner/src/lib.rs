@@ -65,6 +65,9 @@ pub struct Profile {
     pub renderer: String,
     /// Azahar branch flavour.
     pub worker_flavor: WorkerFlavor,
+    /// Expected worker executable SHA-256, if pinned by the scenario.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_sha256: Option<String>,
     /// Initial deterministic tick value.
     #[serde(default)]
     pub deterministic_initial_ticks: Option<u64>,
@@ -265,8 +268,12 @@ impl Scenario {
             path: path.display().to_string(),
             source,
         })?;
-        let scenario: Scenario = serde_yaml::from_str(&text).map_err(ScenarioError::Parse)?;
-        Ok(scenario)
+        Self::from_yaml(&text)
+    }
+
+    /// Decode a scenario document already read by the caller.
+    pub fn from_yaml(text: &str) -> Result<Self, ScenarioError> {
+        serde_yaml::from_str(text).map_err(ScenarioError::Parse)
     }
 
     /// Validate the scenario against the project's execution limits.

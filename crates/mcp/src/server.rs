@@ -112,12 +112,14 @@ impl LotusServer {
         frontend: Frontend,
         scenarios: BTreeMap<String, PathBuf>,
     ) -> Self {
+        let mut approved_scenarios = gdb.host().config().scenarios.clone();
+        approved_scenarios.extend(scenarios);
         Self {
             tool_router: Self::tool_router(),
             host: Some(gdb.host().clone()),
             gdb: Some(gdb),
             frontend,
-            scenarios,
+            scenarios: approved_scenarios,
             screenshot_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             attached_investigation: Arc::default(),
         }
@@ -182,6 +184,7 @@ fn investigation_operation(
     host: &Supervisor,
     attached: &Mutex<Option<String>>,
     operation: InvestigationOperation,
+    replay_path: Option<PathBuf>,
 ) -> io::Result<Value> {
     let selection = || {
         attached
@@ -225,15 +228,27 @@ fn investigation_operation(
             expected_revision,
             screenshots,
             trace_slices,
+            replay_scenario,
             include_notes,
-        } => crate::evidence::export(
-            host,
-            &id,
-            expected_revision,
-            &screenshots,
-            &trace_slices,
-            include_notes,
-        ),
+        } => {
+            if host.allows_control() && replay_scenario.is_some() && replay_path.is_none() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "unknown scenario handle",
+                ));
+            }
+            crate::evidence::export(
+                host,
+                &id,
+                expected_revision,
+                crate::evidence::Selections {
+                    screenshots: &screenshots,
+                    trace_slices: &trace_slices,
+                    include_notes,
+                    replay_scenario: replay_path.as_deref(),
+                },
+            )
+        }
         InvestigationOperation::Bundle { bundle } => crate::evidence::read(host, &bundle),
         InvestigationOperation::Summary { bundle } => crate::evidence::summary(host, &bundle),
         InvestigationOperation::Update {
@@ -719,8 +734,15 @@ impl LotusServer {
         };
         let attached = self.attached_investigation.clone();
         let bundle = matches!(args.operation, InvestigationOperation::Bundle { .. });
+        let replay_path = match &args.operation {
+            InvestigationOperation::Export {
+                replay_scenario: Some(handle),
+                ..
+            } => self.scenarios.get(handle).cloned(),
+            _ => None,
+        };
         let result = tokio::task::spawn_blocking(move || {
-            investigation_operation(&host, &attached, args.operation)
+            investigation_operation(&host, &attached, args.operation, replay_path)
         })
         .await
         .map_err(io::Error::other)

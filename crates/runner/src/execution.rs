@@ -89,6 +89,16 @@ pub fn validate_execution(scenario: &Scenario) -> io::Result<()> {
     scenario
         .validate()
         .map_err(|error| invalid(error.to_string()))?;
+    if scenario
+        .profile
+        .worker_sha256
+        .as_ref()
+        .is_some_and(|hash| hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(invalid(
+            "profile.worker_sha256 must be a SHA-256 hex digest",
+        ));
+    }
     if scenario.content.kind != "homebrew_3dsx"
         || !matches!(scenario.profile.model.as_str(), "old3ds" | "new3ds")
         || scenario.profile.renderer != "software"
@@ -565,6 +575,14 @@ pub(crate) async fn run_report(
         return Err(invalid("fixture SHA-256 mismatch"));
     }
     let executable_hash = file_hash(executable)?;
+    if scenario
+        .profile
+        .worker_sha256
+        .as_ref()
+        .is_some_and(|expected| !expected.eq_ignore_ascii_case(&executable_hash))
+    {
+        return Err(invalid("worker executable SHA-256 mismatch"));
+    }
     // create_dir rejects accidental overwrite/reuse of a prior run.
     fs::create_dir_all(output.parent().unwrap_or(Path::new(".")))?;
     fs::create_dir(output)?;

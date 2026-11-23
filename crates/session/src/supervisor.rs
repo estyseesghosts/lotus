@@ -171,6 +171,9 @@ pub struct HostConfig {
     /// Approved content, by handle.
     #[serde(default)]
     pub assets: BTreeMap<String, PathBuf>,
+    /// Approved scenario documents, by handle, for MCP validation and evidence export.
+    #[serde(default)]
+    pub scenarios: BTreeMap<String, PathBuf>,
     /// Approved directories: every `.3dsx` directly inside is `<handle>/<file>`.
     #[serde(default)]
     pub asset_directories: BTreeMap<String, PathBuf>,
@@ -224,6 +227,7 @@ impl HostConfig {
             worker: worker.into(),
             storage_root: storage_root.into(),
             assets: BTreeMap::new(),
+            scenarios: BTreeMap::new(),
             asset_directories: BTreeMap::new(),
             source_roots: BTreeMap::new(),
             build_profiles: BTreeMap::new(),

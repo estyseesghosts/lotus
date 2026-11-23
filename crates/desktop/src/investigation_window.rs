@@ -181,7 +181,15 @@ impl InvestigationWindow {
         self.run(
             cx,
             move |host| {
-                lotus_mcp::evidence::export(&host, &id, revision, &[], trace.as_slice(), false)
+                lotus_mcp::evidence::export(
+                    &host,
+                    &id,
+                    revision,
+                    lotus_mcp::evidence::Selections {
+                        trace_slices: trace.as_slice(),
+                        ..Default::default()
+                    },
+                )
             },
             |view, result, cx| {
                 if let Some(uri) = result["uri"].as_str() {
