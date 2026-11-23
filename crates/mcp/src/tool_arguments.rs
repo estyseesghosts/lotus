@@ -33,6 +33,17 @@ pub struct RestoreInvestigationBreakpointArgs {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceTraceSlice {
+    /// URI of a CiTrace capture saved in the investigation's traces.
+    pub uri: String,
+    /// Zero-based event index in the CiTrace stream.
+    pub offset: u32,
+    /// Number of events requested, from 1 to 128. The final slice may be shorter.
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InvestigationOperation {
     /// List saved investigations by ID, title and revision.
@@ -51,6 +62,9 @@ pub enum InvestigationOperation {
         expected_revision: u64,
         #[serde(default)]
         screenshots: Vec<String>,
+        /// Select up to two distinct saved CiTrace captures and event ranges.
+        #[serde(default)]
+        trace_slices: Vec<EvidenceTraceSlice>,
         /// Opt in only after reviewing all notes and relative source paths for sensitive data.
         #[serde(default)]
         include_notes: bool,

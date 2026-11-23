@@ -302,7 +302,7 @@ its evidence URI.
 
 | Operation | Fields |
 | --- | --- |
-| `export` | `id`, `expected_revision`, optional `screenshots` (up to two distinct saved screen artifact URIs), optional `include_notes` (default false) |
+| `export` | `id`, `expected_revision`, optional `screenshots` (up to two distinct saved screen artifact URIs), optional `trace_slices` (see below), optional `include_notes` (default false) |
 | `bundle` | `bundle` (SHA-256 ID or `lotus://evidence/…` URI) |
 | `summary` | `bundle` (same ID or URI) |
 
@@ -313,6 +313,16 @@ screenshots carry both their original BGRA hash and their PNG hash.
 MCP returns each selected PNG as an image block. Summary returns Markdown
 and JSON metadata without screenshot bytes.
 
+To include CiTrace events, pass `trace_slices` with up to two distinct saved
+trace URIs. Each selection takes `uri`, a zero-based event `offset` and a
+`limit` of 1–128 events. A slice near the end can contain fewer events. The
+manifest records the source SHA-256, event range and total event count. It
+includes frame markers, register writes and memory-load addresses and sizes.
+Memory payloads, initial register state and paired checkpoints are omitted.
+The desktop investigation window can archive the first 128 events of a
+selected saved trace. Missing, changed or malformed captures are recorded as
+unavailable observations. Exact replay scripts remain pending.
+
 The archive permits 64 bundles, 4 MiB per bundle, and up to 32 MiB total
 or the configured artifact byte quota, whichever is smaller. Re-exporting
 identical bytes reuses the same bundle. The default manifest omits notes,
@@ -321,4 +331,3 @@ paths before opting in, and review any screenshots before sharing. Trace
 references report availability. The manifest includes worker and content
 hashes where available, selected effective settings, and the latest
 recognized pause reason. Null fields indicate unavailable observations.
-Trace slices and exact replay scripts are still pending.

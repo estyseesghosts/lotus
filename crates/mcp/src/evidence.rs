@@ -1,3 +1,4 @@
+use crate::tool_arguments::EvidenceTraceSlice;
 use base64::prelude::*;
 use lotus_session::{investigation::SessionReference, supervisor::Supervisor};
 use serde_json::{json, Value};
@@ -26,6 +27,7 @@ pub fn export(
     id: &str,
     expected_revision: u64,
     screenshots: &[String],
+    trace_slices: &[EvidenceTraceSlice],
     include_notes: bool,
 ) -> io::Result<Value> {
     if !host.allows_control() {
@@ -38,6 +40,21 @@ pub fn export(
         || screenshots.iter().collect::<BTreeSet<_>>().len() != screenshots.len()
     {
         return Err(invalid("select up to two distinct saved screenshots"));
+    }
+    if trace_slices.len() > 2
+        || trace_slices
+            .iter()
+            .map(|slice| &slice.uri)
+            .collect::<BTreeSet<_>>()
+            .len()
+            != trace_slices.len()
+        || trace_slices
+            .iter()
+            .any(|slice| !(1..=128).contains(&slice.limit))
+    {
+        return Err(invalid(
+            "select up to two distinct saved traces with limits of 1–128 events",
+        ));
     }
     let view = host.investigation(id)?;
     if view.record.revision != expected_revision {
@@ -93,6 +110,49 @@ pub fn export(
     let traces = details.traces.iter().zip(view.trace_states).map(|(trace, state)| {
         json!({"uri": trace.uri, "sha256": trace.sha256, "status": state, "capture_included": false})
     }).collect::<Vec<_>>();
+    let mut slices = Vec::new();
+    for slice in trace_slices {
+        let reference = details
+            .traces
+            .iter()
+            .find(|reference| reference.uri == slice.uri)
+            .ok_or_else(|| invalid("select trace slices from the saved trace references"))?;
+        let observation = |status| {
+            json!({
+                "uri": slice.uri, "sha256": reference.sha256, "offset": slice.offset,
+                "confidence": "unknown", "status": status,
+            })
+        };
+        let Some(artifact) = catalog.iter().find(|artifact| artifact.uri == slice.uri) else {
+            slices.push(observation("missing"));
+            continue;
+        };
+        if artifact.mime_type != "application/x-citrace" || artifact.screen != "citrace" {
+            return Err(invalid(
+                "only native CiTrace streams can supply trace slices",
+            ));
+        }
+        if artifact.sha256 != reference.sha256 {
+            slices.push(observation("hash_mismatch"));
+            continue;
+        }
+        let bytes = match host.read_artifact(&slice.uri) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                slices.push(observation("missing"));
+                continue;
+            }
+            Err(error) if error.kind() == io::ErrorKind::InvalidData => {
+                slices.push(observation("hash_mismatch"));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        slices.push(
+            parse_citrace_slice(&bytes, slice, &reference.sha256)?
+                .unwrap_or_else(|| observation("invalid_trace")),
+        );
+    }
     let sessions = details.sessions.iter().zip(view.session_states).map(|(reference, state)| {
         json!({"reference": reference, "status": state, "observation": observe_session(host, reference)})
     }).collect::<Vec<_>>();
@@ -107,7 +167,7 @@ pub fn export(
     let manifest = json!({
         "version": 1, "investigation_id": id, "revision": expected_revision, "notes": notes,
         "declared_build_hashes": details.build_hashes, "declared_content_hashes": details.content_hashes,
-        "sessions": sessions, "traces": traces,
+        "sessions": sessions, "traces": traces, "trace_slices": slices,
         "screenshot_observations": observations, "images": images,
         "unknown": [
                     "PICA draw history (capture a CiTrace to investigate draws)",
@@ -117,6 +177,52 @@ pub fn export(
     let bundle = hash(&bytes);
     publish(host, &bundle, &bytes)?;
     Ok(json!({"bundle": bundle, "uri": format!("lotus://evidence/{bundle}"), "bytes": bytes.len()}))
+}
+
+fn parse_citrace_slice(
+    bytes: &[u8],
+    slice: &EvidenceTraceSlice,
+    sha256: &str,
+) -> io::Result<Option<Value>> {
+    // Packed little-endian CiTrace v1, src/core/tracer/citrace.h on the worker pin.
+    const HEADER_BYTES: u32 = 100;
+    const EVENT_BYTES: usize = 20;
+    let word = |data: &[u8], i| u32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+    if bytes.len() < HEADER_BYTES as usize
+        || &bytes[..8] != b"CiTr\x01\0\0\0"
+        || word(bytes, 8) != HEADER_BYTES
+    {
+        return Ok(None);
+    }
+    let start = word(bytes, 92);
+    let count = word(bytes, 96);
+    if start < HEADER_BYTES
+        || count > 262_144
+        || u64::from(start) + u64::from(count) * EVENT_BYTES as u64 != bytes.len() as u64
+    {
+        return Ok(None);
+    }
+    if slice.offset >= count {
+        return Err(invalid("trace slice offset is outside the recorded stream"));
+    }
+    let limit = slice.limit.min(count - slice.offset) as usize;
+    let first = start as usize + slice.offset as usize * EVENT_BYTES;
+    let mut events = Vec::with_capacity(limit);
+    for event in bytes[first..first + limit * EVENT_BYTES].chunks_exact(EVENT_BYTES) {
+        events.push(match word(event, 0) {
+            0xE1 => json!({"kind": "frame_marker"}),
+            0xE2 => json!({"kind": "memory_load", "bytes": word(event, 8),
+                          "physical_address": word(event, 12)}),
+            0xE3 => json!({"kind": "register_write", "physical_address": word(event, 4),
+                          "value": word(event, 8)}),
+            _ => return Ok(None),
+        });
+    }
+    Ok(Some(json!({
+        "uri": slice.uri, "sha256": sha256, "format": "citrace_v1",
+        "confidence": "measured", "status": "included", "offset": slice.offset,
+        "total_events": count, "events": events,
+    })))
 }
 
 fn observe_session(host: &Supervisor, reference: &SessionReference) -> Value {

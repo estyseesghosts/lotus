@@ -1,7 +1,9 @@
 use gpui::{div, prelude::*, px, size, App, Bounds, Context, Entity, Window, WindowHandle};
+use lotus_mcp::tool_arguments::EvidenceTraceSlice;
 use lotus_session::{
     investigation::{
-        Investigation, InvestigationDetails, InvestigationView, ReferenceState, SessionReference,
+        ArtifactState, Investigation, InvestigationDetails, InvestigationView, ReferenceState,
+        SessionReference,
     },
     supervisor::Supervisor,
 };
@@ -172,13 +174,15 @@ impl InvestigationWindow {
         );
     }
 
-    fn export(&mut self, cx: &mut Context<Self>) {
+    fn export(&mut self, trace: Option<EvidenceTraceSlice>, cx: &mut Context<Self>) {
         let Some(view) = &self.selected else { return };
         let id = view.record.id.clone();
         let revision = view.record.revision;
         self.run(
             cx,
-            move |host| lotus_mcp::evidence::export(&host, &id, revision, &[], false),
+            move |host| {
+                lotus_mcp::evidence::export(&host, &id, revision, &[], trace.as_slice(), false)
+            },
             |view, result, cx| {
                 if let Some(uri) = result["uri"].as_str() {
                     cx.write_to_clipboard(gpui::ClipboardItem::new_string(uri.into()));
@@ -220,6 +224,26 @@ impl Render for InvestigationWindow {
             .overflow_y_scroll();
         if let Some(view) = selected {
             details = details.child(format!("Revision {}", view.record.revision));
+            for (trace, state) in view.record.details.traces.iter().zip(&view.trace_states) {
+                let uri = trace.uri.clone();
+                let available = matches!(state, ArtifactState::Available | ArtifactState::Pinned);
+                details = details.child(
+                    div().flex().flex_col().gap_1().child(uri.clone()).child(
+                        Button::new(uri.clone(), "Archive with first 128 trace events")
+                            .disabled(!editable || !available)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.export(
+                                    Some(EvidenceTraceSlice {
+                                        uri: uri.clone(),
+                                        offset: 0,
+                                        limit: 128,
+                                    }),
+                                    cx,
+                                );
+                            })),
+                    ),
+                );
+            }
         }
         for (index, target) in self.draft.sessions.iter().enumerate() {
             let state = selected.and_then(|view| view.session_states.get(index));
@@ -259,7 +283,7 @@ impl Render for InvestigationWindow {
             .child(
                 Button::new("investigation-export", "Archive saved revision")
                     .disabled(!editable || selected.is_none())
-                    .on_click(cx.listener(|view, _, _, cx| view.export(cx))),
+                    .on_click(cx.listener(|view, _, _, cx| view.export(None, cx))),
             );
         details = details
             .child(self.title.clone())

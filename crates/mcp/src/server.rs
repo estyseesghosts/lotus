@@ -224,8 +224,16 @@ fn investigation_operation(
             id,
             expected_revision,
             screenshots,
+            trace_slices,
             include_notes,
-        } => crate::evidence::export(host, &id, expected_revision, &screenshots, include_notes),
+        } => crate::evidence::export(
+            host,
+            &id,
+            expected_revision,
+            &screenshots,
+            &trace_slices,
+            include_notes,
+        ),
         InvestigationOperation::Bundle { bundle } => crate::evidence::read(host, &bundle),
         InvestigationOperation::Summary { bundle } => crate::evidence::summary(host, &bundle),
         InvestigationOperation::Update {
