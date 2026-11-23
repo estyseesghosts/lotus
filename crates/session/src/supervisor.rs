@@ -948,7 +948,6 @@ impl Supervisor {
         let content = asset.map(|handle| self.resolve_asset(handle)).transpose()?;
         let id = SessionUuid::generate().to_string();
         self.host_memory().admit()?;
-        let gpu_refusal = self.gpu_memory().refusal();
         let reservation = self.reserve(&id, &kind)?;
         let root = match &kind {
             SessionKind::Primary { card } => self.cards.primary_root(card)?,
@@ -997,6 +996,7 @@ impl Supervisor {
                 (None, Some(profile)) => profile,
                 (None, None) => &self.config.profile,
             };
+            let gpu_refusal = self.gpu_memory().refusal();
             // An explicit Vulkan profile is refused under GPU pressure; Vulkan only preferred
             // starts on software before load, the restartable boundary prefer_vulkan already
             // falls back at (lotus#46).
@@ -1026,17 +1026,22 @@ impl Supervisor {
                     return Err(error);
                 }
             }
-            if let Some(content) = &content {
-                if let Err(error) = native.load(content).await {
-                    let _ = native.stop().await;
-                    return Err(error);
+            let loaded = if let Some(content) = &content {
+                match self.load_with_gpu_admission(&mut native, content).await {
+                    Ok(status) => Some(status),
+                    Err(error) => {
+                        let _ = native.stop().await;
+                        return Err(error);
+                    }
                 }
-            }
-            Ok(native)
+            } else {
+                None
+            };
+            Ok((native, loaded))
         }
         .await;
-        let native = match started {
-            Ok(native) => native,
+        let (native, loaded) = match started {
+            Ok(result) => result,
             Err(error) => {
                 if matches!(kind, SessionKind::Secondary { .. }) {
                     let _ = self.cards.discard_scratch(&root, ScratchEnd::Abnormal);
@@ -1051,6 +1056,9 @@ impl Supervisor {
             created_unix_ms: unix_ms(),
         };
         let mut telemetry = Telemetry::new();
+        if let Some(status) = &loaded {
+            telemetry.observe(status, native.state(), native.epoch(), Instant::now());
+        }
         telemetry.state = native.state();
         telemetry.epoch = native.epoch();
         telemetry.backend_name = native.backend_name().to_owned();
@@ -1103,14 +1111,27 @@ impl Supervisor {
         handle.set_playing(false);
         pause_if_running(&mut native).await?;
         handle.cancel_input(true);
-        native.load(&content).await?;
-        handle.telemetry().epoch = native.epoch();
+        let status = self.load_with_gpu_admission(&mut native, &content).await?;
+        observe(&handle, &native, &status);
         self.rebind_source_breakpoints(&handle, &mut native).await;
         self.budgets.clear_recordings(id);
         lock(&handle.info).asset = Some(asset.to_string());
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
         handle.record(actor, "load");
         Ok(handle.info())
+    }
+
+    async fn load_with_gpu_admission(
+        &self,
+        native: &mut NativeSession,
+        content: &Path,
+    ) -> io::Result<serde_json::Value> {
+        if native.needs_vulkan_admission_for_load() {
+            if let Some(refusal) = self.gpu_memory().refusal() {
+                native.apply_vulkan_refusal(refusal).await?;
+            }
+        }
+        native.load(content).await
     }
 
     fn known_card(&self, card: &str) -> io::Result<()> {
@@ -1782,7 +1803,7 @@ impl Supervisor {
         handle.record(actor, "reset");
         handle.cancel_input(true);
         let result = native.reset().await?;
-        handle.telemetry().epoch = native.epoch();
+        observe(&handle, &native, &result);
         self.budgets.clear_recordings(id);
         self.settings_revision.fetch_add(1, Ordering::AcqRel);
         Ok(result)
@@ -1979,13 +2000,13 @@ impl Supervisor {
     pub fn gpu_memory(&self) -> crate::policy::GpuMemory {
         let summaries = self.summaries();
         let policy = &self.config.policy;
+        let now = Instant::now();
         crate::policy::GpuMemory::measure(
             policy.gpu_admission,
             policy.gpu_reserve_mib,
             summaries
                 .iter()
-                .filter(|summary| summary.telemetry.state.is_active())
-                .filter_map(|summary| summary.telemetry.gpu_memory.as_ref()),
+                .filter_map(|summary| summary.telemetry.gpu_memory_for_admission(now)),
         )
     }
 
@@ -2737,14 +2758,16 @@ impl Supervisor {
             DebugCommand::Status => native.status().await,
             DebugCommand::Reset => {
                 let result = native.reset().await?;
-                handle.telemetry().epoch = native.epoch();
+                observe(&handle, &native, &result);
                 self.budgets.clear_recordings(id);
                 self.settings_revision.fetch_add(1, Ordering::AcqRel);
                 Ok(result)
             }
             DebugCommand::Load { asset } => {
-                let result = native.load(&self.resolve_asset(asset)?).await?;
-                handle.telemetry().epoch = native.epoch();
+                let result = self
+                    .load_with_gpu_admission(&mut native, &self.resolve_asset(asset)?)
+                    .await?;
+                observe(&handle, &native, &result);
                 self.budgets.clear_recordings(id);
                 lock(&handle.info).asset = Some(asset.clone());
                 self.settings_revision.fetch_add(1, Ordering::AcqRel);
@@ -2926,9 +2949,9 @@ impl Supervisor {
         handle.set_playing(false);
         pause_if_running(&mut native).await?;
         handle.cancel_input(true);
-        native.load(&content).await?;
+        let status = self.load_with_gpu_admission(&mut native, &content).await?;
+        observe(handle, &native, &status);
         lock(&handle.symbols).set_asset(record.elf.as_ref().map(|elf| elf.asset.clone()));
-        handle.telemetry().epoch = native.epoch();
         let breakpoints = self.rebind_source_breakpoints(handle, &mut native).await;
         self.budgets.clear_recordings(id);
         lock(&handle.info).asset = Some(record.output.asset.clone());

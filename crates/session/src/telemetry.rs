@@ -108,10 +108,10 @@ pub struct Telemetry {
     pub transport: Option<Value>,
     /// CITnLO `status.events`: subscribed and kept event categories, latest sequence, losses.
     pub events: Option<Value>,
-    /// CITnLO `status.gpu_memory` (lotus#46): `budget_source`, `allocation_failures` and per
-    /// heap `device_local`, `size`, `budget`, `usage`, `block_bytes`,
-    /// `block_bytes_high_water`, `allocation_bytes`. Null without a Vulkan renderer.
+    /// Worker GPU budget sample and live allocation counters. Null without a Vulkan renderer.
     pub gpu_memory: Option<Value>,
+    #[serde(skip)]
+    gpu_memory_expires_at: Option<Instant>,
     #[serde(skip)]
     started: Instant,
     #[serde(skip)]
@@ -158,9 +158,22 @@ impl Telemetry {
             transport: None,
             events: None,
             gpu_memory: None,
+            gpu_memory_expires_at: None,
             started: Instant::now(),
             window: None,
         }
+    }
+
+    /// Loaded Vulkan sessions require a budget sample, including when their reply omits it.
+    pub(crate) fn gpu_memory_for_admission(&self, now: Instant) -> Option<(Option<&Value>, bool)> {
+        let loaded_vulkan = self.renderer == "vulkan"
+            && matches!(self.state, SessionState::Paused | SessionState::Running);
+        let gpu = self.gpu_memory.as_ref();
+        (self.state.is_active() && (loaded_vulkan || gpu.is_some())).then_some((
+            gpu,
+            self.gpu_memory_expires_at
+                .is_some_and(|expires| now < expires),
+        ))
     }
 
     /// Fold one status reply taken at `now`.
@@ -181,7 +194,31 @@ impl Telemetry {
         self.audio_dropped = status["audio_dropped"].as_u64().unwrap_or(0);
         self.transport = status.get("transport").cloned();
         self.events = status.get("events").cloned();
-        self.gpu_memory = status.get("gpu_memory").filter(|v| !v.is_null()).cloned();
+        let gpu_memory = status.get("gpu_memory").filter(|v| v.is_object());
+        let mut expires_at = gpu_memory.and_then(|gpu| {
+            const HOST_TTL_MS: u64 = 1_000;
+            let (age, ttl) = match gpu.get("sample_state") {
+                // Legacy workers query synchronously for each status reply.
+                None => (0, HOST_TTL_MS),
+                Some(state) if state == "fresh" => (
+                    gpu["sample_age_ms"].as_u64()?,
+                    gpu["sample_ttl_ms"].as_u64()?.min(HOST_TTL_MS),
+                ),
+                _ => return None,
+            };
+            (age < ttl).then(|| now + Duration::from_millis(ttl - age))
+        });
+        if let (Some(previous), Some(current)) = (&self.gpu_memory, gpu_memory) {
+            let sequence = current["sample_sequence"].as_u64();
+            if sequence.is_some() && sequence == previous["sample_sequence"].as_u64() {
+                // Repeated replies for one worker sample cannot extend its deadline.
+                expires_at = expires_at
+                    .zip(self.gpu_memory_expires_at)
+                    .map(|(a, b)| a.min(b));
+            }
+        }
+        self.gpu_memory_expires_at = expires_at;
+        self.gpu_memory = gpu_memory.cloned();
         self.input_owner = status["input_owner"].as_str().unwrap_or("").to_string();
         self.buttons = status["buttons"]
             .as_u64()
@@ -377,6 +414,53 @@ mod tests {
 
     fn status(frames: u64, samples: u64) -> Value {
         serde_json::json!({"frames": frames, "audio_samples": samples, "input_owner": "live"})
+    }
+
+    #[test]
+    fn gpu_sample_expires_without_a_new_worker_sequence() {
+        let start = Instant::now();
+        let mut telemetry = Telemetry::new();
+        let mut status = serde_json::json!({"renderer": 2, "gpu_memory": {
+            "sample_state": "fresh", "sample_age_ms": 750, "sample_ttl_ms": 1000,
+            "sample_sequence": 1
+        }});
+        telemetry.observe(&status, SessionState::Paused, 1, start);
+        let fresh = |telemetry: &Telemetry, ms| {
+            telemetry
+                .gpu_memory_for_admission(start + Duration::from_millis(ms))
+                .unwrap()
+                .1
+        };
+        assert!(fresh(&telemetry, 249));
+        assert!(!fresh(&telemetry, 250));
+        telemetry.observe(
+            &status,
+            SessionState::Paused,
+            1,
+            start + Duration::from_millis(310),
+        );
+        assert!(!fresh(&telemetry, 310));
+
+        status["gpu_memory"]["sample_sequence"] = 2.into();
+        telemetry.observe(
+            &status,
+            SessionState::Paused,
+            1,
+            start + Duration::from_millis(400),
+        );
+        assert!(fresh(&telemetry, 400));
+
+        status["gpu_memory"] = Value::Null;
+        telemetry.observe(
+            &status,
+            SessionState::Paused,
+            1,
+            start + Duration::from_millis(500),
+        );
+        assert_eq!(
+            telemetry.gpu_memory_for_admission(start),
+            Some((None, false))
+        );
     }
 
     #[test]

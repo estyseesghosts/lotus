@@ -27,6 +27,10 @@ fn host(name: &str, configure: impl FnOnce(&mut HostConfig)) -> Host {
     config.allow_control = true;
     config.max_sessions = 6;
     config.assets.insert("demo".into(), content);
+    // The mock reports Vulkan without a GPU budget sample, which admission treats as unknown
+    // headroom (#159) and would start later preferred-Vulkan sessions on software. GPU
+    // admission is covered in supervision.rs; these tests need the renderer the settings select.
+    config.policy.gpu_admission = false;
     configure(&mut config);
     let host = Arc::new(Supervisor::new(config).unwrap());
     let store = base.join("store").canonicalize().unwrap();

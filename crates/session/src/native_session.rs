@@ -490,8 +490,21 @@ impl NativeSession {
             lotus_protocol::debug::SettingValue::Integer(0),
         )]))
         .await?;
+        self.vulkan_fallback_armed = false;
         self.renderer_fallback = Some(reason);
         Ok(())
+    }
+
+    pub(crate) fn needs_vulkan_admission_for_load(&self) -> bool {
+        self.state() == SessionState::Idle && self.identity["renderer"] == 2
+    }
+
+    pub(crate) async fn apply_vulkan_refusal(&mut self, reason: String) -> io::Result<()> {
+        if self.vulkan_fallback_armed {
+            self.start_on_software(reason).await
+        } else {
+            Err(io::Error::new(io::ErrorKind::OutOfMemory, reason))
+        }
     }
 
     async fn read_settings(&mut self) -> io::Result<BTreeMap<String, Value>> {
@@ -733,6 +746,15 @@ impl NativeSession {
 
     pub async fn status(&mut self) -> io::Result<Value> {
         self.operation(Method::Status, Value::Null).await
+    }
+
+    /// Collect GPU budget telemetry on demand. A software session returns null.
+    pub async fn refresh_gpu_memory(&mut self) -> io::Result<Value> {
+        self.require(lotus_protocol::capabilities::feature::GPU_MEMORY_REFRESH)?;
+        let result = self
+            .operation(Method::GpuMemoryRefresh, Value::Null)
+            .await?;
+        Ok(result["gpu_memory"].clone())
     }
 
     pub async fn registers(&mut self, core: u32) -> io::Result<Value> {

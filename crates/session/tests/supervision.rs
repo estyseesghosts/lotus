@@ -896,16 +896,23 @@ async fn gpu_pressure_starts_preferred_vulkan_on_software_and_refuses_explicit()
             lotus_protocol::debug::SettingValue::Integer(2),
         );
     });
-    let ids = explicit.running(2).await;
+    let mut ids = explicit.running(1).await;
+    std::fs::write(
+        explicit.root(&ids[0]).join("mock-gpu-memory"),
+        gpu_memory(6000, 900),
+    )
+    .expect("healthy GPU");
+    until("fresh headroom", || {
+        explicit.host.gpu_memory().headroom_mib == Some(6000)
+    })
+    .await;
+    ids.extend(explicit.running(1).await);
     std::fs::write(
         explicit.root(&ids[0]).join("mock-gpu-memory"),
         gpu_memory(500, 900),
     )
     .expect("gpu");
-    until("gpu telemetry", || {
-        telemetry(&explicit.host, &ids[0]).gpu_memory.is_some()
-    })
-    .await;
+    until("gpu telemetry", || explicit.host.gpu_memory().pressure).await;
     let error = explicit
         .host
         .create(
@@ -926,6 +933,61 @@ async fn gpu_pressure_starts_preferred_vulkan_on_software_and_refuses_explicit()
         telemetry(&explicit.host, &ids[1]).frames > before,
         "sibling progresses"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_vulkan_headroom_blocks_explicit_launch_until_refresh() {
+    let fixture = host_with("gpu-stale", 3, |config| {
+        config.profile.insert(
+            "graphics_api".into(),
+            lotus_protocol::debug::SettingValue::Integer(2),
+        );
+    });
+    let idle = fixture
+        .host
+        .create(SessionKind::Secondary { parent: None }, None, Actor::Host)
+        .await
+        .unwrap();
+    let id = fixture.running(1).await.remove(0);
+    let path = fixture.root(&id).join("mock-gpu-memory");
+    let mut sample: serde_json::Value = serde_json::from_str(&gpu_memory(6000, 900)).unwrap();
+    sample["sample_state"] = "stale".into();
+    sample["sample_age_ms"] = 1000.into();
+    sample["sample_ttl_ms"] = 1000.into();
+    sample["sample_sequence"] = 1.into();
+    std::fs::write(&path, sample.to_string()).unwrap();
+    until("stale sample", || {
+        telemetry(&fixture.host, &id).gpu_memory.is_some()
+    })
+    .await;
+    assert_eq!(fixture.host.gpu_memory().unknown_sessions, 1);
+    assert_eq!(fixture.host.gpu_memory().headroom_mib, None);
+    let create = || {
+        fixture.host.create(
+            SessionKind::Secondary { parent: None },
+            Some("demo"),
+            Actor::Host,
+        )
+    };
+    let error = create().await.unwrap_err();
+    assert!(
+        error.to_string().contains("headroom unavailable"),
+        "{error}"
+    );
+    let load = || fixture.host.load(&idle.id, "demo", Actor::Host);
+    let error = load().await.unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::OutOfMemory);
+
+    sample["sample_state"] = "fresh".into();
+    sample["sample_sequence"] = 2.into();
+    sample["sample_age_ms"] = 0.into();
+    std::fs::write(path, sample.to_string()).unwrap();
+    until("fresh headroom", || {
+        fixture.host.gpu_memory().headroom_mib == Some(6000)
+    })
+    .await;
+    load().await.expect("fresh headroom allows explicit Vulkan");
+    fixture.host.close().await;
 }
 
 /// lotus#46: a worker that reports `worker_gpu_error` and exits 4 fails with the typed cause

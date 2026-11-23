@@ -169,6 +169,74 @@ software rows show the cost also grows without a live Vulkan allocator.
 Inner timing at the GPU accounting mutex, VMA and Vulkan calls is needed
 to attribute the measured cost.
 
+### Cached versus synchronous GPU sampling on Windows (#159)
+
+Verified emulator on AZAHAR `66be34d` (base `fb7845d`) and CITnLO
+`7e12804` (base `1db4ff6`). The two native branches have the same sampling
+logic on top of separate worker baselines. Each was built independently
+with Windows GNU, Ninja, `Release`, Vulkan enabled and ccache disabled.
+Runs use 320 status calls per worker in each of the paused and running phases.
+`--mode sync` sets the diagnostic rollback `CTR_WORKER_GPU_MEMORY_SYNC=1`,
+which restores sampling on status and the 500 ms PDH throttle. Both modes
+enable `CTR_WORKER_GPU_MEMORY_PROFILE=1` for the inner timings.
+
+```powershell
+python tools/gpu_memory_acceptance.py <worker.exe> target/audio-161-fixture/audio.3dsx <sync-output> --mode sync --polls 320
+python tools/gpu_memory_acceptance.py <worker.exe> target/audio-161-fixture/audio.3dsx <cache-output> --mode cache --polls 320
+python tools/gpu_memory_acceptance.py <worker.exe> target/audio-161-fixture/audio.3dsx <lifecycle-output> --mode cache --lifecycle
+```
+
+| Vulkan workers | AZAHAR median snapshot sync → cache (µs) | CITnLO median snapshot sync → cache (µs) | AZAHAR / CITnLO sample observations from cached replies |
+| ---: | ---: | ---: | ---: |
+| 1 | 22.8 → 20.9 | 28.2 → 24.2 | 2 / 2 of 640 replies |
+| 2 | 26.5 → 23.5 | 32.1 → 28.6 | 4 / 4 of 1,280 replies |
+| 4 | 35.0 → 26.0 | 38.2 → 32.1 | 8 / 8 of 2,560 replies |
+| 8 | 39.3 → 32.7 | 50.1 → 44.3 | 24 / 25 of 5,120 replies |
+
+A sample spanning both phases is counted in each phase. Synchronous mode
+queried once per reply. At eight workers, synchronous median VMA and direct
+Vulkan calls took 0.5 and 4.8 µs on AZAHAR and 0.6 and 5.2 µs on CITnLO.
+Median accounting lock wait was about 0.1 µs. Median background sampling
+took 158 and 154 µs respectively, including 102 and 98 µs in the Windows
+adapter counter. The published-cache read took 0.4 µs on both. End-to-end
+paused status p99 varied with host scheduling and was mixed in the eight-worker
+comparison. Running status p99 moved from 3.03 to 2.96 ms on AZAHAR and
+3.16 to 2.93 ms on CITnLO. At eight workers, median 60-frame timings moved
+from 111 to 122 ms and 123 to 126 ms. Software and Vulkan passed at
+1/2/4/8 workers in both modes. Raw timings and audio hashes are in
+`build/gpu-159-{sync,cache}-{integration,experimental}/report.json`.
+
+The lifecycle probe exercised both emulated models across both branches.
+It verified periodic refresh while paused, explicit refresh, a new sample
+after reset, a cached terminal report for an injected allocation failure,
+and successful continuation and clean exit of the sibling. Reports are in
+`build/gpu-159-lifecycle-{integration,experimental}/report.json`.
+
+The final tips, AZAHAR `5e9683e` and CITnLO `7d3804b`, add an injected
+`VK_ERROR_DEVICE_LOST` case. The lifecycle probe passed on both branches for
+injected out-of-memory and device loss on Old and New 3DS models
+(`build/gpu-159-lifecycle-final-{integration,experimental}/report.json`).
+A real driver device loss is untested.
+
+Host admission was checked against those workers with
+`tools/vulkan_pressure_acceptance.py`. `tools/wddm_pressure.cpp`, a separate
+D3D12 process, held 2,048 MiB of dedicated memory while four Vulkan sessions
+ran with `gpu_reserve_mib` 14,500. WDDM headroom fell from 14,973 to 12,899
+MiB. The host reported pressure 108–162 ms after the allocator signalled
+readiness. An explicit Vulkan profile was refused. A Vulkan-preferred launch
+started on software. After release, the host cleared pressure in 426–589 ms
+and admitted Vulkan again. All four running sessions advanced and captured
+both screens throughout. Reports are in
+`build/gpu-159-pressure-final-{integration,experimental}/{explicit,preferred}/report.json`.
+
+Host behaviour change: a loaded Vulkan session without a fresh sample counts
+in `unknown_sessions` and blocks Vulkan admission (`admission_blocked`). That
+covers `stale` and `unknown` samples, samples older than the host's one-second
+expiry, and replies with no `gpu_memory` at all (workers that predate #46).
+Replies from #46 workers without `sample_state` count as fresh for one second
+after receipt. Before #159 a session without a sample contributed nothing and
+admission allowed the launch.
+
 ## Measured (verified emulator)
 
 | renderer | config | citnlo_pin s | citnlo_new s | ratio vs off (new) |

@@ -150,13 +150,16 @@ snapshot operations. Batch leaves these budgets unlimited unless set explicitly.
   a supported single-node discrete Vulkan adapter also reports WDDM dedicated
   usage across processes, matched by adapter LUID. The host subtracts that
   usage from heap size and uses the lower estimate.
-  `headroom_source` identifies the estimate in use. If neither source is
-  available, admission has no measured headroom and VMA's estimate is displayed
-  as telemetry. Measuring starts with the first Vulkan session. Under pressure a
-  session that only prefers Vulkan (`prefer_vulkan`, no `graphics_api` in the
-  profile) is created on software before load, with the reason in
-  `telemetry.renderer_fallback`; a profile with `graphics_api: 2` is refused
-  with the numbers. Running sessions are never switched.
+  `headroom_source` identifies the estimate in use. VMA's own estimate is
+  displayed as telemetry. Measuring starts with the first loaded Vulkan
+  session. The host expires a sample after one second, counting the worker's
+  reported age and time since receipt. It also expires replies from older
+  synchronous workers if no new reply arrives within one second.
+  With measured pressure or unavailable headroom from any active Vulkan
+  worker, a session that only prefers Vulkan (`prefer_vulkan`, no
+  `graphics_api` in the profile) starts on software with the reason in
+  `telemetry.renderer_fallback`. A profile with `graphics_api: 2` is refused
+  with the measured limits or the number of workers lacking fresh headroom.
 - `focus_priority`: the focused session's worker (desktop selection,
   `lotus_focus_session`) runs in the above-normal priority class. Off until
   `tools/bench_parallel.py --focus-priority` shows a gain on a quiet host.
@@ -164,7 +167,7 @@ snapshot operations. Batch leaves these budgets unlimited unless set explicitly.
 `lotus_status.policy` lists limits, holders, slots in use and queued, refusals
 memory (available, reserve, estimate, pressure) and `gpu_memory`
 (`budget_source`, `headroom_source`, `headroom_mib`, `estimate_mib`, `reserve_mib`,
-`allocation_failures`, `pressure`); a session's
+`allocation_failures`, `unknown_sessions`, `pressure`, `admission_blocked`); a session's
 `telemetry.policy_note` holds its last refusal or wait. The desktop previews only
 the selected session (`desktop_controller.rs` `preview_loop`), so hidden sessions
 cost no readbacks under either workload. `tests/test_mcp_policy.py` checks the

@@ -40,6 +40,7 @@
       "enum": [
         "hello",
         "status",
+        "gpu_memory_refresh",
         "stop",
         "load",
         "run",

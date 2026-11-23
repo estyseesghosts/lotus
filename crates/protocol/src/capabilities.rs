@@ -112,6 +112,8 @@ pub mod feature {
     pub const DETERMINISTIC_ASYNC: &str = "deterministic_async";
     /// `status.gpu_memory` (#46).
     pub const GPU_MEMORY: &str = "gpu_memory";
+    /// Timestamped samples and an explicit `gpu_memory_refresh` command (#159).
+    pub const GPU_MEMORY_REFRESH: &str = "gpu_memory_refresh";
     /// Fast `input` takes `circle_pad`/`c_stick` and keeps fields it is not sent (#60).
     pub const ANALOG_INPUT: &str = "analog_input";
     /// `rewind_configure.compression_queue` controls native checkpoint compression (#32).

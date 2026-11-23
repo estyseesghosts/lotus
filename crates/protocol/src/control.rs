@@ -14,6 +14,8 @@ pub enum Method {
     Hello,
     Debug,
     Status,
+    /// Explicitly refresh a Vulkan worker's GPU budget telemetry (#159).
+    GpuMemoryRefresh,
     Stop,
     Load,
     Run,

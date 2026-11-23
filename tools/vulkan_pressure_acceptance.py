@@ -16,12 +16,12 @@ import time
 from bench_parallel import call, frontend_for, gpu_policy, rows, tool
 
 
-def wait_until(observe, seconds=15):
+def wait_until(observe, seconds=15, interval=0.25):
     deadline = time.monotonic() + seconds
     while (result := observe()) is None:
         if time.monotonic() >= deadline:
             raise AssertionError("condition timed out")
-        time.sleep(0.25)
+        time.sleep(interval)
     return result
 
 
@@ -70,12 +70,12 @@ def run(server, worker, rom, allocator, root, explicit, reserve_mib):
                 evidence["external_load"] = json.loads(ready.get(timeout=15))
             except (Empty, ValueError) as error:
                 raise AssertionError("external allocation helper did not report readiness") from error
-            deadline = time.monotonic() + 15
-            while True:
-                evidence["under_load"] = gpu_policy(frontend)
-                if evidence["under_load"]["pressure"] or time.monotonic() >= deadline:
-                    break
-                time.sleep(0.25)
+            ready_at = time.monotonic()
+            evidence["under_load"] = wait_until(
+                lambda: current if (current := gpu_policy(frontend))["pressure"] else None,
+                interval=0.05,
+            )
+            evidence["pressure_observed_ms"] = (time.monotonic() - ready_at) * 1000
             assert evidence["under_load"]["pressure"], evidence
             assert evidence["under_load"]["headroom_source"] == "WDDM dedicated usage", evidence
             start = rows(frontend)
@@ -106,8 +106,14 @@ def run(server, worker, rom, allocator, root, explicit, reserve_mib):
                 evidence["survivors"].append({"frames_advanced": advance, "screens": 2})
             allocation.stdin.close()
             assert allocation.wait(timeout=10) == 0
-        evidence["recovered"] = wait_until(lambda: current if not (current := gpu_policy(frontend))["pressure"]
-                                           else None)
+        released_at = time.monotonic()
+        evidence["recovered"] = wait_until(
+            lambda: current if not (current := gpu_policy(frontend)).get(
+                "admission_blocked", current["pressure"]
+            ) else None,
+            interval=0.05,
+        )
+        evidence["recovery_observed_ms"] = (time.monotonic() - released_at) * 1000
         admitted = tool(frontend, "lotus_create_session", create)["session"]
         play(admitted)
         wait_until(lambda: observe_renderers([admitted], "vulkan"))

@@ -160,6 +160,22 @@ with an error. A forced termination may leave `audio/capture.wav.part`.
 The previous sealed WAV remains available until the new writer publishes
 its replacement.
 
+On workers advertising `gpu_memory_refresh` (#159), a loaded Vulkan renderer
+samples VMA heap budgets, the Vulkan budget extension and supported Windows
+adapter-wide WDDM usage every 500 ms. Load and reset publish a fresh sample before
+replying. Status reports `sample_sequence`, monotonic `sample_age_ms`,
+`sample_ttl_ms` (1000), and `sample_state` (`fresh`, `stale`, or `unknown`).
+Heap block bytes, high-water marks, and the allocation failure counter are
+read live. Budget, usage, and VMA suballocation bytes belong to the sample.
+`gpu_memory_refresh` returns `data.gpu_memory` after an explicit sample at a
+control boundary. Software and unloaded workers return null.
+
+Renderer teardown clears the published sample. Terminal GPU failure reports
+invalidate it immediately and use a nonblocking read of the previous sample
+with the live failure count. If the cache is busy or has no sample, the
+failure report carries `sample_state: unknown`. The sampler stops during
+worker exit.
+
 On Windows, the supervisor starts the child suspended, assigns a kill-on-close
 job, then resumes its initial thread. Descendants inherit containment. Each
 root has an OS file lock held through process lifetime. Crashes retain stderr
