@@ -53,6 +53,25 @@ Use `--baseline` for an older worker. The probe checks widths 1, 2, 4 and 8,
 cross-page and cross-VMA values, sparse and dense matches, all narrowing modes,
 sorted paging, MMIO and unmapped-boundary rejection, and cross-page pointer reads.
 
+## Native WAV capture baseline (#161)
+
+Verified emulator on Windows x64 with the software renderer. Integration
+`5ecbd982` and experimental `a3994c1d` each ran the owned DSP fixture three
+times per emulated console model. All 12 captures contained 32,800 stereo
+frames at 32,728 Hz and 16 bits per channel. Each had PCM SHA-256
+`7c8a00e8f5ed50b0862cc7cc473ca6b2a84a3ff247a92ee39d5a0206c46fda09`
+and raw worker FNV-1a value `4857884725183162789`. The probe reads the WAV
+back and checks the reported PCM byte count against the sample count.
+
+```powershell
+python tools/build-debug-fixture.py target/audio-161-fixture --fixture audio
+python tools/audio_acceptance.py <worker.exe> target/audio-161-fixture/audio.3dsx <new-output-directory>
+```
+
+The report records the exact worker source alongside the wall times for the
+60-frame run and capture-stop request. Those times include IPC and do not
+measure the DSP producer lock or isolate filesystem stalls.
+
 ## Measured (verified emulator)
 
 | renderer | config | citnlo_pin s | citnlo_new s | ratio vs off (new) |
