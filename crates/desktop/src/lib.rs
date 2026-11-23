@@ -22,6 +22,8 @@ pub mod preferences;
 pub mod presence;
 mod preview_image;
 #[cfg(all(windows, feature = "silvestris-ui"))]
+mod record_test_window;
+#[cfg(all(windows, feature = "silvestris-ui"))]
 mod regression_window;
 pub mod screen_geometry;
 pub mod session_tree;

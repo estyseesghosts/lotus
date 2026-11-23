@@ -348,6 +348,7 @@ pub struct DesktopController {
     routing: Arc<InputRouting>,
     host: Arc<Supervisor>,
     gdb: Arc<lotus_gdb::Manager>,
+    runtime: tokio::runtime::Handle,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -458,6 +459,7 @@ impl DesktopController {
             runtime.handle().clone(),
         ));
         let (window_updates_tx, window_updates) = tokio::sync::watch::channel(());
+        let handle = runtime.handle().clone();
         let context = Loops {
             controllers,
             ui: ui.clone(),
@@ -504,6 +506,7 @@ impl DesktopController {
             preview_visible,
             host,
             gdb,
+            runtime: handle,
             shutdown,
             thread: Some(thread),
         })
@@ -519,6 +522,12 @@ impl DesktopController {
     #[must_use]
     pub fn host(&self) -> &Arc<Supervisor> {
         &self.host
+    }
+
+    /// The supervisor's runtime, for windows that await supervisor operations.
+    #[must_use]
+    pub fn runtime(&self) -> &tokio::runtime::Handle {
+        &self.runtime
     }
 
     /// An embedded MCP server shares the window's GDB listeners and sessions.

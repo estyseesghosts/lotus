@@ -197,6 +197,33 @@ has **Open JSONL trace…** (event trace up to 64 MiB), **Run clipboard JSON**
 (runs a debug command copied as JSON, same format as section 7) and the key
 list. Several views need CITnLO.
 
+### Recording a test
+
+**Debug → Record Test** (Windows) turns play into a regression scenario for
+the inspected session. The window keeps that session even if you select
+another one.
+
+1. **Reload and Record** restarts the content from frame 0, paused. Press Run
+   and play. Keyboard, touch and controller input is recorded with the frame
+   it took effect on.
+2. **Add Checkpoint** pauses on a frame boundary and records both screens,
+   then resumes. Optionally it also records memory words (`0x00102008,
+   0x00102004:2`) and screen regions (`top 0 0 400 120; bottom 0 120 320 120`:
+   screen, x, y, width, height).
+3. **Stop Recording**, then **Export Test** with a name. Before exporting you
+   can set a stop frame to trim the end. Per checkpoint, **Omit** drops it and
+   **Regions and Memory Only** drops its whole-screen hashes, for screens with
+   a clock or animation. Extra assertions go in as a YAML list, for example
+   `[{type: reached, address: 0x00100254}]`.
+
+The test is written to `recorded-tests/<name>/` in the data directory; the
+path is copied. Copy your 3DSX next to `scenario.yaml` (it is never included)
+and run it with `ctr-cli scenario run`. The window and the manifest list what
+replay cannot reproduce: analog sticks, a non-software renderer, determinism
+settings off, save files, changed settings and debugger changes made while
+recording. An MCP agent can add checkpoints to the same recording. Details:
+[22](22-scenario-runner.md#recorded-tests-lotus95).
+
 ### Gauges
 
 Per session: FPS with a sparkline, speed (FPS ÷ 59.8312), frame and epoch,
@@ -459,6 +486,7 @@ resources. Anything that changes state needs `allow_control`.
 | `lotus_settings_change` | `target`, `operation` `set`/`unset`/`reset`, `key`, `value` | change saved or temporary settings |
 | `lotus_input_presets` | `operation` `list`/`export`/`import`/`duplicate`/`rename`/`delete`, `name`, `to`, `json` | manage input-layout presets |
 | `lotus_validate_scenario` | `path` (a host-registered handle) | validate a scenario |
+| `lotus_record_test` | `session`, `operation` `{"op": "start"\|"mark"\|"stop"\|"status"\|"discard"\|"export", ...}` | record live play as a scenario test ([22](22-scenario-runner.md#recorded-tests-lotus95)) |
 | `lotus_pin_artifact` | `uri`, `pinned` | keep an artifact from eviction |
 | `lotus_release_artifacts` | `uris` | delete artifacts now |
 
@@ -493,6 +521,7 @@ need to keep. Policy and quotas: [23](23-local-mcp.md).
 | `ctr-cli debug <host.json> <asset-or-dash> [--gdb <port>]` | start one secondary session and read debugger commands on stdin |
 | `ctr-cli scenario validate <file>` | check a scenario against the execution limits |
 | `ctr-cli scenario run <file> <worker> <out-dir> [repeat]` | run a scenario 1–10 times (default 3) and compare |
+| `ctr-cli record-test <host.json> <session> [json]` | `lotus_record_test` on the shared Windows desktop; JSON from stdin if omitted |
 | `ctr-cli debug-schema` | JSON schema of every debugger command |
 | `ctr-cli mock <worker>` | query a worker's status over private pipes (diagnostics) |
 
@@ -533,7 +562,7 @@ A scenario is a YAML file: content, profile, inputs at frames, captures, and
 assertions (frame hashes, memory, registers, events, code reached). `scenario
 run` writes `report.json` and `report.txt` per run and exits non-zero on a
 failed assertion. Format and limits: [22](22-scenario-runner.md); examples in
-`specs/`.
+`specs/`. To make one from play, see [Recording a test](#recording-a-test).
 
 ## 8. Where data lives
 
@@ -547,6 +576,7 @@ Layout under the data directory (`data/` by default, see
 | `<backend>/sessions/scratch/<session>/` | a secondary session | deleted on stop; logs kept after a crash |
 | `<backend>/sessions/settings/global.json` | saved global worker settings | yes |
 | `<backend>/sessions/shader-seed/` | shared shader caches, if `shader_seed` | yes |
+| `<backend>/sessions/recorded-tests/<name>/` | exported recorded tests: `scenario.yaml`, `manifest.json` | yes |
 | `desktop.json` | window preferences | yes |
 
 The two backends keep separate data. Cards, saves, logs and captures can

@@ -115,7 +115,7 @@ mcp	lotus_input_presets	settings window	read or control by operation	-	The Contr
 mcp	lotus_investigation	investigations window	read or control by operation	-	Windows editor covers notes, session references and redacted archives. CLI and MCP expose the full record and screenshot selection.	Investigations
 mcp	lotus_investigation_restore_breakpoint	unavailable	control	-	Restore requires a verified ELF and content and a paused target. Desktop action pending.	Investigations
 mcp	lotus_regression_history	regression history	read	-	List, inspect and compare the configured host's retained suites.	Regression history
-mcp	lotus_record_test	external only	read or control by operation	input_boundary	Record live input and checkpoints, then export a scenario. CLI `record-test` and MCP only; desktop workflow pending.	external
+mcp	lotus_record_test	record test window	read or control by operation	input_boundary	Debug > Record Test holds one session: reload and record, checkpoints with memory words and screen regions, stop, discard, and export with trimming, mark omission and extra assertions.	Recorded tests
 mcp	lotus_list_cards	session status	read	-	Card sidebar	Session
 mcp	lotus_list_sessions	session status	read	-	Session sidebar	Session
 mcp	lotus_load	session controls	control	-	Asset picker	Session

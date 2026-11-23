@@ -58,6 +58,8 @@ pub(super) enum GlobalCommand {
     Investigations,
     #[cfg(windows)]
     RegressionHistory,
+    #[cfg(windows)]
+    RecordTest,
     Minimize,
     ZoomWindow,
     Keyboard,
@@ -67,7 +69,7 @@ pub(super) enum GlobalCommand {
     Screens(ScreenLayout),
 }
 impl GlobalCommand {
-    const ALL: [Self; 18 + 2 * cfg!(windows) as usize] = [
+    const ALL: [Self; 18 + 3 * cfg!(windows) as usize] = [
         Self::Sidebar,
         Self::Inspector,
         Self::Settings,
@@ -80,6 +82,8 @@ impl GlobalCommand {
         Self::Investigations,
         #[cfg(windows)]
         Self::RegressionHistory,
+        #[cfg(windows)]
+        Self::RecordTest,
         Self::Minimize,
         Self::ZoomWindow,
         Self::Keyboard,
@@ -105,6 +109,8 @@ impl GlobalCommand {
             Self::Investigations => "debug.investigations",
             #[cfg(windows)]
             Self::RegressionHistory => "debug.regressions",
+            #[cfg(windows)]
+            Self::RecordTest => "debug.record-test",
             Self::Minimize => "window.minimize",
             Self::ZoomWindow => "window.zoom",
             Self::Keyboard => "help.keyboard",
@@ -155,6 +161,10 @@ impl GlobalCommand {
                 .needs_input()
                 .shortcut("secondary-shift-r")
                 .enabled(view.controller.is_some()),
+            #[cfg(windows)]
+            Self::RecordTest => CommandDescriptor::action(self.id(), "Record Test")
+                .needs_input()
+                .enabled(view.controller.is_some() && view.inspection_target().is_some()),
             Self::Gdb => CommandDescriptor::action(self.id(), "GDB")
                 .enabled(view.inspection_target().is_some()),
             Self::Minimize => CommandDescriptor::action(self.id(), "Minimize Window"),
@@ -476,6 +486,20 @@ impl LotusWindow {
                         .storage_root
                         .join(lotus_runner::history::HISTORY_DIRECTORY);
                     cx.defer(move |cx| crate::regression_window::open(cx, root));
+                }
+            }
+            #[cfg(windows)]
+            GlobalCommand::RecordTest => {
+                self.release_input();
+                // The window keeps this session; later selection changes do not move it.
+                if let (Some(controller), Some(target)) =
+                    (&self.controller, self.inspection_target())
+                {
+                    let host = controller.host().clone();
+                    let runtime = controller.runtime().clone();
+                    cx.defer(move |cx| {
+                        crate::record_test_window::open(cx, host, runtime, target.id)
+                    });
                 }
             }
             GlobalCommand::Minimize => window.minimize_window(),
@@ -935,6 +959,8 @@ impl LotusWindow {
                     global(GlobalCommand::Investigations),
                     #[cfg(windows)]
                     global(GlobalCommand::RegressionHistory),
+                    #[cfg(windows)]
+                    global(GlobalCommand::RecordTest),
                     global(GlobalCommand::OpenTrace),
                 ],
             },

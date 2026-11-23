@@ -330,6 +330,8 @@ impl LotusWindow {
             crate::investigation_window::close(cx);
             #[cfg(all(windows, feature = "silvestris-ui"))]
             crate::regression_window::close(cx);
+            #[cfg(all(windows, feature = "silvestris-ui"))]
+            crate::record_test_window::close(cx);
             #[cfg(windows)]
             if mcp == McpMode::Shared {
                 _window.minimize_window();
