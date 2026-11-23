@@ -86,6 +86,7 @@ fn main() -> Result<()> {
     match command {
         #[cfg(windows)]
         "investigation" => investigation::run(&args[1..])?,
+        #[cfg(windows)]
         "record-test" => investigation::record_test(&args[1..])?,
         "debug-schema" => println!(
             "{}",

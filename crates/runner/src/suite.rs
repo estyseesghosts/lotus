@@ -28,6 +28,8 @@ struct Manifest {
 pub(crate) struct PreparedSuite {
     pub(crate) repeats: u8,
     pub(crate) cases: Vec<(PathBuf, io::Result<(PathBuf, Scenario)>)>,
+    /// Wall-clock budget; only the Windows-only bisect search reads it.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) seconds: u64,
 }
 
