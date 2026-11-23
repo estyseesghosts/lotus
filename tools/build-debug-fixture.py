@@ -12,7 +12,7 @@ import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument("output", type=Path)
-parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence","scanner","source","variables","alias","input"],default="debugger")
+parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence","scanner","source","variables","alias","input","markers"],default="debugger")
 parser.add_argument("--gcc", help="devkitARM arm-none-eabi-gcc executable (uses matching objcopy)")
 parser.add_argument("--define", action="append", default=[], help="preprocessor macro for a fixture variant")
 args = parser.parse_args()
@@ -45,9 +45,13 @@ if not args.gcc:
     command[1:1] = ["--target=armv6k-none-eabi", "-fuse-ld=lld"]
 subprocess.run(command, check=True)
 segments = []
+present = subprocess.check_output([objcopy.replace("objcopy", "objdump"), "-h", str(elf)], text=True)
 for section in ("text", "rodata", "data"):
     path = out / (section + ".bin")
-    subprocess.run([objcopy, "--dump-section", "."+section+"="+str(path), str(elf)], check=True)
+    if " ."+section+" " not in present:  # e.g. the markers fixture without LOTUS_MARKERS has no rodata
+        path.write_bytes(b"")
+    else:
+        subprocess.run([objcopy, "--dump-section", "."+section+"="+str(path), str(elf)], check=True)
     segments.append(path.read_bytes())
 header = struct.pack("<IHHIIIIIIIII", 0x58534433, 44, 8, 0, 0,
                      *(len(s) for s in segments), 0, 0, 0, 0)
