@@ -4079,7 +4079,7 @@ fn session_controls_and_reads_match_mcp() {
                 .map(|s| s["id"].as_str().unwrap().to_owned())
                 .collect::<std::collections::BTreeSet<_>>()
         };
-        let mut desktop_cards = update.cards.clone();
+        let mut desktop_cards = update.cards.to_vec();
         desktop_cards.sort();
         assert_eq!(cards["cards"], serde_json::json!(desktop_cards));
         assert_eq!(cards["mounted"]["desk"], a.as_str());
