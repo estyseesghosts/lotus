@@ -44,7 +44,7 @@ EXPECTED = {
                "deterministic_async", "analog_input", "rewind_compression_queue",
                "input_boundary"},
 }
-BUILD_DEPENDENT = {"preview_nonblocking", "gpu_memory"}
+BUILD_DEPENDENT = {"preview_nonblocking", "gpu_memory", "gpu_memory_refresh"}
 
 
 def call(client, name, arguments):

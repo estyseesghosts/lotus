@@ -4,15 +4,28 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
-## Unreleased
+## v0.1.4 (2026-11-22)
 
-Native pins: integration (AZAHAR) `7b45415d`, experimental (CITnLO)
+Native worker pins: integration (AZAHAR) `7b45415d`, experimental (CITnLO)
 `64883d29`. Both workers write raw DSP WAV captures on a bounded writer
 thread (#161), sample Vulkan memory outside status requests (#159), hold
 control requests to 16 in flight until their replies are written (#160),
 bound Luma alias routing to FCRAM and emulated GPU registers (#155), and
 apply live input and complete a running pause at frame boundaries
 (`input_boundary`, #95).
+
+- Live play can be recorded as a replayable scenario test through MCP
+  `lotus_record_test`, `ctr-cli record-test` and **Debug → Record Test** on
+  Windows. Export writes `scenario.yaml` and a manifest listing what replay
+  cannot reproduce. Checkpoints can hash a rectangle of a screen (#95).
+- Windows investigations gain editing and evidence archives, retained
+  regression suites with run, reopen, browse and compare, guarded first-bad
+  searches, and replayable suite comparisons (#96–#98).
+- The desktop redraws when published state changes (#158), and native BGRA
+  preview pairs are validated against the Windows display path (#157).
+- `guest/lotus_markers.h` and a marker fixture let guest code emit debug
+  markers through `svcOutputDebugString` (#83). Decoding in the workers and
+  the Lotus-side query are not part of this release.
 
 ## v0.1.3 (2026-11-22)
 
