@@ -190,6 +190,81 @@ async fn four_native_workers_survive_forced_sibling_failure() {
     std::fs::remove_dir_all(root).expect("job handles and locks released after crash");
 }
 
+/// lotus#160: concurrent desktop, MCP and debugger calls on one running session reach the worker
+/// one exchange at a time (each takes the session's `native` lock), so the worker's 16-request
+/// window never fills and never applies backpressure. `status.transport.requests` reaches
+/// telemetry and the worker exits cleanly with no control error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "requires explicitly supplied native executable and homebrew fixture"]
+async fn supervisor_traffic_stays_inside_the_worker_request_window() {
+    const CALLS: u64 = 240;
+    let (worker, fixture, root) = config();
+    let mut config = HostConfig::new(worker, root.clone());
+    config.assets = std::collections::BTreeMap::from([("fixture".into(), fixture)]);
+    config.allow_control = true;
+    let host = std::sync::Arc::new(Supervisor::new(config).expect("native host"));
+    let id = host
+        .create(
+            SessionKind::Primary { card: "one".into() },
+            Some("fixture"),
+            Actor::Host,
+        )
+        .await
+        .expect("session")
+        .id;
+    host.run(&id, Actor::Host).await.expect("run");
+    let before = host.status(&id).await.expect("status")["transport"]["requests"].clone();
+    let mut tasks = Vec::new();
+    for index in 0..CALLS {
+        let (host, id) = (host.clone(), id.clone());
+        tasks.push(tokio::spawn(async move {
+            match index % 4 {
+                0 => drop(host.status(&id).await.expect("status")),
+                1 => drop(host.registers(&id, 0).await.expect("registers")),
+                2 => drop(host.preview(&id).await),
+                _ => host
+                    .submit_input(
+                        &id,
+                        InputState {
+                            buttons: (index & 1) as u32,
+                            ..InputState::default()
+                        },
+                        "live",
+                        Actor::Desktop,
+                    )
+                    .expect("input"),
+            }
+        }));
+    }
+    for task in tasks {
+        task.await.expect("caller");
+    }
+    let status = host.status(&id).await.expect("status after burst");
+    let requests = &status["transport"]["requests"];
+    println!("before {before}\nafter {requests}");
+    assert_eq!(requests["limit"], 16, "{requests}");
+    // One exchange at a time; the next request may arrive before the writer returns the
+    // previous reply's credit, so at most two are counted.
+    assert!(requests["peak"].as_u64().unwrap() <= 2, "{requests}");
+    assert_eq!(
+        requests["backpressure_waits"], before["backpressure_waits"],
+        "{requests}"
+    );
+    let completed = requests["completed"].as_u64().unwrap();
+    assert!(
+        completed >= before["completed"].as_u64().unwrap() + CALLS / 2,
+        "{requests}"
+    );
+    let summary = host.summary(&id).expect("summary");
+    assert!(summary.telemetry.failure.is_none());
+    assert!(summary.telemetry.transport.expect("transport")["requests"]["limit"] == 16);
+    host.stop(&id, Actor::Host).await.expect("clean stop");
+    let stderr = std::fs::read_to_string(root.join("cards/one/worker.stderr.log"))
+        .expect("primary card keeps its stderr log");
+    assert!(!stderr.contains("worker_control_error"), "{stderr}");
+    std::fs::remove_dir_all(root).expect("host releases the worker root");
+}
+
 #[tokio::test]
 #[ignore = "requires explicitly supplied native executable and homebrew fixture"]
 async fn supervisor_bounds_concurrent_sessions_and_retains_scoped_artifacts() {

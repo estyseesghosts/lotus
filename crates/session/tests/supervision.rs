@@ -1039,6 +1039,37 @@ async fn a_worker_gpu_error_is_typed_and_isolated() {
     );
 }
 
+/// lotus#160: a worker that reports `worker_control_error` and exits 1 fails as
+/// `control_error` with the reason, not as a renderer failure, while its sibling keeps running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_worker_control_error_is_typed_and_isolated() {
+    let fixture = host("control-error", 2);
+    let ids = fixture.running(2).await;
+    std::fs::write(
+        fixture.root(&ids[0]).join("mock-control-error"),
+        "request frame is not JSON",
+    )
+    .expect("error");
+    until("failure", || {
+        telemetry(&fixture.host, &ids[0]).failure.is_some()
+    })
+    .await;
+    let failure = telemetry(&fixture.host, &ids[0]).failure.unwrap();
+    assert_eq!(failure["cause"], "control_error", "{failure}");
+    assert_eq!(failure["exit_code"], 1);
+    assert_eq!(failure["renderer"], false);
+    assert!(failure["summary"]
+        .as_str()
+        .unwrap()
+        .contains("worker_control_error: request frame is not JSON"));
+    let before = telemetry(&fixture.host, &ids[1]).frames;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        telemetry(&fixture.host, &ids[1]).frames > before,
+        "sibling progresses"
+    );
+}
+
 /// lotus#42: a request that needs a feature the worker did not list in `hello.features` is
 /// refused with `Unsupported` before it is sent; listed features pass through.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

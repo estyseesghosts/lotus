@@ -33,8 +33,31 @@ commands. IDs increase and are never retried after a transport failure.
 | read_memory | address u32, length 1–4096 | mapped current-process bytes at safe point |
 | stop | none | core shut down, then process exit required by supervisor |
 
-Queue capacity is 16 messages of at most 64 KiB. Only the reader thread touches
-the queue; all emulated state stays on the emulation thread. The existing
+Requests are at most 64 KiB. At most 16 are in flight (#160, `transport.h`
+`RequestWindow`, both branches): a request holds a credit from the moment the
+reader takes it off stdin until the writer thread has written its reply. With
+all 16 held, the reader stops reading, so the host's further writes block in
+the OS pipe. Nothing is rejected, dropped or reordered, and the emulation thread
+never waits on the reader. Every request gets exactly one reply, so no credit
+is held forever. This also bounds the reliable reply queue when a client stops
+reading. Before #160 the 17th queued request ended the reader and the worker
+exited 0 with nothing on stderr. Stop closes the window before interrupting the
+reader, so a reader waiting for a credit exits.
+`status.transport.requests` reports `limit`, `in_flight`, `peak`, `completed`,
+`backpressure_waits`, `backpressure_wait_us_total` and `backpressure_wait_us_max`.
+
+A frame length outside 1–65536, a truncated frame or a payload that is not
+JSON ends the worker with exit code 1 and the stderr line
+`worker_control_error: <reason>`. A reply write to a closed pipe or an
+exception from the control loop produces the same line. End of stream between
+frames writes `worker_control_closed: request stream closed` and exits 0.
+Lotus classifies `worker_control_error` as failure cause `control_error` with
+the line as its marker (`failure.rs`). Lotus itself never relies on
+backpressure: every Supervisor exchange holds the session's `native` lock, so a
+worker sees at most one Lotus request at a time.
+
+Only the reader thread fills the request queue; all emulated state stays on
+the emulation thread. The existing
 `NotifyPendingWork` event wakes the frame limiter. The optional frontend callback
 in `ProcessPendingWork` services status/register/memory inspection there.
 Load/reset/stop and capture run outside nested RunLoop calls. No selected-core
@@ -204,6 +227,29 @@ retained after stop. Guest SD-write isolation is recorded in [20](20-native-base
 save-game correctness for every title remains untested.
 No firmware was needed by this fixture; the supplied DSP dump remains external.
 Hardware verification: none. Other platforms/accelerated renderers: untested.
+
+Request window (#160), **verified emulator**, Windows GNU Release, software
+renderer, workers built from AZAHAR `a78f7f3` and CITnLO `638c9f4`.
+`python tests/test_control_backpressure.py <out> ../t03.3dsx <workers...>`
+drives a worker directly. Every case passed on both:
+- 40 statuses queued behind a load were answered in order, with peak 16 and
+  backpressure waits.
+- 200 statuses sent while the client did not read replies left the writer
+  queue at peak 15 and the worker alive.
+- A mixed burst of stale epochs, input, nonblocking preview, status, run and
+  pause got one reply each.
+- Stop behind a blocked reader with the reply pipe closed exited 1 in under
+  0.1 s, with `worker_control_error: control pipe disconnected`.
+- The same stop with reading resumed exited 0.
+- Malformed frames exited 1 with their reasons, and EOF exited 0.
+
+With `--baseline`, the earlier workers (`fb7845d`, `1db4ff6`) answered 16 of 40
+statuses and exited 0 with an empty stderr. The opt-in
+`supervisor_traffic_stays_inside_the_worker_request_window` test sends 240
+concurrent status, register, preview and desktop input calls through
+`Supervisor`. On both workers: 122 exchanges completed, `peak` 2,
+`backpressure_waits` 0, no failure and a clean stop. Low-load latency on the
+performance machine and Linux remain unmeasured.
 
 Source map: native `src/ctr_worker/{frontend,frames,input,transport,control}.h`,
 `src/core/frontend/control_callback.h`, `src/core/core.cpp`,

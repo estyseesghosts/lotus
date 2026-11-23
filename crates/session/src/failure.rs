@@ -32,6 +32,10 @@ pub enum Cause {
     VulkanDeviceLost,
     /// Another Vulkan error the worker reported as `worker_gpu_error` (cause `gpu_error`).
     VulkanError,
+    /// The worker's control transport failed and the worker exited 1 after writing
+    /// `worker_control_error: <reason>` (`ctr_worker/control.h`, lotus#160): a malformed
+    /// request frame, a reply write to a closed pipe, or an exception from the control loop.
+    ControlError,
     /// The worker logged a critical error, panicked or exited nonzero on its own.
     Abort,
     /// The reply broke the control protocol.
@@ -48,6 +52,7 @@ impl Cause {
             Self::VulkanOutOfMemory => "vulkan_out_of_memory",
             Self::VulkanDeviceLost => "vulkan_device_lost",
             Self::VulkanError => "vulkan_error",
+            Self::ControlError => "control_error",
             Self::Abort => "abort",
             Self::MalformedReply => "malformed_reply",
             Self::Timeout => "timeout",
@@ -160,8 +165,13 @@ fn classify_gpu(report: &serde_json::Value) -> (Cause, String) {
     (cause, marker)
 }
 
-/// Cause and marker line from the log tails, the exit code and the transport error. A
-/// `worker_gpu_error` report on stderr takes precedence over log lines.
+/// Prefix of the stderr line a worker writes before exiting on a control transport failure
+/// (`ctr_worker/control.h` and `transport.h`), followed by the reason.
+pub const CONTROL_ERROR_PREFIX: &str = "worker_control_error: ";
+
+/// Cause and marker line from the log tails, the exit code and the transport error. The
+/// worker's own `worker_gpu_error` or `worker_control_error` report on stderr takes precedence
+/// over log lines.
 #[must_use]
 pub fn classify(
     log: &str,
@@ -172,6 +182,13 @@ pub fn classify(
     if let Some(report) = gpu_error(stderr) {
         let (cause, line) = classify_gpu(&report);
         return (cause, Some(marker(&line)));
+    }
+    let control = stderr
+        .lines()
+        .rev()
+        .find(|line| line.trim().starts_with(CONTROL_ERROR_PREFIX));
+    if let Some(line) = control {
+        return (Cause::ControlError, Some(marker(line)));
     }
     let lines = || log.lines().chain(stderr.lines());
     // Azahar's Vulkan texture runtime logs `Failed allocating image with error -2`
@@ -280,6 +297,34 @@ mod tests {
             .is_renderer());
         // A truncated line is ignored, not misparsed.
         assert!(gpu_error("worker_gpu_error: {\"cause\":").is_none());
+    }
+
+    /// Reasons the #160 worker tests recorded: a malformed frame and a forced pipe close.
+    #[test]
+    fn a_worker_control_error_is_its_own_cause() {
+        let critical = "[1.0] Core <Critical> core/core.cpp:Run:1: something broke\n";
+        for reason in ["request frame is not JSON", "control pipe disconnected"] {
+            let stderr = format!("other output\n{CONTROL_ERROR_PREFIX}{reason}\n");
+            let (cause, marker) = classify(critical, &stderr, Some(1), io::ErrorKind::BrokenPipe);
+            assert_eq!(cause, Cause::ControlError);
+            assert!(!cause.is_renderer());
+            assert_eq!(marker.unwrap(), format!("{CONTROL_ERROR_PREFIX}{reason}"));
+        }
+        // A GPU report still wins, and a clean EOF line is not an error.
+        let both = format!("{CONTROL_ERROR_PREFIX}control pipe disconnected\n{GPU}");
+        assert_eq!(
+            classify("", &both, Some(4), io::ErrorKind::BrokenPipe).0,
+            Cause::VulkanOutOfMemory
+        );
+        assert_eq!(
+            classify(
+                "",
+                "worker_control_closed: request stream closed\n",
+                Some(0),
+                io::ErrorKind::BrokenPipe
+            ),
+            (Cause::Unknown, None)
+        );
     }
 
     #[test]

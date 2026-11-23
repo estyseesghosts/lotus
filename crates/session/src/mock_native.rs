@@ -27,6 +27,8 @@
 //! - `mock-gpu-memory`: its JSON is `status.gpu_memory` (lotus#46).
 //! - `mock-gpu-error`: on the next request, write `worker_gpu_error: <its JSON>` to stderr and
 //!   exit with 4, like `ExitOnGpuFailure` in `ctr_worker/control.h`.
+//! - `mock-control-error`: on the next request, write `worker_control_error: <its text>` to
+//!   stderr and exit with 1, like a control transport failure in `ctr_worker/control.h`.
 //! - every accepted `input` is appended to `inputs.jsonl` as
 //!   `{"buttons","x","y","touch","owner","circle_pad","c_stick"}` (sticks `null` when not sent).
 use std::io::{self, Write};
@@ -346,6 +348,10 @@ fn main() -> io::Result<()> {
         if let Ok(text) = std::fs::read_to_string(root.join("mock-gpu-error")) {
             eprintln!("worker_gpu_error: {}", text.trim());
             std::process::exit(4);
+        }
+        if let Ok(text) = std::fs::read_to_string(root.join("mock-control-error")) {
+            eprintln!("worker_control_error: {}", text.trim());
+            std::process::exit(1);
         }
         if let Ok(text) = std::fs::read_to_string(root.join("mock-exit-code")) {
             std::process::exit(text.trim().parse().unwrap_or(1));
