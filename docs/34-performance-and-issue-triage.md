@@ -53,7 +53,7 @@ Use `--baseline` for an older worker. The probe checks widths 1, 2, 4 and 8,
 cross-page and cross-VMA values, sparse and dense matches, all narrowing modes,
 sorted paging, MMIO and unmapped-boundary rejection, and cross-page pointer reads.
 
-## Native WAV capture baseline (#161)
+## Native WAV capture (#161)
 
 Verified emulator on Windows x64 with the software renderer. Integration
 `5ecbd982` and experimental `a3994c1d` each ran the owned DSP fixture three
@@ -71,6 +71,73 @@ python tools/audio_acceptance.py <worker.exe> target/audio-161-fixture/audio.3ds
 The report records the exact worker source alongside the wall times for the
 60-frame run and capture-stop request. Those times include IPC and do not
 measure the DSP producer lock or isolate filesystem stalls.
+
+The async writer was built locally at integration `fb7845d` and experimental
+`1db4ff6`. On each worker, two simultaneous sessions ran the fixture on both
+emulated console models with software and with Vulkan. Every sealed WAV matched
+the baseline PCM hash, even when finalized by orderly process shutdown. Killing
+a worker during replacement preserved the previous sealed WAV and left a
+`.part` file. The muted Cubeb focus toggle also preserved the raw hash.
+
+`tests/worker_wav_capture.cpp` stalls the writer while pushing into its queue.
+It checks bounded stop, overflow and first-loss truncation, the 64 MiB cap,
+WAV byte order, invalid output and rename failure, and recovery. The emulator
+lifecycle check takes a fresh output directory for each worker and renderer.
+
+```powershell
+python tests/test_worker_wav_capture.py <worker.exe> target/audio-161-fixture/audio.3dsx <new-output-directory> vulkan
+python tests/bench_worker_audio_record.py <native-source> <native-build> <c++.exe> <pre-change-sha> <updated-sha> <new-output-directory>
+```
+
+The second command inserts timing probes into temporary copies of the actual
+`WorkerSink::Record` and PCM write call sites. Each mode uses 1,000 calls of
+160 stereo frames, with at least one millisecond between starts and a competing
+`Drain` thread. Slow mode requests a 12 ms sleep immediately before each PCM
+write. Pass `--workers 2` for two independent processes per mode. The JSON
+records average, p95, p99 and maximum for Record, producer
+lock wait and hold, and PCM writes. Times below are in microseconds.
+
+| Worker | Capture | Record avg / p95 / p99 / max before → after | Lock hold p99 before → after |
+| --- | --- | --- | --- |
+| AZAHAR | off | 1.08 / 1.1 / 9.1 / 28.9 → 1.05 / 1.1 / 7.3 / 14.5 | 8.9 → 7.1 |
+| AZAHAR | on | 3.94 / 13.1 / 46.8 / 228.2 → 1.30 / 1.9 / 10.9 / 25.1 | 45.6 → 9.9 |
+| AZAHAR | slow | 15,653 / 16,041 / 17,491 / 31,144 → 1.14 / 1.2 / 6.4 / 19.2 | 17,479 → 5.0 |
+| CITnLO | off | 1.10 / 1.0 / 9.8 / 16.7 → 1.01 / 1.0 / 8.1 / 14.7 | 9.4 → 8.0 |
+| CITnLO | on | 3.50 / 11.8 / 39.0 / 160.3 → 1.47 / 3.4 / 12.9 / 21.1 | 38.8 → 12.6 |
+| CITnLO | slow | 15,679 / 16,041 / 16,398 / 31,060 → 1.16 / 1.2 / 7.3 / 22.3 | 16,389 → 5.8 |
+
+In slow mode, producer lock wait p99 was 0.6 → 0.1 µs on both workers.
+PCM write p99 was 17.48 → 23.75 ms on AZAHAR and 16.39 → 22.31 ms on
+CITnLO. The writer uses larger batches, and its per-write latency includes
+the injected sleep. Both retained the exact first 66,496 of 160,000 PCM
+frames and reported the remaining 93,504 as dropped. Raw DSP totals and
+hashes covered all 160,000 frames in every case. With capture off, the
+average cost of the full diagnostic path was about 1 µs per 160 stereo
+frames. The change keeps the existing ring and hash calculation.
+
+With two simultaneous processes per branch in slow mode, Record p99 ranged
+from 30.53 to 30.57 ms before and 4.5 to 6.2 µs after. Both WAVs in each
+run contained the reported contiguous prefix and all raw sample totals and
+hashes still matched. This process-level stress probe uses synthetic DSP
+samples. The lifecycle probe separately exercises simultaneous emulator
+sessions with the owned guest fixture.
+
+The following medians are milliseconds for six unthrottled 60-frame RPCs
+per configuration using `tools/audio_acceptance.py --unthrottled`. Use
+`--capture-off` for the off row and `--renderer vulkan` for the Vulkan run.
+
+| Worker | Renderer | Before off / on | After off / on |
+| --- | --- | --- | --- |
+| AZAHAR | Software | 170.05 / 169.05 | 168.29 / 169.92 |
+| AZAHAR | Vulkan | 146.89 / 146.14 | 160.95 / 161.19 |
+| CITnLO | Software | 170.55 / 167.89 | 166.83 / 168.13 |
+| CITnLO | Vulkan | 146.68 / 147.91 | 147.20 / 147.35 |
+
+The before binaries were cached builds of the pinned sources. AZAHAR Vulkan
+was about 14 ms slower in the updated build in both modes. These are
+whole-run timings and include IPC. Per-frame hitch and Cubeb underrun
+counts, actual disk exhaustion, and desktop record/playback still need
+verification.
 
 ## Measured (verified emulator)
 

@@ -141,10 +141,24 @@ reply, and the capture files are untouched.
 
 Input factories expose one complete state to HID. Scenario ownership excludes
 live input until reload/reset. Sending all-zero state releases keys/touch after
-device disconnect. This version has no host audio device: the DSP submits to a
-16,384-stereo-sample muted ring, drops oldest samples on overflow, and reports
-sample/drop counts and FNV-1a checksum. Status drains the ring. The checksum is
-an emulator diagnostic, not an audio quality/hardware claim.
+device disconnect. The worker defaults to muted audio. The DSP supplies a
+16,384-stereo-frame diagnostic ring, drops the oldest frames on overflow, and
+reports sample/drop counts and an FNV-1a checksum. Status drains the ring.
+`audio_focus` controls optional Cubeb playback. `audio_capture` records raw
+stereo PCM at 32,728 Hz before host volume and time stretching.
+
+Workers with the #161 async recorder report `state`, queued and peak PCM
+bytes, `queue_capacity_pcm_bytes`, `dropped_blocks`, `dropped_frames`,
+`queue_overflow`, and `limit_reached`. A dedicated writer drains at most
+256 KiB of queued PCM in chunks up to 16 KiB. At the first queue overflow
+or 64 MiB file limit the recorder keeps a contiguous WAV prefix and counts
+all subsequent frames as dropped. Stop returns `complete` or `truncated`
+with the WAV artifact after the header is finalized. If the writer is
+still busy after two seconds, stop returns `finalizing`; a later stop can
+retrieve the result. On filesystem failure the response reports `failed`
+with an error. A forced termination may leave `audio/capture.wav.part`.
+The previous sealed WAV remains available until the new writer publishes
+its replacement.
 
 On Windows, the supervisor starts the child suspended, assigns a kill-on-close
 job, then resumes its initial thread. Descendants inherit containment. Each
