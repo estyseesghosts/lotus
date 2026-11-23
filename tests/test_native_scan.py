@@ -14,6 +14,7 @@ from native_debug_probe import Peer
 
 REGION_BYTES = 1 << 20
 PAGE_BYTES = 4096
+MMIO_STATE = 2  # Kernel::MemoryState::IO in vm_manager.h.
 
 
 def pairs(result):
@@ -92,6 +93,7 @@ def run(args):
                     assert stats["page_checks"] == stats["bulk_reads"] == 256, stats
                     assert stats["bytes_read"] == REGION_BYTES, stats
                     assert stats["candidate_capacity_bytes"] <= 32 * REGION_BYTES, stats
+                    assert stats["worker_us"] < 250_000, stats
                 iteration[operation] = {"rpc_ms": elapsed, "native": stats}
             for offset in (255, REGION_BYTES - 2, REGION_BYTES):
                 page = debug("scan_results", offset=offset, limit=2)
@@ -138,6 +140,26 @@ def run(args):
                             if r["address"] <= base < r["address"] + r["length"]}
         regions = sorted((r for r in regions if r["process"] == fixture_process),
                          key=lambda r: r["address"])
+        # The code and data VMAs of the fixture are adjacent. A candidate may
+        # cross this boundary if both sides are readable.
+        across = base - 2
+        data = debug("read_memory", address=across, length=4)["bytes"]
+        value = int.from_bytes(bytes(data), "little")
+        assert pairs(debug("scan", address=across, length=4, width=4,
+                           value=value)) == [(across, value)]
+        assert pairs(debug("scan_narrow", mode="unchanged")) == [(across, value)]
+
+        # Exercise dense, unaligned groups on multiple pages, including their tails.
+        address = zeroes + PAGE_BYTES - 3
+        for width in (2, 4, 8):
+            total = 2 * PAGE_BYTES // width
+            assert debug("scan", address=address, length=2 * PAGE_BYTES,
+                         width=width, value=0)["total"] == total
+            assert debug("scan_narrow", mode="unchanged")["total"] == total
+            assert pairs(debug("scan_results", offset=total - 1, limit=1)) == [
+                (address + (total - 1) * width, 0),
+            ]
+
         boundary = next(left["address"] + left["length"]
                         for left, right in zip(regions, regions[1:])
                         if left["address"] <= base < left["address"] + left["length"]
@@ -148,6 +170,8 @@ def run(args):
         result = debug("scan", address=zeroes, length=8, width=1, value=0)
         assert result["total"] == 8
         debug("scan", error=True, address=boundary - 1, length=2, width=1, value=last_byte)
+        mmio = next(region["address"] for region in regions if region["state"] == MMIO_STATE)
+        debug("scan", error=True, address=mmio, length=4, width=4, value=0)
         for address, length in ((0, 4), (0xFFFF_FFFF, 8), (zeroes, 0), (zeroes, REGION_BYTES + 1)):
             debug("scan", error=True, address=address, length=length, width=1, value=0)
         if not args.baseline:

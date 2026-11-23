@@ -39,6 +39,10 @@ and pause together over native stdio. Median time to the pause reply, including
 the preceding narrow, fell from 156.7 ms to 9.7 ms (maximum 168.0 and 10.0 ms).
 The guest fixture SHA-256 was
 `cce5f13aac4622db70d58907c8cf7eb100c1e1429962b5c131e2fc4dd6af3fbf`.
+An independent clean build of `2d0c9925` passed the same probe at median RPC
+times of 11.5 ms for scan and 14.9 ms for narrowing. The native debugger
+acceptance suite passed on both emulated models, including execute breakpoints,
+write watchpoints and checkpoint replay.
 
 ```powershell
 python tools/build-debug-fixture.py target/scan-fixture --fixture scanner
@@ -46,8 +50,8 @@ python tests/test_native_scan.py target/debug/lotus-mcp.exe <worker.exe> target/
 ```
 
 Use `--baseline` for an older worker. The probe checks widths 1, 2, 4 and 8,
-cross-page values, sparse and dense matches, all narrowing modes, sorted
-paging, range rejection at a mapped boundary and cross-page pointer reads.
+cross-page and cross-VMA values, sparse and dense matches, all narrowing modes,
+sorted paging, MMIO and unmapped-boundary rejection, and cross-page pointer reads.
 
 ## Measured (verified emulator)
 
