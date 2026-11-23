@@ -144,6 +144,7 @@ Verification links to the corresponding desktop test family. GPU and GDB exercis
 | `lotus_list_sessions` | [session status](../crates/desktop/src/desktop_controller.rs) | read | - | Session sidebar | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_load` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Asset picker | [Session](../crates/desktop/tests/native_inspector.rs) |
 | `lotus_pin_artifact` | external only | control | - | External artifact retention | external |
+| `lotus_record_test` | external only | read or control by operation | input_boundary | Record live input and checkpoints, then export a scenario. CLI `record-test` and MCP only; desktop workflow pending. | external |
 | `lotus_regression_history` | [regression history](../crates/desktop/src/regression_window.rs) | read | - | List, inspect and compare the configured host's retained suites. | [Regression history](../crates/desktop/../../tests/test_regression_history.py) |
 | `lotus_release_artifacts` | external only | control | - | External artifact retention | external |
 | `lotus_run_until` | [session controls](../crates/desktop/src/lotus_window.rs) | control | - | Only single-frame advance in the desktop | [Session](../crates/desktop/tests/native_inspector.rs) |

@@ -23,12 +23,12 @@ commands. IDs increase and are never retried after a transport failure.
 | load | path, local `.3dsx` | loaded and paused, epoch incremented, or typed error |
 | run | frames 1–600 | started; automatically pauses at budget or 20 host seconds |
 | run_until | frames 1–600 | paused after advancing, or explicit error/deadline |
-| pause | none | outer RunLoop returned; no nested teardown |
+| pause | none | outer RunLoop returned; no nested teardown. While running, completes at the next frame boundary (`input_boundary`) |
 | reset | none | same content reloaded, paused, epoch incremented |
 | capture | none | two native screen leases copied from latest software output |
 | preview | none | two leases into the worker's shared-memory ring (CITnLO and AZAHAR on Windows); `unsupported` elsewhere |
 | flush_storage | none | paused worker with no guest FS call pending on a host thread: every stdio stream flushed; otherwise `not_ready` with `reason` `running` or `async_fs_pending` (both branches; #28) |
-| input | owner live/scenario, buttons, x/y, touch | complete input state installed |
+| input | owner live/scenario, buttons, x/y, touch | complete input state installed at a frame boundary; reply `input_frame` (`input_boundary`) |
 | registers | core 0–3, also checked against active core count | 16 registers/CPSR at safe point |
 | read_memory | address u32, length 1–4096 | mapped current-process bytes at safe point |
 | stop | none | core shut down, then process exit required by supervisor |
@@ -163,7 +163,23 @@ verified emulator). Disk writes stay below 4 KiB per preview, which is the pipe
 reply, and the capture files are untouched.
 
 Input factories expose one complete state to HID. Scenario ownership excludes
-live input until reload/reset. Sending all-zero state releases keys/touch after
+live input until reload/reset.
+
+Workers that advertise `input_boundary` (#95, both branches, `control.h`) apply
+input only at a frame boundary. `System::RunLoop` returns after one CPU slice
+(at most `Timing::MAX_SLICE_LENGTH` ticks), so the control loop's pass in which
+`RendererBase::EndFrame` counted a frame ends just after that frame. A bounded
+`run_until` also stops there. While running, or when the guest has executed
+since the last boundary (a step or restore), the state is staged
+(`input_staged` in the snapshot). It is installed after the next pass that
+presents a frame. The reply's `input_frame` is that frame: the current count
+when the input was applied immediately, otherwise the count plus one. A
+scenario that installs the same state while paused at `input_frame` gives the
+guest the same HID samples. A `pause` sent while running is deferred to the
+same boundary. A second pause while one is pending gets `not_ready`
+`pause_pending`. `stop` answers a pending pause with `not_ready` `stopped`. A
+`run_until` interrupted short of its target answers `not_ready`
+`interrupted`. Load, reset and CITnLO state restores clear staged input. Sending all-zero state releases keys/touch after
 device disconnect. The worker defaults to muted audio. The DSP supplies a
 16,384-stereo-frame diagnostic ring, drops the oldest frames on overflow, and
 reports sample/drop counts and an FNV-1a checksum. Status drains the ring.

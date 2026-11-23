@@ -24,6 +24,56 @@ pub enum RegressionHistoryOperation {
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct RecordTestArgs {
+    pub session: String,
+    pub operation: RecordTestOperation,
+}
+
+/// One guest memory value a mark keeps as a `memory` assertion.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RecordTestRead {
+    pub address: u32,
+    /// 1, 2 or 4 bytes, little-endian. Default 4.
+    #[serde(default = "default_read_width")]
+    pub width: u8,
+}
+
+fn default_read_width() -> u8 {
+    4
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum RecordTestOperation {
+    /// Reload the session's content and record from frame 0.
+    Start,
+    /// Pause at a frame boundary, keep both screen hashes and these values, and resume.
+    Mark {
+        label: String,
+        #[serde(default)]
+        memory: Vec<RecordTestRead>,
+    },
+    /// End the recording at the current frame; the session stays paused.
+    Stop,
+    Status,
+    Discard,
+    /// Write `recorded-tests/<name>/scenario.yaml` and `manifest.json` under the storage
+    /// root. `stop_frame` trims the end; `omit_marks` drops marks by index; `assertions`
+    /// are extra version 2 scenario assertions.
+    Export {
+        name: String,
+        #[serde(default)]
+        stop_frame: Option<u64>,
+        #[serde(default)]
+        omit_marks: Vec<usize>,
+        #[serde(default)]
+        assertions: Vec<serde_json::Value>,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RestoreInvestigationBreakpointArgs {
     pub id: String,
     pub expected_revision: u64,

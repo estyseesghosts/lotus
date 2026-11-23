@@ -116,7 +116,7 @@ impl Machine {
             "features": if self.root.join("mock-no-flush").exists() {
                 serde_json::json!(["gpu_capture_levels"])
             } else {
-                serde_json::json!(["flush_storage", "gpu_capture_levels", "analog_input"])
+                serde_json::json!(["flush_storage", "gpu_capture_levels", "analog_input", "input_boundary"])
             },
             "renderer": self.settings.get("graphics_api"),
             "gpu_memory": std::fs::read_to_string(self.root.join("mock-gpu-memory"))
@@ -229,7 +229,11 @@ impl Machine {
                         .as_bytes(),
                     );
                 }
-                (Status::Ok, self.snapshot())
+                {
+                    let mut reply = self.snapshot();
+                    reply["input_frame"] = serde_json::json!(self.frames);
+                    (Status::Ok, reply)
+                }
             }
             Method::Debug => {
                 let command = request.params["operation"].as_str().unwrap_or("");

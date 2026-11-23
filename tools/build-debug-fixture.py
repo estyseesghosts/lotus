@@ -12,7 +12,7 @@ import subprocess
 
 parser = argparse.ArgumentParser()
 parser.add_argument("output", type=Path)
-parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence","scanner","source","variables","alias"],default="debugger")
+parser.add_argument("--fixture",choices=["debugger","audio","microphone","dsp","peripherals","filesystem","divergence","scanner","source","variables","alias","input"],default="debugger")
 parser.add_argument("--gcc", help="devkitARM arm-none-eabi-gcc executable (uses matching objcopy)")
 parser.add_argument("--define", action="append", default=[], help="preprocessor macro for a fixture variant")
 args = parser.parse_args()

@@ -28,10 +28,10 @@ use serde_json::Value;
 use crate::tool_arguments::{
     AdvanceArgs, CaptureImageArgs, ControlArgs, ControlOperation, CreateArgs, DebugArgs, GdbArgs,
     GdbOperation, InputArgs, InputPresetArgs, InputPresetOperation, InvestigationArgs,
-    InvestigationOperation, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RegistersArgs,
-    RegressionHistoryArgs, RegressionHistoryOperation, ReleaseArtifactsArgs,
-    RestoreInvestigationBreakpointArgs, SessionArgs, SettingsArgs, SettingsChangeArgs,
-    SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
+    InvestigationOperation, KindArg, LoadArgs, MemoryArgs, PinArtifactArgs, RecordTestArgs,
+    RecordTestOperation, RegistersArgs, RegressionHistoryArgs, RegressionHistoryOperation,
+    ReleaseArtifactsArgs, RestoreInvestigationBreakpointArgs, SessionArgs, SettingsArgs,
+    SettingsChangeArgs, SettingsOperation, SettingsSchemaArgs, ValidateScenarioArgs, WorkspaceArgs,
 };
 
 /// Which frontend hosts this server; reported to clients.
@@ -173,6 +173,81 @@ fn tool_result(value: io::Result<Value>) -> CallToolResult {
     match value {
         Ok(value) => CallToolResult::success(vec![ContentBlock::text(value.to_string())]),
         Err(error) => CallToolResult::error(vec![ContentBlock::text(error.to_string())]),
+    }
+}
+
+/// Shared by MCP and the desktop: one recorded-test operation on `session`.
+pub async fn record_test_operation(
+    host: &Supervisor,
+    session: &str,
+    operation: RecordTestOperation,
+    actor: Actor,
+) -> io::Result<Value> {
+    use lotus_session::test_recording::MarkRead;
+    match operation {
+        RecordTestOperation::Start => Ok(host.record_test_start(session, actor).await?.summary()),
+        RecordTestOperation::Mark { label, memory } => {
+            let reads: Vec<MarkRead> = memory
+                .iter()
+                .map(|read| MarkRead {
+                    address: read.address,
+                    width: read.width,
+                })
+                .collect();
+            json(
+                &host
+                    .record_test_mark(session, &label, &reads, actor)
+                    .await?,
+            )
+        }
+        RecordTestOperation::Stop => Ok(host.record_test_stop(session, actor).await?.summary()),
+        RecordTestOperation::Status => Ok(host
+            .record_test(session)?
+            .map_or(Value::Null, |recording| recording.summary())),
+        RecordTestOperation::Discard => {
+            host.record_test_discard(session)?;
+            Ok(serde_json::json!({"discarded": true}))
+        }
+        RecordTestOperation::Export {
+            name,
+            stop_frame,
+            omit_marks,
+            assertions,
+        } => {
+            host.require_control()?;
+            let recording = host.record_test(session)?.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::NotFound, "no test recording on this session")
+            })?;
+            let assertions = assertions
+                .into_iter()
+                .map(|value| {
+                    serde_json::from_value(value).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("invalid assertion: {error}"),
+                        )
+                    })
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            let options = lotus_runner::recording::ExportOptions {
+                name,
+                stop_frame,
+                omit_marks,
+                assertions,
+            };
+            let export = lotus_runner::recording::export(&recording, &options)?;
+            let directory = host
+                .config()
+                .storage_root
+                .join(lotus_runner::recording::DIRECTORY)
+                .join(&options.name);
+            lotus_runner::recording::write(&export, &directory)?;
+            Ok(serde_json::json!({
+                "directory": directory,
+                "scenario": export.yaml,
+                "manifest": export.manifest,
+            }))
+        }
     }
 }
 
@@ -789,6 +864,21 @@ impl LotusServer {
             .map_err(io::Error::other)
             .and_then(|result| result),
         )
+    }
+
+    #[tool(
+        description = "Record a live session as a scenario test (lotus#95). start reloads the content and records accepted inputs from frame 0; mark pauses at a frame boundary, keeps both screen hashes and the listed memory values, and resumes; stop ends at the current frame; export writes recorded-tests/<name>/scenario.yaml and manifest.json under the storage root, listing anything the scenario runner cannot replay. Requires host control and the debugger lease if one is held."
+    )]
+    pub async fn lotus_record_test(
+        &self,
+        Parameters(args): Parameters<RecordTestArgs>,
+    ) -> CallToolResult {
+        let result = async {
+            let host = self.require_host()?;
+            record_test_operation(host, &args.session, args.operation, Actor::Mcp).await
+        }
+        .await;
+        tool_result(result)
     }
 
     #[tool(

@@ -1147,7 +1147,12 @@ async fn requests_needing_unadvertised_features_are_refused() {
     .expect("json");
     assert_eq!(
         manifest["features"],
-        serde_json::json!(["flush_storage", "gpu_capture_levels", "analog_input"])
+        serde_json::json!([
+            "flush_storage",
+            "gpu_capture_levels",
+            "analog_input",
+            "input_boundary"
+        ])
     );
 }
 
@@ -1275,4 +1280,116 @@ async fn workspace_writes_from_mcp_need_control() {
         std::io::ErrorKind::PermissionDenied
     );
     assert!(fixture.host.workspace().available);
+}
+
+/// lotus#95: a recording starts from a reloaded frame 0, keeps accepted inputs at their
+/// reply frame, marks at a paused frame boundary without stopping play, notes debugger
+/// mutations, and is invalidated by a guest restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_test_recording_keeps_inputs_marks_and_interventions() {
+    use lotus_protocol::debug::DebugCommand;
+    let fixture = host("record-test", 1);
+    let id = fixture.running(1).await.remove(0);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started = fixture
+        .host
+        .record_test_start(&id, Actor::Desktop)
+        .await
+        .expect("start");
+    assert_eq!(started.inputs.len(), 1);
+    assert_eq!(
+        started.inputs[0].frame, 0,
+        "starts from the reloaded frame 0"
+    );
+    assert_eq!(started.content_name, "demo.3dsx");
+    let error = fixture
+        .host
+        .record_test_start(&id, Actor::Desktop)
+        .await
+        .expect_err("one active recording");
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+
+    fixture.host.run(&id, Actor::Host).await.expect("run");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let state = InputState {
+        buttons: 1,
+        ..InputState::default()
+    };
+    let reply = fixture
+        .host
+        .input(&id, state, "live", Actor::Mcp)
+        .await
+        .expect("input");
+    let input_frame = reply["input_frame"].as_u64().expect("input_frame");
+    assert!(input_frame > 0);
+
+    let mark = fixture
+        .host
+        .record_test_mark(&id, "pressed", &[], Actor::Mcp)
+        .await
+        .expect("mark");
+    assert!(mark.frame >= input_frame);
+    assert_eq!(mark.top_sha256.len(), 64);
+    let after_mark = telemetry(&fixture.host, &id).frames;
+    until("play resumes after a mark", || {
+        telemetry(&fixture.host, &id).frames > after_mark
+    })
+    .await;
+
+    fixture
+        .host
+        .debug(
+            &id,
+            &DebugCommand::SettingsSet {
+                name: "layout_option".into(),
+                value: lotus_protocol::debug::SettingValue::Integer(1),
+            },
+            Actor::Desktop,
+        )
+        .await
+        .expect("settings_set");
+
+    let stopped = fixture
+        .host
+        .record_test_stop(&id, Actor::Mcp)
+        .await
+        .expect("stop");
+    let stop = stopped.stopped_at_frame.expect("stop frame");
+    assert!(stop >= mark.frame);
+    assert_eq!(stopped.inputs.len(), 2);
+    assert_eq!(stopped.inputs[1].frame, input_frame);
+    assert_eq!(stopped.inputs[1].state, state);
+    assert_eq!(stopped.marks, vec![mark]);
+    assert_eq!(stopped.interventions.len(), 1);
+    assert_eq!(stopped.interventions[0].operation, "settings_set");
+    assert!(stopped.invalid.is_none());
+    // Inputs after stop are not recorded.
+    fixture
+        .host
+        .input(&id, InputState::default(), "live", Actor::Mcp)
+        .await
+        .expect("input after stop");
+    assert_eq!(
+        fixture.host.record_test(&id).unwrap().unwrap().inputs.len(),
+        2
+    );
+
+    fixture
+        .host
+        .record_test_start(&id, Actor::Mcp)
+        .await
+        .expect("restart replaces a stopped recording");
+    fixture.host.reset(&id, Actor::Host).await.expect("reset");
+    let invalid = fixture.host.record_test(&id).unwrap().unwrap();
+    assert!(
+        invalid
+            .invalid
+            .as_deref()
+            .unwrap_or("")
+            .contains("restarted"),
+        "{:?}",
+        invalid.invalid
+    );
+    fixture.host.record_test_discard(&id).expect("discard");
+    assert!(fixture.host.record_test(&id).unwrap().is_none());
 }

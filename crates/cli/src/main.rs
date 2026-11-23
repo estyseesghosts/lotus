@@ -53,6 +53,9 @@ Usage:
   ctr-cli debug <host-config> <asset-or-dash> [--gdb <port>]    Typed JSON-line debugger on stdin; replies on stdout
   ctr-cli investigation <host-config> [operation-json] (Windows shared desktop)
                                 Read or edit investigations. Without JSON, accept operations on stdin.
+  ctr-cli record-test <host-config> <session> [operation-json] (Windows shared desktop)
+                                Record a desktop session as a scenario test: {\"op\":\"start\"},
+                                mark, stop, status, discard, export. Without JSON, read stdin.
   ctr-cli version              Print the Lotus version and worker protocol version
   ctr-cli mock <worker-executable> Query a mock worker over private pipes
   ctr-cli pins                 Print the pinned Azahar and GPUI revisions
@@ -83,6 +86,7 @@ fn main() -> Result<()> {
     match command {
         #[cfg(windows)]
         "investigation" => investigation::run(&args[1..])?,
+        "record-test" => investigation::record_test(&args[1..])?,
         "debug-schema" => println!(
             "{}",
             serde_json::to_string_pretty(&lotus_protocol::debug_schema::schema())?

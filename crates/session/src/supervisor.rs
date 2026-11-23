@@ -41,6 +41,7 @@ use lotus_protocol::envelope::SessionUuid;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 mod experiments;
+mod recording;
 mod supervision;
 
 /// Cancellation is serialized with the transition from waiting for admission to
@@ -408,6 +409,8 @@ struct SessionHandle {
     analog_input: bool,
     /// Settings resolved at creation and, for a secondary, its runtime overrides (lotus#51).
     settings: Mutex<SessionSettings>,
+    /// Live test recording (lotus#95); see [`crate::test_recording`].
+    recording: Mutex<Option<crate::test_recording::TestRecording>>,
 }
 
 /// A session's settings: what it started with, and what changed since (secondaries only).
@@ -1094,6 +1097,7 @@ impl Supervisor {
                 snapshot: resolved,
                 runtime: BTreeMap::new(),
             }),
+            recording: Mutex::default(),
         });
         handle.start();
         reservation.commit(handle);
@@ -1825,7 +1829,9 @@ impl Supervisor {
         }
         // A direct state supersedes anything still queued for this session.
         handle.cancel_input(true);
-        native.input(state, owner).await
+        let reply = native.input(state, owner).await?;
+        recording::note_input(&handle, &native, state, owner, actor, &reply);
+        Ok(reply)
     }
 
     /// Queue a complete live input state and return at once. The session's own input task
@@ -2733,6 +2739,7 @@ impl Supervisor {
         }
         if command.mutates() {
             check_lease(&handle, client)?;
+            recording::note_intervention(&handle, native.epoch(), command, client);
             if let Some((original, _, read)) = &memory_check {
                 let sampled = native.debug(read).await?;
                 if !memory_reply_matches(&sampled, original) {

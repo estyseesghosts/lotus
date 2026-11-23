@@ -13,7 +13,7 @@ use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::{actor_client, check_lease, lock, observe, SessionHandle};
+use super::{actor_client, check_lease, lock, observe, recording, SessionHandle};
 use crate::native_session::InputState;
 use crate::telemetry::{Actor, InputMetrics};
 use crate::SessionState;
@@ -319,6 +319,9 @@ pub(super) async fn deliver_input(handle: Arc<SessionHandle>) {
                 Ok(()) => native.input(item.state, &item.owner).await,
                 Err(error) => Err(error),
             };
+            if let Ok(reply) = &result {
+                recording::note_input(&handle, &native, item.state, &item.owner, item.actor, reply);
+            }
             drop(native);
             let mut mailbox = lock(&handle.mailbox);
             mailbox.in_flight = None;

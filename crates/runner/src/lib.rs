@@ -15,6 +15,7 @@ pub mod assessment;
 pub mod bisect;
 pub mod execution;
 pub mod history;
+pub mod recording;
 pub mod repro;
 pub mod suite;
 
@@ -177,7 +178,7 @@ pub struct Capture {
 }
 
 /// A scenario assertion.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assertion {
     /// Assertion type, e.g. `event_seen`.
     #[serde(rename = "type")]
