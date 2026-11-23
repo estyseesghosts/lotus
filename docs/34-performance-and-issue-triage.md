@@ -237,6 +237,69 @@ Replies from #46 workers without `sample_state` count as fresh for one second
 after receipt. Before #159 a session without a sample contributed nothing and
 admission allowed the launch.
 
+## Luma bit-31 physical alias (#155)
+
+`MemorySystem::Read`/`Write` (`src/core/memory.cpp`) treat a virtual address
+with bit 31 set as a physical address. This came from the 3GX plugin loader
+(Citra #6172) and is still in upstream Azahar (`735c63174`). It sent every
+`0x1xxxxxxx` PA at or above `IO_AREA_PADDR` to `GPU::ReadReg`/`WriteReg`, so a
+guest write to `0x986483CA` (PA `0x186483CA`, past VRAM) reached
+`UNREACHABLE_MSG("Write to unknown GPU address 0x271483CA")` and killed the worker.
+
+AZAHAR `a78f7f3` and CITnLO `638c9f4` classify each alias access on that slow
+path. FCRAM aliases must fit inside the model's FCRAM: 128 MiB on Old 3DS and
+256 MiB on New 3DS, the sizes `MemorySystem::Impl::serialize` uses.
+Register aliases must be aligned 32-bit accesses that `GPU::IsRegister`
+accepts: the LCD page below `RegsLcd::NumIds()`, or the two GPU pages below
+`PicaCore::Regs::NUM_REGS`. These are the addresses `ReadReg`/`WriteReg`
+handle. Anything else is rejected and logged:
+`Luma alias Write32 0x5A5A5A5A @ 0x986483CA (PA 0x186483CA) at PC … rejected: not FCRAM or the I/O area (rejection n)`.
+The first 64 rejections are logged individually, then each power-of-two count.
+A rejected access then takes the page-table path and reports the usual unmapped
+access: a log line, a CITnLO `memory_fault` event, or the exception handler.
+A 3DSX already sees a direct I/O access this way, because `loader/3dsx.cpp`
+maps VRAM for it but not the I/O area.
+Limitation: VRAM, DSP RAM and AXI WRAM aliases are rejected, not emulated.
+Whether Luma serves them on hardware is not verified here.
+
+`fixtures/alias` is an owned 3DSX with 22 numbered cases. It finds its own
+FCRAM page through the alias and covers:
+- 8-, 16- and 32-bit FCRAM reads and writes;
+- both FCRAM ends;
+- the reported write and a read at `0x986483CA`;
+- the I/O area ends;
+- a 16-bit access, a misaligned access and an access crossing the area end
+  (Dynarmic passes that unaligned `LDR` to `Read32` in one piece);
+- LCD and GPU register readback;
+- a memory fill triggered through the alias, checked in VRAM.
+
+`tests/test_luma_alias.py` reads the results with `read_memory`. It requires
+a rejection line with the expected reason for each invalid access and for no
+other access, with the guest PC inside the fixture's code, plus the matching
+unmapped-access line. **Verified emulator**,
+Windows GNU Release, Old and New 3DS on both workers:
+- software (`build/alias-155`) and Vulkan (`build/alias-155-vulkan`) both
+  passed, with 11 rejections on Old 3DS and 9 on New 3DS. On New 3DS the two
+  FCRAM reads past 128 MiB read real memory.
+- With `--baseline`, the earlier workers (`fb7845d`, `1db4ff6`) aborted on both
+  models with `Write to unknown GPU address 0X271483CA` and exit `0xC000001D`
+  (`build/alias-155-baseline`), as reported.
+
+```powershell
+python tools/build-debug-fixture.py target/alias-155-fixture --fixture alias --gcc C:/devkitPro/devkitARM/bin/arm-none-eabi-gcc.exe
+python tests/test_luma_alias.py <new-output-directory> target/alias-155-fixture/alias.3dsx <worker.exe>... [--vulkan]
+```
+
+## Control request window (#160)
+
+Policy, counters and results are in [21](21-native-control.md). In short, both
+workers hold a reader at 16 requests without unwritten replies instead of
+exiting. Malformed frames and transport failures exit 1 with
+`worker_control_error`, which Lotus reports as `control_error`. The direct
+worker stress test and the supervisor traffic test pass on AZAHAR `a78f7f3`
+and CITnLO `638c9f4`. Low-load latency and Linux runs remain for the
+performance machine.
+
 ## Measured (verified emulator)
 
 | renderer | config | citnlo_pin s | citnlo_new s | ratio vs off (new) |
