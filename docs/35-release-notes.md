@@ -4,6 +4,16 @@ Changes per published release. Evidence and design live in the linked
 documents; this page only says what changed. Labels follow the
 [glossary](glossary.md) evidence vocabulary.
 
+## Unreleased
+
+Native pins: integration (AZAHAR) `7b45415d`, experimental (CITnLO)
+`64883d29`. Both workers write raw DSP WAV captures on a bounded writer
+thread (#161), sample Vulkan memory outside status requests (#159), hold
+control requests to 16 in flight until their replies are written (#160),
+bound Luma alias routing to FCRAM and emulated GPU registers (#155), and
+apply live input and complete a running pause at frame boundaries
+(`input_boundary`, #95).
+
 ## v0.1.3 (2026-11-22)
 
 Native worker pins remain AZAHAR `5ecbd982` and CITnLO `a3994c1d`.
