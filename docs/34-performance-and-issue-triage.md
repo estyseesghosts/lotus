@@ -139,6 +139,36 @@ whole-run timings and include IPC. Per-frame hitch and Cubeb underrun
 counts, actual disk exhaustion, and desktop record/playback still need
 verification.
 
+## GPU memory status baseline (#159)
+
+`tools/gpu_memory_acceptance.py` used the Windows workers at `fb7845d`
+(AZAHAR) and `1db4ff6` (CITnLO), before changing GPU memory queries. Each
+worker booted the owned DSP fixture, issued 160 status RPCs while paused
+and 160 while the guest ran, then measured an unthrottled 60-frame run.
+The tool retained every RPC time and confirmed that only Vulkan workers
+reported GPU memory. The table pools each phase's RPCs across workers
+and takes the median of the 60-frame runs.
+
+```powershell
+python tools/gpu_memory_acceptance.py <worker.exe> target/audio-161-fixture/audio.3dsx <new-output-directory>
+```
+
+| Renderer | Workers | AZAHAR p99 paused / running (µs) | CITnLO p99 paused / running (µs) | Median 60-frame AZAHAR / CITnLO (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Software | 1 | 172 / 1,136 | 185 / 1,254 | 92.85 / 94.52 |
+| Software | 2 | 227 / 1,149 | 228 / 1,212 | 103.04 / 97.09 |
+| Software | 4 | 754 / 1,628 | 839 / 1,378 | 98.33 / 107.09 |
+| Software | 8 | 1,563 / 2,101 | 1,736 / 2,209 | 138.58 / 137.96 |
+| Vulkan | 1 | 200 / 3,034 | 235 / 3,013 | 69.92 / 70.69 |
+| Vulkan | 2 | 234 / 2,143 | 236 / 2,981 | 75.23 / 75.27 |
+| Vulkan | 4 | 811 / 2,516 | 1,000 / 2,693 | 80.93 / 83.38 |
+| Vulkan | 8 | 2,232 / 3,412 | 2,148 / 2,937 | 124.81 / 120.72 |
+
+These observations include IPC, scheduling and reply construction. The
+software rows show the cost also grows without a live Vulkan allocator.
+Inner timing at the GPU accounting mutex, VMA and Vulkan calls is needed
+to attribute the measured cost.
+
 ## Measured (verified emulator)
 
 | renderer | config | citnlo_pin s | citnlo_new s | ratio vs off (new) |
